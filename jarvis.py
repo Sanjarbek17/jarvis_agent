@@ -68,10 +68,10 @@ class Call:
         """Pick up / place the call. `reason`: why Jarvis is calling me (it opens with that)."""
         # Jarvis's voice goes in as stereo (the library's external-audio example); I come out as mono
         out_params, in_params = AudioParameters(CALL_RATE, 2), AudioParameters(CALL_RATE, 1)
-        self.tasks = [asyncio.create_task(self.brain.start()), asyncio.create_task(self._play()),
-                      asyncio.create_task(self._think())]
+        self.tasks = [asyncio.create_task(self.brain.start()), asyncio.create_task(self._think())]
         self.ears.start()
         await calls.play(self.user_id, MediaStream(ExternalMedia.AUDIO, out_params), CallConfig(timeout=60))
+        self.tasks.append(asyncio.create_task(self._play()))  # only once the call's audio input exists
         await calls.record(self.user_id, RecordStream(True, in_params))
         if self.guest:
             self.tell(f"(You called {self.guest} and they just picked up: greet them and give the message.)")
@@ -82,15 +82,17 @@ class Call:
         log.info("on the call%s", f" with {self.guest}" if self.guest else " (Jarvis called)" if reason else "")
 
     async def on_speaking(self, text: str):
-        # I'm talking over Jarvis: stop it (2+ words, so a cough or echo doesn't count)
-        if self.mouth.busy and len(text.split()) >= 2:
+        # the other side talks over Jarvis: stop it. 3+ words, because a phone on speaker sends
+        # bits of Jarvis's own voice back ("hour", "Hello") and that kept cutting it off
+        if self.mouth.busy and len(text.split()) >= 3:
             self.turn_id += 1
             self.mouth.stop()
 
     async def on_sentence(self, text: str):
+        if self.mouth.busy and len(text.split()) < 3:
+            log.info("ignored while Jarvis talks (likely echo): %s", text)
+            return
         self._note(self.guest or "Sanjar", text)
-        self.turn_id += 1
-        self.mouth.stop()
         await self.turns.put(text)
 
     def tell(self, update: str):
