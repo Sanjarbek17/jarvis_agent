@@ -32,7 +32,7 @@ at login, restarts if it crashes, and keeps the Mac awake with `caffeinate`.
 - by hand (agent stopped): `uv run jarvis.py` or `uv run jarvis.py --call`
 - logs: `var/logs/jarvis.log`; each worker run: `var/logs/<project>-<ticket ref>.jsonl`
 
-Telegram: plain text = talk to Jarvis, `/status [project]`, `/stop <project>`, `/call`, `/transcript`.
+Telegram: plain text or a voice message = talk to Jarvis, `/status [project]`, `/stop <project>`, `/call`, `/transcript`.
 
 Calling other people: "call Olimjon and tell him ..." (by message or on a call). Jarvis looks the
 name up in the Jarvis account's Telegram contacts and chats (or takes an @username), asks if it's

@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import logging
 import re
+import time
 from typing import Awaitable, Callable
 
 import numpy as np
@@ -87,6 +88,53 @@ class Ears:
                     await self.on_speaking(sc.interim_input_transcription.text)
                 if sc.input_transcription and sc.input_transcription.text.strip():
                     await self.on_sentence(sc.input_transcription.text.strip())
+
+
+async def transcribe_audio(data: bytes) -> str:
+    """A whole recording (e.g. a Telegram voice message, any format ffmpeg reads) -> text.
+
+    Uses the same live transcription model as calls (no daily limit on the free plan):
+    streams the audio a bit faster than real time and collects every finished sentence.
+    """
+    ffmpeg = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-loglevel", "quiet", "-i", "pipe:0", "-f", "s16le", "-ar", "16000", "-ac", "1", "pipe:1",
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
+    pcm, _ = await ffmpeg.communicate(data)
+    if not pcm:
+        return ""
+    pcm += bytes(16000 * 2 * 2)  # 2 s of silence so the last sentence gets finished
+    config = types.LiveConnectConfig(input_audio_transcription=types.AudioTranscriptionConfig())
+    sentences: list[str] = []
+    async with gemini.aio.live.connect(model=TRANSCRIBE_MODEL, config=config) as session:
+        async def send():
+            chunk = 6400  # 200 ms
+            for i in range(0, len(pcm), chunk):
+                await session.send_realtime_input(
+                    audio=types.Blob(data=pcm[i:i + chunk], mime_type="audio/pcm;rate=16000"))
+                await asyncio.sleep(0.05)  # 4x real time
+
+        async def receive(texts: asyncio.Queue):
+            while True:  # receive() ends after each turn; long messages have several
+                async for msg in session.receive():
+                    sc = msg.server_content
+                    if sc and sc.input_transcription and sc.input_transcription.text.strip():
+                        await texts.put(sc.input_transcription.text.strip())
+
+        texts: asyncio.Queue[str] = asyncio.Queue()
+        sender, receiver = asyncio.create_task(send()), asyncio.create_task(receive(texts))
+        deadline = time.monotonic() + len(pcm) / 32000 + 10   # never wait longer than this
+        try:
+            while time.monotonic() < deadline:
+                try:
+                    sentences.append(await asyncio.wait_for(texts.get(), 1.5))
+                except TimeoutError:
+                    if sender.done():   # everything sent and nothing new for 1.5 s: finished
+                        break
+        finally:
+            sender.cancel()
+            receiver.cancel()
+    # the transcriber sometimes glues sentences together ("board.Second")
+    return re.sub(r"([.!?])(?=[^\s\d.!?])", r"\1 ", " ".join(sentences))
 
 
 _SENTENCE_END = re.compile(r"(?<=[.!?…])\s+|\n+")

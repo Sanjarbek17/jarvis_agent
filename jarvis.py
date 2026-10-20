@@ -4,7 +4,7 @@
     uv run jarvis.py --call    # start and call me right away
 
 - Call: my voice -> Gemini transcribe -> Claude (call brain) -> Gemini voice -> call.
-- Telegram text from me -> Claude (chat brain) -> reply. /status, /stop <project>, /call, /transcript.
+- Telegram text or voice message from me -> Claude (chat brain) -> reply. /status, /stop <project>, /call, /transcript.
 - Runner picks tickets marked Queued (Jarvis column) on each project's Notion board.
 - Jarvis calls me by itself when a ticket needs me or fails, and once a day with a summary
   (not in quiet hours, at most once per CALL_COOLDOWN).
@@ -33,7 +33,7 @@ from core.brain import Brain, guest_prompt
 from core.config import (CALL_COOLDOWN, CALL_ON, CALL_RATE, DAILY_CALL_AT, LOGS, OWNER_ID, PROJECTS,
                          PROJECTS_URL, QUIET_HOURS, SESSION, STATE, TG_API_HASH, TG_API_ID)
 from core.runner import Runner
-from core.voice import Ears, Mouth, split_sentences
+from core.voice import Ears, Mouth, split_sentences, transcribe_audio
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s",
                     handlers=[logging.StreamHandler(), logging.FileHandler(LOGS / "jarvis.log")])
@@ -312,6 +312,13 @@ async def notify(card: Ticket, kind: str, text: str, photos: list[Path]):
 @tg.on(events.NewMessage(incoming=True, from_users=OWNER_ID, func=lambda e: e.is_private))
 async def on_message(event):
     text = (event.raw_text or "").strip()
+    if not text and (event.message.voice or event.message.video_note or event.message.audio):
+        async with tg.action(OWNER_ID, "typing"):
+            text = await transcribe_audio(await tg.download_media(event.message, file=bytes))
+        if not text:
+            await event.reply("I couldn't make out that voice message, sir.")
+            return
+        await event.reply(f"🎙 I heard: {text}")
     if not text:
         return
     if text.startswith("/status"):
