@@ -5,6 +5,7 @@ Jarvis places to other people (only hang_up, so the person on the line can't use
 The tools hold the Notion token and the Telegram session; Claude only sees results.
 """
 import asyncio
+import contextlib
 import logging
 import time
 from pathlib import Path
@@ -129,6 +130,10 @@ async def serve() -> None:
     for port, source in ((TOOLS_PORT, "Call"), (TOOLS_PORT + 1, "Telegram"), (TOOLS_PORT + 2, "Guest")):
         app = make_server(source).streamable_http_app(stateless_http=True, json_response=True)
         config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
-        servers.append(uvicorn.Server(config).serve())
+        server = uvicorn.Server(config)
+        # uvicorn grabs SIGTERM/SIGINT while serving and only re-raises them after it stops; with
+        # several servers the signal got lost and `pkill` left Jarvis running. Leave signals alone.
+        server.capture_signals = contextlib.nullcontext
+        servers.append(server.serve())
     log.info("tools servers on ports %s-%s", TOOLS_PORT, TOOLS_PORT + 2)
     await asyncio.gather(*servers)
