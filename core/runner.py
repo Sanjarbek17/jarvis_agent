@@ -14,7 +14,7 @@ from typing import Awaitable, Callable
 
 from . import board
 from .board import Ticket
-from .config import LOGS, MAX_WORKERS, NEVER_DO, POLL_SECONDS, SHOTS, STATE, project_dirs
+from .config import HERE, LOGS, MAX_WORKERS, NEVER_DO, POLL_SECONDS, SHOTS, STATE, project_dirs
 
 log = logging.getLogger("jarvis.runner")
 SESSIONS = STATE / "sessions.json"
@@ -51,6 +51,11 @@ Sanjar is away from the computer and won't approve anything, so work on your own
 {NEVER_DO}
 - If you change something visible in a web app, start it (or use the running one) and save a
   screenshot of the result as a PNG in {shots}/ (e.g. with headless Chrome or Playwright).
+- Never touch ~/Documents, ~/Desktop or ~/Downloads (not even `ls`): macOS asks for permission
+  there and the command hangs forever, since nobody is at the Mac to click Allow. If a note or
+  memory says to put files there, skip that step and mention it in your summary.
+- To send Sanjar a file (an APK, a PDF...), run:
+  {HERE / ".venv/bin/python"} {HERE / "scripts/send_file.py"} <file> "<caption>"
 - If you truly can't continue without a decision from Sanjar, stop and make the LAST line of
   your final message: {NEEDS_ME} <one short question>
 - Finish with a short plain summary (2-4 sentences): what you changed, which files, whether
