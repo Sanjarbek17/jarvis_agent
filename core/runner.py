@@ -73,11 +73,76 @@ def _step_text(block: dict) -> str:
     return name.removeprefix("mcp__").replace("__", " ")
 
 
+def _when(ts: float) -> str:
+    mins = int((time.time() - ts) // 60)
+    return "just now" if mins < 1 else f"{mins} min ago" if mins < 120 else f"{mins // 60} h ago"
+
+
+def _tool_output(content) -> str:
+    if isinstance(content, list):
+        content = "\n".join(c.get("text", "") for c in content if isinstance(c, dict))
+    return str(content or "")
+
+
+def worker_log(project: str, ref: str = "") -> Path | None:
+    """The worker log for a ticket of this project, or its newest one."""
+    if ref:
+        path = LOGS / f"{project}-{ref.strip().lower()}.jsonl"
+        return path if path.exists() else None
+    logs = sorted(LOGS.glob(f"{project}-*.jsonl"), key=lambda p: p.stat().st_mtime)
+    return logs[-1] if logs else None
+
+
+def progress_text(path: Path, running: bool, steps: int = 12) -> str:
+    """What a worker did and is doing, from its stream-json log: start, last steps, the command
+    still running (and its latest output), and the result if it's finished."""
+    done_steps, open_calls, last_out, said, result, started = [], {}, "", "", None, None
+    for line in path.read_text(errors="replace").splitlines():
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not started and e.get("timestamp"):
+            started = e["timestamp"]
+        kind = e.get("type")
+        if kind == "assistant":
+            for b in e["message"].get("content", []):
+                if b.get("type") == "tool_use":
+                    open_calls[b.get("id")] = _step_text(b)
+                    done_steps.append(_step_text(b))
+                elif b.get("type") == "text" and b.get("text", "").strip():
+                    said = b["text"].strip()
+        elif kind == "user":
+            for b in e["message"].get("content", []) if isinstance(e["message"].get("content"), list) else []:
+                if b.get("type") == "tool_result":
+                    open_calls.pop(b.get("tool_use_id"), None)
+                    last_out = _tool_output(b.get("content"))
+        elif kind == "result":
+            result = e
+    ticket = path.stem.rsplit("-", 1)[1]
+    lines = [f"Worker log for {ticket} ({path.stem.rsplit('-', 1)[0]}): "
+             f"{'still running' if running and not result else 'finished' if result else 'stopped (no result)'}, "
+             f"last activity {_when(path.stat().st_mtime)}" + (f", started {started[:16].replace('T', ' ')} UTC" if started else "")]
+    if result:
+        mins = (result.get("duration_ms") or 0) // 60000
+        lines.append(f"Result after {mins} min ({'error' if result.get('is_error') else 'ok'}): "
+                     f"{(result.get('result') or '')[-1200:]}")
+    lines.append(f"Last steps (of {len(done_steps)}):" + "".join(f"\n- {' '.join(s.split())}" for s in done_steps[-steps:]))
+    if open_calls and not result:
+        lines.append("Still waiting on: " + "; ".join(" ".join(s.split()) for s in open_calls.values()))
+    if said and not result:
+        lines.append(f"Worker's last words: {said[-500:]}")
+    if last_out.strip() and not result:
+        lines.append(f"Latest tool output (end):\n{last_out.strip()[-1200:]}")
+    return "\n".join(lines)
+
+
 class Runner:
     def __init__(self, notify: Notify):
         self.notify = notify
         self.running: dict[str, asyncio.Task] = {}      # project -> worker
         self.procs: dict[str, asyncio.subprocess.Process] = {}
+        self.current: dict[str, Ticket] = {}            # project -> ticket being worked on
 
     async def run_forever(self):
         await self._recover()
@@ -105,6 +170,16 @@ class Runner:
             self.running[t.project] = task
             task.add_done_callback(lambda _t, p=t.project: self.running.pop(p, None))
 
+    def progress(self, project: str, ticket: str = "") -> str:
+        """For the worker_progress tool: the live log of a project's worker (or a past ticket's)."""
+        name = next((p for p in {*self.current, *(l.stem.rsplit("-", 1)[0] for l in LOGS.glob("*-*.jsonl"))}
+                     if p.lower() == project.strip().lower()), project)
+        current = self.current.get(name)
+        path = worker_log(name, ticket or (current.ref if current else ""))
+        if not path:
+            return f"No worker log for {project!r}" + (f" ticket {ticket}" if ticket else "") + "."
+        return progress_text(path, running=current is not None and path.stem.endswith(current.ref))
+
     def stop_project(self, project: str) -> bool:
         proc = self.procs.get(project)
         if proc and proc.returncode is None:
@@ -117,6 +192,7 @@ class Runner:
         shots = SHOTS / card.ref
         shots.mkdir(exist_ok=True)
         log.info("start %s in %s", card.line(), dirs[0])
+        self.current[card.project] = card
         await board.update(card, jarvis="Working", note="starting", stage="doing")
 
         cmd = ["claude", "-p", _worker_prompt(card, shots), "--output-format", "stream-json",
@@ -138,6 +214,7 @@ class Runner:
             self.procs[card.project] = proc
             while line := await proc.stdout.readline():
                 logfile.write(line.decode(errors="replace"))
+                logfile.flush()   # worker_progress reads it live
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
@@ -165,6 +242,7 @@ class Runner:
         finally:
             logfile.close()
             self.procs.pop(card.project, None)
+            self.current.pop(card.project, None)
 
         photos = sorted(shots.glob("*.png"))
         question = ""

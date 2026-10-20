@@ -26,6 +26,7 @@ class Hooks:
     send_photo: Callable[[Path, str], Awaitable[None]]
     hang_up: Callable[[], Awaitable[None]]
     call_contact: Callable[[str, str], Awaitable[str]]
+    worker_progress: Callable[[str, str], str]
 
 
 hooks = Hooks()
@@ -39,10 +40,14 @@ async def take_screenshot(url: str = "") -> Path:
     else:
         cmd = ["screencapture", "-x", str(path)]
     proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL,
-                                                stderr=asyncio.subprocess.DEVNULL)
-    await asyncio.wait_for(proc.wait(), 60)
+                                                stderr=asyncio.subprocess.PIPE)
+    _, err = await asyncio.wait_for(proc.communicate(), 60)
     if not path.exists():
-        raise RuntimeError("screenshot failed")
+        why = err.decode(errors="replace").strip()[-300:] or f"exit code {proc.returncode}"
+        if not url and "could not create image" in why.lower():
+            why += (" (macOS blocks screen capture for Jarvis: it needs Screen Recording permission in "
+                    "System Settings > Privacy & Security for the app that runs it, and the display must be awake)")
+        raise RuntimeError(why)
     return path
 
 
@@ -108,9 +113,20 @@ def make_server(source: str) -> MCPServer:
         return f"{t.ref} is queued again with the answer"
 
     @server.tool()
+    async def worker_progress(project: str, ticket: str = "") -> str:
+        """How a Claude Code worker is doing, read from its live log: running or finished, how long,
+        its last steps, the command it's waiting on and that command's latest output (e.g. a slow
+        build). ticket: a ref for an older run; empty = the project's current or latest run."""
+        return hooks.worker_progress(project, ticket)
+
+    @server.tool()
     async def screenshot(url: str = "") -> str:
         """Send Sanjar a screenshot on Telegram: of a web page if url is given, else of the Mac screen."""
-        path = await take_screenshot(url)
+        try:
+            path = await take_screenshot(url)
+        except Exception as e:
+            log.warning("screenshot failed: %s", e)
+            return f"Screenshot failed: {e}"
         await hooks.send_photo(path, url or "Mac screen")
         return "Sent to Telegram"
 

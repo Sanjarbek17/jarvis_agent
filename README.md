@@ -30,7 +30,8 @@ at login, restarts if it crashes, and keeps the Mac awake with `caffeinate`.
 - stop for good: `launchctl bootout gui/$(id -u)/com.sanjar.jarvis`
 - start again: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.sanjar.jarvis.plist`
 - by hand (agent stopped): `uv run jarvis.py` or `uv run jarvis.py --call`
-- logs: `var/logs/jarvis.log`; each worker run: `var/logs/<project>-<ticket ref>.jsonl`
+- logs: `var/logs/jarvis.log`; each worker run: `var/logs/<project>-<ticket ref>.jsonl` (Jarvis
+  reads these itself when you ask how a ticket is going)
 
 Telegram: plain text or a voice message = talk to Jarvis, `/status [project]`, `/stop <project>`, `/call`, `/transcript`.
 

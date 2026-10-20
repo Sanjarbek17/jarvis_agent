@@ -373,6 +373,7 @@ async def main():
     tools.hooks.send_photo = send_photo
     tools.hooks.hang_up = hang_up
     tools.hooks.call_contact = call_contact
+    tools.hooks.worker_progress = runner.progress
     background = [asyncio.create_task(tools.serve()), asyncio.create_task(runner.run_forever()),
                   asyncio.create_task(daily_call())]
     await calls.start()
