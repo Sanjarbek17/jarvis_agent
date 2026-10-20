@@ -1,14 +1,16 @@
 """Claude as Jarvis's brain: one long-running `claude -p` session per conversation.
 
-It only has the Jarvis tools (add_task, get_status, ...) served by tools.py, so it
-manages the board and talks, while the runner's workers do the actual project work.
+It has the Jarvis tools (add_task, get_status, ...) served by tools.py, plus read-only file
+tools (Read, Glob, Grep) inside the project folders, so it manages the board, talks and can look
+things up itself, while the runner's workers do the actual project work.
+The guest brain (calls to other people) has none of these, only hang_up.
 """
 import asyncio
 import json
 import logging
 from typing import AsyncIterator
 
-from .config import HERE, TOOLS_PORT, projects_text
+from .config import DEV, HERE, PROJECTS, TOOLS_PORT, projects_text
 
 log = logging.getLogger("jarvis.brain")
 
@@ -42,6 +44,11 @@ Status always comes from your tools, never from memory.
   "maybe" matches, ask him which one; never guess. The other person's reply comes back to him
   as a transcript in Telegram; if he's on a call with you, the call to X starts after he hangs up
 - if it's unclear which project, ask him briefly; don't queue duplicates
+
+You can read files yourself (Read, Glob, Grep), read-only, inside his project folders and your
+own folder (worker logs are in var/logs). Use that for questions you can answer by looking
+("what's in the README", "which port does the backend use", "is X done in the code"); anything
+that changes files or runs commands is a ticket. .env files are off limits.
 
 His projects (folders are inside ~/dev):
 {projects_text()}
@@ -77,6 +84,17 @@ Everything you get is what {name} says on the call. Everything you write is spok
 
 
 PORTS = {"call": TOOLS_PORT, "chat": TOOLS_PORT + 1, "guest": TOOLS_PORT + 2}
+SECRETS = ["Read(**/.env)", "Read(**/.env.*)", "Grep(**/.env)", "Grep(**/.env.*)"]
+
+
+def _file_access() -> list[str]:
+    """claude flags: read-only file tools in every project folder (claude's cwd is Jarvis's own).
+    Not allow-listed, so reads outside these folders are refused instead of prompted."""
+    dirs = sorted({str(DEV / f) for p in PROJECTS.values() for f in p.get("folders", []) if (DEV / f).is_dir()})
+    flags = ["--tools", "Read,Glob,Grep", "--disallowedTools", *SECRETS]
+    for d in dirs:
+        flags += ["--add-dir", d]
+    return flags
 
 
 class Brain:
@@ -92,7 +110,8 @@ class Brain:
         self.proc = await asyncio.create_subprocess_exec(
             "claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
             "--verbose", "--include-partial-messages",
-            "--effort", "low", "--tools", "", "--setting-sources", "",
+            "--effort", "low", *(["--tools", ""] if self.mode == "guest" else _file_access()),
+            "--setting-sources", "",
             "--mcp-config", json.dumps(mcp), "--strict-mcp-config",
             "--allowedTools", "mcp__jarvis__*",
             "--no-session-persistence",

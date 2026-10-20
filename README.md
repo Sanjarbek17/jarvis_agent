@@ -35,6 +35,10 @@ at login, restarts if it crashes, and keeps the Mac awake with `caffeinate`.
 
 Telegram: plain text or a voice message = talk to Jarvis, `/status [project]`, `/stop <project>`, `/call`, `/transcript`.
 
+Reading files: Jarvis can look things up itself (read-only: Read, Glob, Grep) in every project
+folder from `config/projects.json` and its own folder, e.g. "what port does the taxi backend use".
+No `.env` files, nothing outside those folders; changing anything is still a ticket.
+
 Calling other people: "call Olimjon and tell him ..." (by message or on a call). Jarvis looks the
 name up in the Jarvis account's Telegram contacts and chats (or takes an @username), asks if it's
 not sure who, calls them with a brain that can only deliver the message and hang up, and sends
