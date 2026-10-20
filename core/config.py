@@ -1,0 +1,67 @@
+"""Settings shared by every part of Jarvis."""
+import json
+import os
+import socket
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+HERE = Path(__file__).parent.parent      # the jarvis folder
+VAR = HERE / "var"                       # everything made while running (not in git)
+SESSION = VAR / "jarvis"                 # Telegram login of the Jarvis account (.session)
+load_dotenv(HERE / ".env")
+
+# IPv6 to Google here takes 1-10 s and times out the Gemini handshake; IPv4 takes 0.1 s
+_getaddrinfo = socket.getaddrinfo
+socket.getaddrinfo = lambda host, port, family=0, *a, **kw: _getaddrinfo(host, port, socket.AF_INET, *a, **kw)
+
+OWNER_ID = int(os.environ["OWNER_ID"])
+TG_API_ID = int(os.environ["TG_API_ID"])
+TG_API_HASH = os.environ["TG_API_HASH"]
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+NOTION_TOKEN = os.environ["NOTION_TOKEN"]
+
+NOTION_DB = "686978f3d9b9482f90a79172c827bc5c"   # "Jarvis Tasks"
+NOTION_DB_URL = "https://app.notion.com/p/686978f3d9b9482f90a79172c827bc5c"
+
+DEV = Path.home() / "dev"
+PROJECTS: dict[str, dict] = json.loads((HERE / "config" / "projects.json").read_text())
+
+STATE = VAR / "state"            # per-project Claude sessions, etc.
+SHOTS = VAR / "shots"            # screenshots to send to me
+LOGS = VAR / "logs"
+for d in (STATE, SHOTS, LOGS):
+    d.mkdir(exist_ok=True)
+
+# voice
+TRANSCRIBE_MODEL = "gemini-3.5-transcribe-live"
+TTS_MODEL = "gemini-3.8-live"      # Live model used as a reader: no daily limit on the free plan
+TTS_VOICE = "Charon"
+CALL_RATE = 48000                 # Telegram call audio, mono s16le
+
+# tools server for the Claude brain
+TOOLS_PORT = 8775
+
+# runner
+POLL_SECONDS = 10
+MAX_WORKERS = 3                   # different projects at the same time
+NEVER_DO = """Never: delete files outside this project, run `rm -rf` on broad paths, force-push or
+rewrite git history on shared branches, push to main/master, deploy to production servers,
+touch anything involving money or payments, or change system settings."""
+
+
+def project_dirs(project: str, folder: str = "") -> list[Path]:
+    """Folders a task for this project works in. `folder` (inside ~/dev) overrides the default."""
+    if folder:
+        path = (DEV / folder).resolve()
+        if path.is_dir() and DEV in [path, *path.parents]:
+            return [path]
+    dirs = [DEV / f for f in PROJECTS.get(project, {}).get("folders", [])]
+    return [d for d in dirs if d.is_dir()] or [DEV]
+
+
+def projects_text() -> str:
+    lines = []
+    for name, p in PROJECTS.items():
+        lines.append(f"- {name}: {p['about']} (folders: {', '.join(p['folders']) or 'unknown'})")
+    return "\n".join(lines)
