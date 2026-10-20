@@ -1,8 +1,9 @@
-"""Runner loop: picks "To do" cards off the Notion board and runs a Claude Code worker for each.
+"""Runner loop: picks tickets marked "Queued" in the Jarvis column of each project's Notion
+board and runs a Claude Code worker for each.
 
-One task at a time per project (they'd edit the same files), up to MAX_WORKERS projects
+One ticket at a time per project (they'd edit the same files), up to MAX_WORKERS projects
 at once. Each project keeps its own Claude session, so it remembers earlier tasks there.
-Steps go to the card live; Done / Failed / Needs me go to Sanjar via `notify`.
+Steps go to the ticket live; Done / Failed / Needs me go to Sanjar via `notify`.
 """
 import asyncio
 import json
@@ -12,15 +13,15 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from . import board
-from .board import Card
+from .board import Ticket
 from .config import LOGS, MAX_WORKERS, NEVER_DO, POLL_SECONDS, SHOTS, STATE, project_dirs
 
 log = logging.getLogger("jarvis.runner")
 SESSIONS = STATE / "sessions.json"
 NEEDS_ME = "NEEDS ME:"
 
-# notify(card, kind, text, photos) — kind is "done", "failed" or "needs_me"
-Notify = Callable[[Card, str, str, list[Path]], Awaitable[None]]
+# notify(ticket, kind, text, photos) — kind is "done", "failed" or "needs_me"
+Notify = Callable[[Ticket, str, str, list[Path]], Awaitable[None]]
 
 
 def _load_sessions() -> dict[str, str]:
@@ -36,11 +37,15 @@ def _save_session(project: str, session_id: str) -> None:
     SESSIONS.write_text(json.dumps(sessions, indent=2))
 
 
-def _worker_prompt(card: Card, shots: Path) -> str:
-    return f"""Task {card.id} for project {card.project}, from Sanjar's Jarvis board.
+def _worker_prompt(t: Ticket, shots: Path) -> str:
+    return f"""Ticket {t.ref} for project {t.project}, from Sanjar's Notion board: {t.title}
+Ticket page: {t.url}
+{f"Latest note on it: {t.note}" if t.note else ""}
 
-Task: {card.task}
-Sanjar's own words: {card.my_words or '(none)'}
+First read the whole ticket page with your Notion tools (description, acceptance criteria,
+sub-tasks, and any earlier log or answer from Sanjar at the bottom). Don't change the ticket's
+Status or Jarvis columns in Notion; Jarvis does that. If this project has its own skill or
+notes for working on board tickets (CLAUDE.md, a <project>-board skill), follow them.
 
 Sanjar is away from the computer and won't approve anything, so work on your own until it's done.
 {NEVER_DO}
@@ -84,21 +89,21 @@ class Runner:
             await asyncio.sleep(POLL_SECONDS)
 
     async def _recover(self):
-        """Cards left in Doing by a crash/restart can't be resumed mid-step: mark them Failed."""
-        for card in await board.with_status("Doing"):
-            await board.update(card.page_id, status="Failed", finished=True,
-                               summary="Interrupted: Jarvis restarted while this was running. Move it to To do to retry.")
-            await self.notify(card, "failed", "Interrupted by a Jarvis restart.", [])
+        """Tickets left Working by a crash/restart can't be resumed mid-step: mark them Failed."""
+        for t in await board.with_jarvis("Working"):
+            await board.update(t, jarvis="Failed",
+                               note="Interrupted: Jarvis restarted while this was running. Set Jarvis to Queued to retry.")
+            await self.notify(t, "failed", "Interrupted by a Jarvis restart.", [])
 
     async def _tick(self):
-        for card in await board.todo():
+        for t in await board.queued():
             if len(self.running) >= MAX_WORKERS:
                 return
-            if card.project in self.running or not card.project:
+            if t.project in self.running:
                 continue
-            task = asyncio.create_task(self._work(card), name=f"worker:{card.project}")
-            self.running[card.project] = task
-            task.add_done_callback(lambda _t, p=card.project: self.running.pop(p, None))
+            task = asyncio.create_task(self._work(t), name=f"worker:{t.project}")
+            self.running[t.project] = task
+            task.add_done_callback(lambda _t, p=t.project: self.running.pop(p, None))
 
     def stop_project(self, project: str) -> bool:
         proc = self.procs.get(project)
@@ -107,12 +112,12 @@ class Runner:
             return True
         return False
 
-    async def _work(self, card: Card):
-        dirs = project_dirs(card.project, card.folder)
-        shots = SHOTS / card.id
+    async def _work(self, card: Ticket):
+        dirs = project_dirs(card.project)
+        shots = SHOTS / card.ref
         shots.mkdir(exist_ok=True)
         log.info("start %s in %s", card.line(), dirs[0])
-        await board.update(card.page_id, status="Doing", last_step="starting", started=True)
+        await board.update(card, jarvis="Working", note="starting", stage="doing")
 
         cmd = ["claude", "-p", _worker_prompt(card, shots), "--output-format", "stream-json",
                "--verbose", "--permission-mode", "bypassPermissions",
@@ -125,7 +130,7 @@ class Runner:
             cmd += ["--resume", session]
 
         result, is_error, last_push, pending = "", False, 0.0, []
-        logfile = (LOGS / f"{card.id}.jsonl").open("w")
+        logfile = (LOGS / f"{card.project}-{card.ref}.jsonl").open("w")
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, cwd=dirs[0], stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
@@ -155,7 +160,7 @@ class Runner:
             if proc.returncode and not result:
                 is_error, result = True, f"Worker exited with code {proc.returncode}."
         except Exception as e:
-            log.exception("worker crashed for %s", card.id)
+            log.exception("worker crashed for %s", card.ref)
             is_error, result = True, f"Worker crashed: {e}"
         finally:
             logfile.close()
@@ -167,15 +172,15 @@ class Runner:
         if lines and lines[-1].strip().upper().startswith(NEEDS_ME):
             question = lines[-1].split(":", 1)[1].strip()
         status, kind = ("Needs me", "needs_me") if question else ("Failed", "failed") if is_error else ("Done", "done")
-        await board.update(card.page_id, status=status, summary=result[-1900:], finished=status != "Needs me",
-                           last_step=question or status.lower())
-        await board.append_log(card.page_id, [f"{status}: {result[-1800:]}"])
-        log.info("%s %s", card.id, status)
+        await board.update(card, jarvis=status, note=question or result[-1900:],
+                           stage="done" if status == "Done" else None)
+        await board.append_log(card.page_id, [f"Jarvis {status}: {result[-1800:]}"])
+        log.info("%s %s", card.ref, status)
         await self.notify(card, kind, question or result, photos)
 
-    async def _push_steps(self, card: Card, steps: list[str]):
+    async def _push_steps(self, card: Ticket, steps: list[str]):
         try:
-            await board.update(card.page_id, last_step=steps[-1])
+            await board.update(card, note=steps[-1])
             await board.append_log(card.page_id, [f"• {s}" for s in steps])
         except Exception:
-            log.warning("couldn't update steps on %s", card.id)
+            log.warning("couldn't update steps on %s", card.ref)

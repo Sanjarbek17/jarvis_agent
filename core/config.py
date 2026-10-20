@@ -21,8 +21,7 @@ TG_API_HASH = os.environ["TG_API_HASH"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 NOTION_TOKEN = os.environ["NOTION_TOKEN"]
 
-NOTION_DB = "686978f3d9b9482f90a79172c827bc5c"   # "Jarvis Tasks"
-NOTION_DB_URL = "https://app.notion.com/p/686978f3d9b9482f90a79172c827bc5c"
+PROJECTS_URL = "https://app.notion.com/p/39bb8d1c364a814486faef3db95d72e5"   # Notion "Projects" page
 
 DEV = Path.home() / "dev"
 PROJECTS: dict[str, dict] = json.loads((HERE / "config" / "projects.json").read_text())
@@ -63,5 +62,6 @@ def project_dirs(project: str, folder: str = "") -> list[Path]:
 def projects_text() -> str:
     lines = []
     for name, p in PROJECTS.items():
-        lines.append(f"- {name}: {p['about']} (folders: {', '.join(p['folders']) or 'unknown'})")
+        board = "" if p.get("board") else ", no board"
+        lines.append(f"- {name}: {p['about']} (folders: {', '.join(p['folders']) or 'unknown'}{board})")
     return "\n".join(lines)

@@ -13,7 +13,7 @@ import uvicorn
 from mcp.server.mcpserver import MCPServer
 
 from . import board
-from .config import PROJECTS, SHOTS, TOOLS_PORT
+from .config import SHOTS, TOOLS_PORT
 
 log = logging.getLogger("jarvis.tools")
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -47,41 +47,52 @@ def make_server(source: str) -> MCPServer:
     server = MCPServer("jarvis")
 
     @server.tool()
-    async def add_task(project: str, task: str, my_words: str, folder: str = "") -> str:
-        """Put a new task on Sanjar's Notion board; a Claude Code worker will do it.
+    async def add_task(project: str, task: str, my_words: str) -> str:
+        """Put a NEW ticket on the project's own Notion board, queued for Jarvis; a Claude Code
+        worker will do it. project: a known project name. task: short title. my_words: what
+        Sanjar actually said. For a ticket that already exists on the board, use queue_ticket."""
+        if project not in board.boards():
+            return f"Unknown project {project!r}. Known: {', '.join(board.boards())}"
+        t = await board.add_ticket(project, task, my_words, source)
+        return f"Added ticket {t.ref} to the {project} board and queued it: {task}"
 
-        project: one of the known project names. task: short title. my_words: what Sanjar
-        actually said. folder: only if the work is in a specific folder inside ~/dev.
-        """
-        if project not in PROJECTS:
-            return f"Unknown project {project!r}. Known: {', '.join(PROJECTS)}"
-        card = await board.add_task(project, task, my_words, source, folder)
-        return f"Added {card.id} to {project}: {task}"
+    @server.tool()
+    async def queue_ticket(project: str, ticket: str) -> str:
+        """Hand an EXISTING ticket on the project's board to Jarvis (sets its Jarvis column to Queued).
+        ticket: words from its title, or its ref. Returns the matches if it's ambiguous."""
+        if project not in board.boards():
+            return f"Unknown project {project!r}. Known: {', '.join(board.boards())}"
+        found = await board.find_open(project, ticket)
+        if len(found) != 1:
+            return (f"{len(found)} open tickets match {ticket!r}" +
+                    ("".join(f"\n- {t.ref} {t.title}" for t in found[:10]) if found else ". Try other words."))
+        t = found[0]
+        if t.jarvis in ("Queued", "Working"):
+            return f"{t.ref} is already {t.jarvis}: {t.title}"
+        await board.update(t, jarvis="Queued", note=f"queued from {source}")
+        return f"Queued {t.ref}: {t.title}"
 
     @server.tool()
     async def get_status(project: str = "") -> str:
-        """Current tasks (To do, Doing, Needs me, and finished in the last day). Empty project = all."""
+        """Jarvis's work: tickets Queued, Working, Needs me, and finished in the last day. Empty = all projects."""
         return await board.status_text(project)
 
     @server.tool()
     async def project_board(project: str, include_done: bool = False) -> str:
-        """Read a project's own older sprint board in Notion (planned tickets, not Jarvis tasks):
-        counts per status and the open tickets by sprint. To get one of them done, use add_task."""
-        db = PROJECTS.get(project, {}).get("board")
-        if not db:
-            return f"No sprint board known for {project!r}."
-        return await board.project_board(db, include_done)
+        """A project's whole board: counts per status and its open tickets by sprint (with refs)."""
+        if project not in board.boards():
+            return f"No board known for {project!r}."
+        return await board.project_board(project, include_done)
 
     @server.tool()
-    async def answer_task(card_id: str, answer: str) -> str:
-        """Give Sanjar's answer to a card waiting in "Needs me" (e.g. JT-4); the worker continues."""
-        card = await board.find(card_id)
-        if not card:
-            return f"No card {card_id}"
-        await board.update(card.page_id, status="To do",
-                           my_words=f"{card.my_words}\n\nSanjar's answer: {answer}")
-        await board.append_log(card.page_id, [f"Sanjar answered: {answer}"])
-        return f"{card.id} is back in To do with the answer"
+    async def answer_task(ticket_ref: str, answer: str) -> str:
+        """Give Sanjar's answer to a ticket waiting in "Needs me"; it's queued again and the worker continues."""
+        t = await board.find(ticket_ref)
+        if not t:
+            return f"No ticket {ticket_ref}"
+        await board.append_log(t.page_id, [f"Sanjar answered: {answer}"])
+        await board.update(t, jarvis="Queued", note=f"Sanjar's answer: {answer}")
+        return f"{t.ref} is queued again with the answer"
 
     @server.tool()
     async def screenshot(url: str = "") -> str:

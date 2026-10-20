@@ -5,7 +5,7 @@
 
 - Call: my voice -> Gemini transcribe -> Claude (call brain) -> Gemini voice -> call.
 - Telegram text from me -> Claude (chat brain) -> reply. /status, /stop <project>, /call, /transcript.
-- Runner picks "To do" cards from Notion; results come back here as notifications.
+- Runner picks tickets marked Queued (Jarvis column) on each project's Notion board.
 Only OWNER_ID is ever answered.
 """
 import asyncio
@@ -23,9 +23,9 @@ from pytgcalls.types.raw import AudioParameters
 from telethon import TelegramClient, events
 
 from core import board, tools
-from core.board import Card
+from core.board import Ticket
 from core.brain import Brain
-from core.config import CALL_RATE, LOGS, NOTION_DB_URL, OWNER_ID, PROJECTS, SESSION, STATE, TG_API_HASH, TG_API_ID
+from core.config import CALL_RATE, LOGS, OWNER_ID, PROJECTS, PROJECTS_URL, SESSION, STATE, TG_API_HASH, TG_API_ID
 from core.runner import Runner
 from core.voice import Ears, Mouth, split_sentences
 
@@ -186,16 +186,16 @@ async def send_photo(path: Path, caption: str):
     await tg.send_file(OWNER_ID, str(path), caption=caption[:1000])
 
 
-async def notify(card: Card, kind: str, text: str, photos: list[Path]):
+async def notify(card: Ticket, kind: str, text: str, photos: list[Path]):
     """Runner result: tell me on the call if I'm on one, and always leave it in Telegram."""
-    head = f"{EMOJI[kind]} {card.id} [{card.project}] {card.task}"
+    head = f"{EMOJI[kind]} {card.ref} [{card.project}] {card.title}"
     body = f"Question: {text}" if kind == "needs_me" else text
     await tg.send_message(OWNER_ID, f"{head}\n\n{body[:3500]}\n\n{card.url}",
                           silent=call is not None, link_preview=False)
     for p in photos[:5]:
-        await send_photo(p, f"{card.id} screenshot")
+        await send_photo(p, f"{card.ref} screenshot")
     if call:
-        call.tell(f"[UPDATE] {card.id} ({card.project}) is {kind.replace('_', ' ')}: {text[:800]}")
+        call.tell(f"[UPDATE] {card.title} ({card.project}) is {kind.replace('_', ' ')}: {text[:800]}")
 
 
 # --- Telegram ------------------------------------------------------------------------------
@@ -207,7 +207,7 @@ async def on_message(event):
         return
     if text.startswith("/status"):
         project = text.removeprefix("/status").strip()
-        await event.reply(await board.status_text(project) + f"\n\n{NOTION_DB_URL}", link_preview=False)
+        await event.reply(await board.status_text(project) + f"\n\n{PROJECTS_URL}", link_preview=False)
     elif text.startswith("/stop"):
         project = text.removeprefix("/stop").strip()
         await event.reply(f"Stopped {project}." if runner.stop_project(project)

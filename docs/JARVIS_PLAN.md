@@ -128,6 +128,13 @@ Phone (Telegram)  ──>  Telegram bot (runs on Mac, always on)
 - The Yes/No buttons below are dropped; a short "never do" list still applies
   (no deleting outside projects, no force-push, nothing with money).
 
+## Boards v3: each project's own board (decided 2026-10-20)
+- The central "Jarvis Tasks" database is retired. Tasks are tickets on each project's own board
+  under Notion "Projects" (the Jarvis project got its own "Jarvis — Board").
+- Each board has a **Jarvis** column (Queued / Working / Needs me / Done / Failed) and a
+  **Jarvis note** column. Only Queued tickets are picked up; the rest of the backlog is left alone.
+- Workers read their ticket page themselves through the Notion MCP tools.
+
 ## Call flow v3: Claude is the brain (decided 2026-10-20)
 
 Gemini does no thinking. It only turns my voice into text and Claude's text into voice.
