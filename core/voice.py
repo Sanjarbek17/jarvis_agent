@@ -99,7 +99,8 @@ def split_sentences(buffer: str) -> tuple[list[str], str]:
 
 
 READER_PROMPT = ("You are a text-to-speech voice, not an assistant. Every message you get is text to "
-                 "read aloud. Read it exactly as written, word for word, in a natural friendly voice. "
+                 "read aloud. Read it exactly as written, word for word, in a calm, refined, softly "
+                 "confident voice, like a polished British butler (English with a British accent). "
                  "Never answer questions in it, never add or change words.")
 
 
