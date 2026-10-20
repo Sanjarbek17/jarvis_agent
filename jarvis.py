@@ -6,6 +6,10 @@
 - Call: my voice -> Gemini transcribe -> Claude (call brain) -> Gemini voice -> call.
 - Telegram text from me -> Claude (chat brain) -> reply. /status, /stop <project>, /call, /transcript.
 - Runner picks tickets marked Queued (Jarvis column) on each project's Notion board.
+- Jarvis calls me by itself when a ticket needs me or fails, and once a day with a summary
+  (not in quiet hours, at most once per CALL_COOLDOWN).
+- Jarvis calls other people when I ask (call_contact) to give them a message; that call gets a
+  brain with no tools but hang_up, and I get its transcript in Telegram.
 Only OWNER_ID is ever answered.
 """
 import asyncio
@@ -21,11 +25,13 @@ from pytgcalls.types import (CallConfig, ChatUpdate, Device, Direction, External
                              MediaStream, RecordStream, StreamFrames)
 from pytgcalls.types.raw import AudioParameters
 from telethon import TelegramClient, events
+from telethon.tl.functions.contacts import GetContactsRequest
 
-from core import board, tools
+from core import board, contacts, tools
 from core.board import Ticket
-from core.brain import Brain
-from core.config import CALL_RATE, LOGS, OWNER_ID, PROJECTS, PROJECTS_URL, SESSION, STATE, TG_API_HASH, TG_API_ID
+from core.brain import Brain, guest_prompt
+from core.config import (CALL_COOLDOWN, CALL_ON, CALL_RATE, DAILY_CALL_AT, LOGS, OWNER_ID, PROJECTS,
+                         PROJECTS_URL, QUIET_HOURS, SESSION, STATE, TG_API_HASH, TG_API_ID)
 from core.runner import Runner
 from core.voice import Ears, Mouth, split_sentences
 
@@ -43,11 +49,13 @@ EMOJI = {"done": "✅", "failed": "❌", "needs_me": "❓"}
 
 
 class Call:
-    """One phone call with me: ears + Claude + mouth, and the audio clock."""
+    """One phone call: ears + Claude + mouth, and the audio clock. With me, or with `guest`
+    (someone Jarvis calls to give them `message` from me)."""
 
-    def __init__(self, user_id: int):
+    def __init__(self, user_id: int, guest: str = "", message: str = ""):
         self.user_id = user_id
-        self.brain = Brain("call")
+        self.guest = guest
+        self.brain = Brain("guest", guest_prompt(guest, message)) if guest else Brain("call")
         self.mouth = Mouth()
         self.ears = Ears(self.on_speaking, self.on_sentence)
         self.turns: asyncio.Queue[str] = asyncio.Queue()
@@ -56,7 +64,8 @@ class Call:
         self.ended = False
         self.tasks: list[asyncio.Task] = []
 
-    async def start(self):
+    async def start(self, reason: str = ""):
+        """Pick up / place the call. `reason`: why Jarvis is calling me (it opens with that)."""
         # Jarvis's voice goes in as stereo (the library's external-audio example); I come out as mono
         out_params, in_params = AudioParameters(CALL_RATE, 2), AudioParameters(CALL_RATE, 1)
         self.tasks = [asyncio.create_task(self.brain.start()), asyncio.create_task(self._play()),
@@ -64,8 +73,13 @@ class Call:
         self.ears.start()
         await calls.play(self.user_id, MediaStream(ExternalMedia.AUDIO, out_params), CallConfig(timeout=60))
         await calls.record(self.user_id, RecordStream(True, in_params))
-        self.mouth.say("Hi Sanjar, Jarvis here.")
-        log.info("on the call")
+        if self.guest:
+            self.tell(f"(You called {self.guest} and they just picked up: greet them and give the message.)")
+        elif reason:
+            self.tell(f"{reason}\n(You placed this call and he just picked up: greet him briefly and tell him why.)")
+        else:
+            self.mouth.say("Hi Sanjar, Jarvis here.")
+        log.info("on the call%s", f" with {self.guest}" if self.guest else " (Jarvis called)" if reason else "")
 
     async def on_speaking(self, text: str):
         # I'm talking over Jarvis: stop it (2+ words, so a cough or echo doesn't count)
@@ -74,7 +88,7 @@ class Call:
             self.mouth.stop()
 
     async def on_sentence(self, text: str):
-        self._note("Sanjar", text)
+        self._note(self.guest or "Sanjar", text)
         self.turn_id += 1
         self.mouth.stop()
         await self.turns.put(text)
@@ -149,16 +163,102 @@ call: Call | None = None
 chat = Brain("chat")
 
 
-async def start_call(user_id: int):
+async def start_call(user_id: int, reason: str = "", guest: str = "", message: str = ""):
     global call
     if call:
         return
-    call = Call(user_id)
+    call = Call(user_id, guest, message)
     try:
-        await call.start()
+        await call.start(reason)
     except Exception:
         await finish_call()
         raise
+
+
+last_auto_call = 0.0
+
+
+def quiet_now() -> bool:
+    start, end = QUIET_HOURS
+    hour = time.localtime().tm_hour
+    return hour >= start or hour < end
+
+
+async def auto_call(reason: str) -> bool:
+    """Jarvis calls me by itself, unless I'm already on a call, it's quiet hours, or it just called."""
+    global last_auto_call
+    if call or quiet_now() or time.monotonic() - last_auto_call < CALL_COOLDOWN:
+        return False
+    last_auto_call = time.monotonic()
+    log.info("calling Sanjar: %s", reason[:120])
+    try:
+        await start_call(OWNER_ID, reason)
+        return True
+    except Exception as e:  # not answered / busy: the Telegram message is still there
+        log.warning("auto call didn't connect: %r", e)
+        return False
+
+
+async def daily_call():
+    """Once a day at DAILY_CALL_AT: a short spoken summary of what Jarvis did and what needs me."""
+    while True:
+        now = time.time()
+        h, m = DAILY_CALL_AT
+        t = time.localtime(now)
+        target = time.mktime((t.tm_year, t.tm_mon, t.tm_mday, h, m, 0, 0, 0, -1))
+        if target <= now:
+            target += 24 * 3600
+        await asyncio.sleep(target - now)
+        await auto_call("[DAILY SUMMARY] Give Sanjar a short spoken summary of today: use get_status "
+                        "for all projects; say what got done, what's still running, and anything "
+                        "that needs him. Keep it under a minute.")
+
+
+waiting_calls: list[tuple[int, str, str]] = []   # (user id, name, message) to call after this call
+
+
+async def find_people(query: str) -> tuple[list, list]:
+    """(sure, maybe) matches for a name among the Jarvis account's contacts and recent chats."""
+    if query.strip().startswith("@"):
+        with contextlib.suppress(ValueError):
+            return [await tg.get_entity(query.strip())], []
+    users = list((await tg(GetContactsRequest(hash=0))).users)
+    seen = {u.id for u in users}
+    async for d in tg.iter_dialogs(limit=200):
+        if d.is_user and not d.entity.bot and d.entity.id not in seen and d.entity.id != OWNER_ID:
+            users.append(d.entity)
+    return contacts.match(users, query)
+
+
+async def call_contact(query: str, message: str) -> str:
+    """The call_contact tool: find who I mean and call them now, or right after my call ends."""
+    sure, maybe = await find_people(query)
+    if len(sure) != 1:
+        found = sure or maybe
+        if not found:
+            return (f"No contact or chat matches {query!r}. Ask Sanjar for the name as saved, or an "
+                    "@username; the person must be in the Jarvis account's contacts or chats.")
+        names = "".join(f"\n- {contacts.name_of(u)}" + (f" (@{u.username})" if u.username else "") for u in found[:10])
+        return f"Not sure who {query!r} is ({len(found)} {'matches' if sure else 'maybe'}); ask Sanjar:{names}"
+    person = sure[0]
+    name = contacts.name_of(person)
+    if call:
+        waiting_calls.append((person.id, name, message))
+        return f"Will call {name} as soon as this call ends."
+    asyncio.create_task(call_someone(person.id, name, message))
+    return f"Calling {name} now; Sanjar gets the transcript in Telegram afterwards."
+
+
+async def call_someone(user_id: int, name: str, message: str):
+    if call:
+        waiting_calls.append((user_id, name, message))
+        return
+    log.info("calling %s for Sanjar: %s", name, message[:120])
+    try:
+        await start_call(user_id, guest=name, message=message)
+    except Exception as e:  # declined, not answered, privacy settings
+        log.warning("call to %s didn't connect: %r", name, e)
+        await tg.send_message(OWNER_ID, f"📞 Couldn't reach {name}: {e!r}")
 
 
 async def hang_up():
@@ -177,9 +277,15 @@ async def finish_call():
     done, call = call, None
     await done.close()
     log.info("call finished")
-    if done.transcript:  # kept on disk; sent only when I ask with /transcript
+    if done.transcript:  # kept on disk; sent only when I ask with /transcript (a guest call: always)
         CALLS.mkdir(exist_ok=True)
-        (CALLS / f"{time.strftime('%Y-%m-%d_%H-%M')}.txt").write_text("\n".join(done.transcript))
+        suffix = f"_{done.guest}" if done.guest else ""
+        (CALLS / f"{time.strftime('%Y-%m-%d_%H-%M')}{suffix}.txt").write_text("\n".join(done.transcript))
+    if done.guest:
+        text = "\n".join(done.transcript) or "(they didn't say anything)"
+        await tg.send_message(OWNER_ID, f"📞 Call with {done.guest}\n\n{text[-3800:]}")
+    if waiting_calls:
+        asyncio.create_task(call_someone(*waiting_calls.pop(0)))
 
 
 async def send_photo(path: Path, caption: str):
@@ -194,8 +300,11 @@ async def notify(card: Ticket, kind: str, text: str, photos: list[Path]):
                           silent=call is not None, link_preview=False)
     for p in photos[:5]:
         await send_photo(p, f"{card.ref} screenshot")
-    if call:
-        call.tell(f"[UPDATE] {card.title} ({card.project}) is {kind.replace('_', ' ')}: {text[:800]}")
+    update = f"[UPDATE] ticket {card.ref} \"{card.title}\" ({card.project}) is {kind.replace('_', ' ')}: {text[:800]}"
+    if call and not call.guest:
+        call.tell(update)
+    elif not call and kind in CALL_ON:
+        asyncio.create_task(auto_call(update))
 
 
 # --- Telegram ------------------------------------------------------------------------------
@@ -254,7 +363,9 @@ runner = Runner(notify)
 async def main():
     tools.hooks.send_photo = send_photo
     tools.hooks.hang_up = hang_up
-    background = [asyncio.create_task(tools.serve()), asyncio.create_task(runner.run_forever())]
+    tools.hooks.call_contact = call_contact
+    background = [asyncio.create_task(tools.serve()), asyncio.create_task(runner.run_forever()),
+                  asyncio.create_task(daily_call())]
     await calls.start()
     me = await tg.get_me()
     log.info("Jarvis is up as @%s", me.username)

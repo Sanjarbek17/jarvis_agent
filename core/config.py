@@ -38,6 +38,12 @@ TTS_MODEL = "gemini-3.8-live"      # Live model used as a reader: no daily limit
 TTS_VOICE = "Charon"
 CALL_RATE = 48000                 # Telegram call audio, mono s16le
 
+# Jarvis calling me by itself
+CALL_ON = {"needs_me", "failed"}  # runner results worth a phone call (done ones only go to Telegram)
+DAILY_CALL_AT = (20, 0)           # daily summary call, Mac local time
+QUIET_HOURS = (23, 8)             # no calls from 23:00 to 08:00, Telegram only
+CALL_COOLDOWN = 10 * 60           # at most one automatic call per 10 minutes
+
 # tools server for the Claude brain
 TOOLS_PORT = 8775
 

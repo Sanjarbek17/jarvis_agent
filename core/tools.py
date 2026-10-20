@@ -1,6 +1,7 @@
 """Jarvis tools for the Claude brain, served as MCP over local HTTP from inside jarvis.py.
 
-Two servers: one for the call brain (has hang_up) and one for the Telegram brain.
+Three servers: the call brain (has hang_up), the Telegram brain, and the guest brain for calls
+Jarvis places to other people (only hang_up, so the person on the line can't use the others).
 The tools hold the Notion token and the Telegram session; Claude only sees results.
 """
 import asyncio
@@ -23,6 +24,7 @@ class Hooks:
     """Filled in by jarvis.py so tools can reach Telegram and the call."""
     send_photo: Callable[[Path, str], Awaitable[None]]
     hang_up: Callable[[], Awaitable[None]]
+    call_contact: Callable[[str, str], Awaitable[str]]
 
 
 hooks = Hooks()
@@ -45,6 +47,16 @@ async def take_screenshot(url: str = "") -> Path:
 
 def make_server(source: str) -> MCPServer:
     server = MCPServer("jarvis")
+
+    if source in ("Call", "Guest"):
+        @server.tool()
+        async def hang_up() -> str:
+            """End the phone call (after saying bye)."""
+            asyncio.create_task(hooks.hang_up())
+            return "Hanging up"
+
+    if source == "Guest":
+        return server
 
     @server.tool()
     async def add_task(project: str, task: str, my_words: str) -> str:
@@ -101,22 +113,22 @@ def make_server(source: str) -> MCPServer:
         await hooks.send_photo(path, url or "Mac screen")
         return "Sent to Telegram"
 
-    if source == "Call":
-        @server.tool()
-        async def hang_up() -> str:
-            """End the phone call (after saying bye)."""
-            asyncio.create_task(hooks.hang_up())
-            return "Hanging up"
+    @server.tool()
+    async def call_contact(contact: str, message: str) -> str:
+        """Phone someone on Telegram and give them a message from Sanjar by voice; Sanjar gets the
+        call's transcript afterwards. contact: their name as saved in contacts, or @username.
+        message: what to tell them, in Sanjar's words. Returns the matches if it's not clear who."""
+        return await hooks.call_contact(contact, message)
 
     return server
 
 
 async def serve() -> None:
-    """Run both tools servers until cancelled."""
+    """Run the tools servers until cancelled."""
     servers = []
-    for port, source in ((TOOLS_PORT, "Call"), (TOOLS_PORT + 1, "Telegram")):
+    for port, source in ((TOOLS_PORT, "Call"), (TOOLS_PORT + 1, "Telegram"), (TOOLS_PORT + 2, "Guest")):
         app = make_server(source).streamable_http_app(stateless_http=True, json_response=True)
         config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
         servers.append(uvicorn.Server(config).serve())
-    log.info("tools servers on ports %s and %s", TOOLS_PORT, TOOLS_PORT + 1)
+    log.info("tools servers on ports %s-%s", TOOLS_PORT, TOOLS_PORT + 2)
     await asyncio.gather(*servers)

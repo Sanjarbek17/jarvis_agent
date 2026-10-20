@@ -11,7 +11,7 @@ core/
   config.py          settings and paths
   voice.py           ears (Gemini transcribe) + mouth (Gemini Live reading text aloud)
   brain.py           Claude brain sessions (call + Telegram chat)
-  tools.py           tools the brain can use (MCP on 127.0.0.1:8775 / 8776)
+  tools.py           tools the brain can use (MCP on 127.0.0.1:8775-8777)
   board.py           Notion API: each project's board + its Jarvis column
   runner.py          picks Queued tickets and runs Claude Code workers
 config/projects.json project -> folders in ~/dev + its sprint board
@@ -33,6 +33,11 @@ at login, restarts if it crashes, and keeps the Mac awake with `caffeinate`.
 - logs: `var/logs/jarvis.log`; each worker run: `var/logs/<project>-<ticket ref>.jsonl`
 
 Telegram: plain text = talk to Jarvis, `/status [project]`, `/stop <project>`, `/call`, `/transcript`.
+
+Calling other people: "call Olimjon and tell him ..." (by message or on a call). Jarvis looks the
+name up in the Jarvis account's Telegram contacts and chats (or takes an @username), asks if it's
+not sure who, calls them with a brain that can only deliver the message and hang up, and sends
+you the transcript. Asked during a call with you, it calls them after you hang up.
 
 ## Boards
 
