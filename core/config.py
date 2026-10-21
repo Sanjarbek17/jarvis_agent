@@ -85,6 +85,13 @@ MAX_WORKERS = 3                   # different projects at the same time
 NEVER_DO = """Never: delete files outside this project, run `rm -rf` on broad paths, force-push or
 rewrite git history on shared branches, push to main/master, deploy to production servers,
 touch anything involving money or payments, or change system settings."""
+# the same rules for a ticket Sanjar allowed to push to main (see grants.py)
+NEVER_DO_MAIN_OK = """Never: delete files outside this project, run `rm -rf` on broad paths, force-push or
+rewrite git history on shared branches, deploy to production servers, touch anything involving
+money or payments, or change system settings.
+- Sanjar explicitly allowed THIS ticket to push / merge to main (or master). Push or merge only
+  the changes this ticket is about (e.g. the PRs it names), never force-push, and list exactly
+  what you pushed or merged (branch, PR numbers, commits) in your summary."""
 
 
 def project_dirs(project: str, folder: str = "") -> list[Path]:

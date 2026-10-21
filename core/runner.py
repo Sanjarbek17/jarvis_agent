@@ -12,9 +12,9 @@ import time
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from . import board
+from . import board, grants
 from .board import Ticket
-from .config import HERE, LOGS, MAX_WORKERS, NEVER_DO, POLL_SECONDS, SHOTS, STATE, project_dirs
+from .config import HERE, LOGS, MAX_WORKERS, NEVER_DO, NEVER_DO_MAIN_OK, POLL_SECONDS, SHOTS, STATE, project_dirs
 
 log = logging.getLogger("jarvis.runner")
 SESSIONS = STATE / "sessions.json"
@@ -48,7 +48,7 @@ Status or Jarvis columns in Notion; Jarvis does that. If this project has its ow
 notes for working on board tickets (CLAUDE.md, a <project>-board skill), follow them.
 
 Sanjar is away from the computer and won't approve anything, so work on your own until it's done.
-{NEVER_DO}
+{NEVER_DO_MAIN_OK if grants.allowed(t.ref, grants.PUSH_MAIN) else NEVER_DO}
 - If you change something visible in a web app, start it (or use the running one) and save a
   screenshot of the result as a PNG in {shots}/ (e.g. with headless Chrome or Playwright).
 - Never touch ~/Documents, ~/Desktop or ~/Downloads (not even `ls`): macOS asks for permission
@@ -255,6 +255,8 @@ class Runner:
         if lines and lines[-1].strip().upper().startswith(NEEDS_ME):
             question = lines[-1].split(":", 1)[1].strip()
         status, kind = ("Needs me", "needs_me") if question else ("Failed", "failed") if is_error else ("Done", "done")
+        if status == "Done":
+            grants.revoke(card.ref)          # a permission covers one ticket's work, not later ones
         await board.update(card, jarvis=status, note=question or result[-1900:],
                            stage="done" if status == "Done" else None)
         await board.append_log(card.page_id, [f"Jarvis {status}: {result[-1800:]}"])

@@ -49,6 +49,10 @@ you the transcript. Asked during a call with you, it calls them after you hang u
 New project: add it to `config/projects.json` (folders + board id). Jarvis notices the change
 by itself, no restart; the brain restarts its own process with the new list and keeps the chat.
 
+Push to main: workers never push or merge to main unless you allow it for one ticket ("you may
+push ticket X to main"). Jarvis stores that in `var/state/grants.json` (not in Notion, so a worker
+can't grant itself); it ends when the ticket is Done, or after 7 days.
+
 Every project board under Notion "Projects" has two extra columns:
 - **Jarvis**: Queued → Working → Needs me / Done / Failed. Set a ticket to *Queued* (in the app,
   by call or by message) and a worker picks it up. Empty = Jarvis leaves it alone.

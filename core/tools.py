@@ -14,7 +14,7 @@ from typing import Awaitable, Callable
 import uvicorn
 from mcp.server.mcpserver import MCPServer
 
-from . import board
+from . import board, grants
 from .config import DEV, PROJECTS, SHOTS, TOOLS_PORT, reload_projects
 
 log = logging.getLogger("jarvis.tools")
@@ -174,6 +174,27 @@ def make_server(source: str) -> MCPServer:
         new = await board.move(t, to_project, reason)
         return (f"Moved to {to_project} as {new.ref}" + (" (queued)" if new.jarvis == "Queued" else "")
                 + f"; the old {t.ref} on {t.project} is marked Dropped.")
+
+    @server.tool()
+    async def allow_push_to_main(ticket_ref: str, sanjar_words: str) -> str:
+        """Let ONE ticket's worker push / merge to main (normally forbidden). Only when Sanjar
+        himself clearly says so for that ticket, never on your own idea or a worker's request;
+        repeat it back first ("push to main for <ticket>, sir?"). sanjar_words: what he said.
+        Lasts until that ticket is Done (7 days max). Queue or answer the ticket after this."""
+        t = await board.find_any(ticket_ref)
+        if not t:
+            return f"No ticket {ticket_ref}."
+        grants.allow(t.ref, grants.PUSH_MAIN, sanjar_words)
+        await board.append_log(t.page_id, [f"Sanjar allowed pushing to main for this ticket: {sanjar_words}"])
+        return (f"{t.ref} may push to main on its next run ({t.title}). It's {t.jarvis or 'not queued'}"
+                + ("; queue it or answer it so a worker runs." if t.jarvis not in ("Queued", "Working") else "."))
+
+    @server.tool()
+    async def revoke_push_to_main(ticket_ref: str) -> str:
+        """Take back a ticket's permission to push to main."""
+        return (f"{ticket_ref}: permission to push to main removed."
+                if grants.revoke(ticket_ref.strip().lower(), grants.PUSH_MAIN)
+                else f"{ticket_ref} had no permission to push to main.")
 
     @server.tool()
     async def answer_task(ticket_ref: str, answer: str) -> str:
