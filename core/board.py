@@ -169,6 +169,80 @@ async def find(ref: str) -> Ticket | None:
     return None
 
 
+async def find_any(ref: str) -> Ticket | None:
+    """Any ticket on any board by its short ref, also ones Jarvis was never asked to do."""
+    if t := await find(ref):
+        return t
+    for project in boards():
+        for t in await _query(project):
+            if t.ref == ref.strip().lower():
+                return t
+    return None
+
+
+async def unqueue(t: Ticket, reason: str) -> None:
+    """Clear the Jarvis column: the runner leaves the ticket alone from now on."""
+    r = await _http.patch(f"/pages/{t.page_id}", json={"properties": {
+        "Jarvis": {"select": None}, "Jarvis note": _rich(reason)}})
+    r.raise_for_status()
+    await append_log(t.page_id, [f"Taken off Jarvis's queue: {reason}"])
+
+
+async def drop(t: Ticket, reason: str) -> str:
+    """Unqueue and mark the ticket Dropped on its board. Select-type Status columns get a
+    "Dropped" option (Notion adds it on first use); fixed status-type columns can't, so the
+    title gets a [dropped] prefix instead. Returns how it was marked."""
+    db = boards()[t.project]
+    kind, options = (await _schema(db))["status"]
+    props: dict = {"Jarvis": {"select": None}, "Jarvis note": _rich(f"dropped: {reason}")}
+    existing = next((o for o in options if o.lower() in ("dropped", "cancelled", "canceled", "won't do")), None)
+    if kind == "select" or existing:
+        props["Status"] = {kind: {"name": existing or "Dropped"}}
+        how = f"Status {existing or 'Dropped'}"
+    else:
+        title = (await _schema(db))["title"]
+        props[title] = {"title": [{"text": {"content": f"[dropped] {t.title}"[:200]}}]}
+        how = "title marked [dropped]"
+    r = await _http.patch(f"/pages/{t.page_id}", json={"properties": props})
+    r.raise_for_status()
+    _schemas.pop(db, None)          # a new "Dropped" option may have been added
+    await append_log(t.page_id, [f"Dropped: {reason}"])
+    return how
+
+
+async def body_lines(page_id: str) -> list[str]:
+    """The ticket page's text, block by block (plain text, no formatting)."""
+    r = await _http.get(f"/blocks/{page_id}/children", params={"page_size": 100})
+    r.raise_for_status()
+    lines = []
+    for b in r.json()["results"]:
+        text = "".join(x.get("plain_text", "") for x in (b.get(b["type"]) or {}).get("rich_text", []))
+        if text.strip():
+            lines.append(text)
+    return lines
+
+
+async def move(t: Ticket, to_project: str, reason: str) -> Ticket:
+    """Copy the ticket (title + text) to another project's board, then drop the original.
+    The copy is queued for Jarvis only if the original was waiting for it."""
+    db = boards()[to_project]
+    schema = await _schema(db)
+    props = {schema["title"]: {"title": [{"text": {"content": t.title[:200]}}]},
+             "Jarvis note": _rich(f"moved from {t.project} {t.ref}")}
+    if t.jarvis in ("Queued", "Needs me", "Failed"):
+        props["Jarvis"] = {"select": {"name": "Queued"}}
+    if todo := await _status_value(db, "todo"):
+        props["Status"] = todo
+    lines = await body_lines(t.page_id) + [f"Moved here from {t.project} ({t.ref}): {reason}"]
+    children = [{"object": "block", "type": "paragraph",
+                 "paragraph": {"rich_text": [{"text": {"content": line[:1900]}}]}} for line in lines[:100]]
+    r = await _http.post("/pages", json={"parent": {"database_id": db}, "properties": props, "children": children})
+    r.raise_for_status()
+    new = _ticket(to_project, r.json())
+    await drop(t, f"moved to {to_project} as {new.ref}: {reason}")
+    return new
+
+
 async def update(t: Ticket, *, jarvis: str | None = None, note: str | None = None,
                  stage: str | None = None) -> None:
     props = {}

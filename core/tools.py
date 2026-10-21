@@ -102,6 +102,49 @@ def make_server(source: str) -> MCPServer:
             return f"No board known for {project!r}."
         return await board.project_board(project, include_done)
 
+    async def _editable(ticket_ref: str) -> board.Ticket | str:
+        t = await board.find_any(ticket_ref)
+        if not t:
+            return f"No ticket {ticket_ref}. Use project_board to find its ref."
+        if t.jarvis == "Working":
+            return f"{t.ref} is being worked on right now; stop that project's worker first (/stop {t.project})."
+        return t
+
+    @server.tool()
+    async def unqueue_ticket(ticket_ref: str, reason: str) -> str:
+        """Take a ticket off Jarvis's queue (clears its Jarvis column), e.g. queued by mistake.
+        It stays on the board as it is; Jarvis just won't work on it."""
+        t = await _editable(ticket_ref)
+        if isinstance(t, str):
+            return t
+        await board.unqueue(t, reason)
+        return f"{t.ref} is off the queue: {t.title}"
+
+    @server.tool()
+    async def drop_ticket(ticket_ref: str, reason: str) -> str:
+        """Drop a ticket that isn't needed: off Jarvis's queue and marked Dropped on its board
+        (nothing is deleted; Sanjar can undo it in Notion)."""
+        t = await _editable(ticket_ref)
+        if isinstance(t, str):
+            return t
+        how = await board.drop(t, reason)
+        return f"Dropped {t.ref} ({how}): {t.title}"
+
+    @server.tool()
+    async def move_ticket(ticket_ref: str, to_project: str, reason: str) -> str:
+        """Move a ticket to another project's board, e.g. filed on the wrong board. The copy keeps
+        the title and text and is queued if the original was; the original is marked Dropped."""
+        if to_project not in board.boards():
+            return f"Unknown project {to_project!r}. Known: {', '.join(board.boards())}"
+        t = await _editable(ticket_ref)
+        if isinstance(t, str):
+            return t
+        if t.project == to_project:
+            return f"{t.ref} is already on the {to_project} board."
+        new = await board.move(t, to_project, reason)
+        return (f"Moved to {to_project} as {new.ref}" + (" (queued)" if new.jarvis == "Queued" else "")
+                + f"; the old {t.ref} on {t.project} is marked Dropped.")
+
     @server.tool()
     async def answer_task(ticket_ref: str, answer: str) -> str:
         """Give Sanjar's answer to a ticket waiting in "Needs me"; it's queued again and the worker continues."""

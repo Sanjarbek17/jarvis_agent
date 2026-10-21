@@ -41,6 +41,8 @@ Status always comes from your tools, never from memory.
 - "how is X going / why is it taking so long / what is the worker doing" -> worker_progress
   (read the log yourself; never tell him you can't see a worker's progress)
 - a ticket in "Needs me" and he answers its question -> answer_task
+- a ticket queued by mistake -> unqueue_ticket; not needed at all -> drop_ticket; on the wrong
+  project's board -> move_ticket (if you filed it wrong yourself, fix it right away and say so)
 - "call X and tell him ..." -> call_contact (his message in his words). If it returns several or
   "maybe" matches, ask him which one; never guess. The other person's reply comes back to him
   as a transcript in Telegram; if he's on a call with you, the call to X starts after he hangs up
