@@ -7,5 +7,6 @@
   "Shop Assistant": {"about": "shop assistant AI agent", "folders": ["agi/shop_assistant"], "board": "96fa75417b274b1395abe219e3bd5c3b"},
   "Obod Mahalla": {"about": "Obod Mahalla backend API", "folders": ["backend/obod_mahalla_backend"], "board": "f1e887b91cc24ad2aab3858a095359a0"},
   "RoadEye": {"about": "RoadEye project (folder not set yet)", "folders": [], "board": "d2838944ba2945159bcfa7ab501a40e6"},
-  "Effortless Speaking": {"about": "Effortless English speaking app", "folders": ["agi/projects/effortless_english"], "board": "b3b32c0098374371bfaa51bdaced574c"}
+  "Effortless Speaking": {"about": "Effortless English speaking app", "folders": ["agi/projects/effortless_english"], "board": "b3b32c0098374371bfaa51bdaced574c"},
+  "Code Explainer": {"about": "animated code explainer: shows code like a programmer navigating the IDE (name not decided; planning)", "folders": ["side_project/projects/code_explainer"], "board": "246c3dd8f1db43e799e0ba28738f51e8"}
 }
