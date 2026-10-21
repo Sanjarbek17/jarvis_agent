@@ -26,7 +26,9 @@ var/                 made while running, not in git: Telegram session, logs, sta
 Jarvis runs as a login agent (`~/Library/LaunchAgents/com.sanjar.jarvis.plist`): it starts
 at login, restarts if it crashes, and keeps the Mac awake with `caffeinate`.
 
-- restart: `pkill -f jarvis.py` (the agent starts it again)
+- restart: say "restart yourself" (Jarvis files a restart ticket), or by hand
+  `scripts/restart_when_idle.sh` (waits for workers and calls; see CLAUDE.md). Avoid `pkill -f jarvis.py`:
+  it kills running workers and the caffeinate helper
 - stop for good: `launchctl bootout gui/$(id -u)/com.sanjar.jarvis`
 - start again: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.sanjar.jarvis.plist`
 - by hand (agent stopped): `uv run jarvis.py` or `uv run jarvis.py --call`
