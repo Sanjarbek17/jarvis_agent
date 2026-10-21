@@ -15,10 +15,11 @@ import uvicorn
 from mcp.server.mcpserver import MCPServer
 
 from . import board
-from .config import SHOTS, TOOLS_PORT
+from .config import DEV, PROJECTS, SHOTS, TOOLS_PORT, reload_projects
 
 log = logging.getLogger("jarvis.tools")
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+EDITOR = "Antigravity IDE"
 
 
 class Hooks:
@@ -49,6 +50,35 @@ async def take_screenshot(url: str = "") -> Path:
                     "System Settings > Privacy & Security for the app that runs it, and the display must be awake)")
         raise RuntimeError(why)
     return path
+
+
+async def open_in_editor(project: str, path: str = "") -> str:
+    """Open a project's folders (or one file/subfolder inside them) in Antigravity on the Mac.
+    Only paths inside the project's own folders, so nothing private elsewhere gets opened."""
+    reload_projects()
+    name = next((n for n in PROJECTS if n.lower() == project.strip().lower()), None)
+    if not name:
+        return f"Unknown project {project!r}. Known: {', '.join(PROJECTS)}"
+    roots = [(DEV / f).resolve() for f in PROJECTS[name].get("folders", []) if (DEV / f).is_dir()]
+    if not roots:
+        return f"{name} has no folder on the Mac yet (config/projects.json)."
+    targets = roots
+    if path.strip():
+        rel = path.strip().removeprefix("/")
+        found = [p for root in roots if (p := (root / rel).resolve()).exists()
+                 and (p == root or root in p.parents)]
+        if not found:
+            return f"No {path!r} inside {name}'s folders ({', '.join(r.name for r in roots)})."
+        # a file opens in its project folder's window, so the folder tree is there too
+        root = next(r for r in roots if r == found[0] or r in found[0].parents)
+        targets = [root, found[0]] if found[0] != root else [root]
+    proc = await asyncio.create_subprocess_exec("open", "-a", EDITOR, *map(str, targets),
+                                                stderr=asyncio.subprocess.PIPE)
+    _, err = await asyncio.wait_for(proc.communicate(), 30)
+    if proc.returncode:
+        return f"Couldn't open it in {EDITOR}: {err.decode(errors='replace').strip()[:300]}"
+    shown = ", ".join(str(t).replace(str(Path.home()), "~") for t in targets)
+    return f"Opened in Antigravity on the Mac: {shown}"
 
 
 def make_server(source: str) -> MCPServer:
@@ -161,6 +191,13 @@ def make_server(source: str) -> MCPServer:
         its last steps, the command it's waiting on and that command's latest output (e.g. a slow
         build). ticket: a ref for an older run; empty = the project's current or latest run."""
         return hooks.worker_progress(project, ticket)
+
+    @server.tool()
+    async def open_in_antigravity(project: str, path: str = "") -> str:
+        """Open a project in Antigravity (Sanjar's editor) on the Mac, right away, no ticket needed.
+        path: optional file or subfolder inside the project, e.g. "docs/PLAN.md"; empty = the
+        project's folder(s)."""
+        return await open_in_editor(project, path)
 
     @server.tool()
     async def screenshot(url: str = "") -> str:
