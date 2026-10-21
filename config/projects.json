@@ -1,12 +1,78 @@
 {
-  "Jarvis": {"about": "this assistant itself (Telegram calls, Notion board, runner)", "folders": ["side_project/projects/jarvis"], "board": "2e0c596ef4e24baeb896beac4d9d7b13"},
-  "Theater": {"about": "Theater project (formerly called Madaniyat): portal with FastAPI backend + Flutter frontend", "folders": ["backend/madaniyat_backend", "frontend/madaniyat_frontend"], "board": "7f3380537c0d48d094bbc43c5418a047"},
-  "School": {"about": "EduPulse school system: backend, Flutter app and website", "folders": ["backend/school_backend", "frontend/school_frontend", "frontend/school_web"], "board": "ac8999f1d6054726893068cb3759e20a"},
-  "Yo'lchi": {"about": "Yo'lchi iOS app", "folders": ["mobile/yolchi-ios"], "board": "546cc066ba404ec0a87497d9ded7115b"},
-  "Taxi App": {"about": "taxi app: backend, driver app, operator web", "folders": ["side_project/taxi_app"], "board": "13e5d3d7bd79436783721dca64c74f27"},
-  "Shop Assistant": {"about": "shop assistant AI agent", "folders": ["agi/shop_assistant"], "board": "96fa75417b274b1395abe219e3bd5c3b"},
-  "Obod Mahalla": {"about": "Obod Mahalla backend API", "folders": ["backend/obod_mahalla_backend"], "board": "f1e887b91cc24ad2aab3858a095359a0"},
-  "RoadEye": {"about": "RoadEye project (folder not set yet)", "folders": [], "board": "d2838944ba2945159bcfa7ab501a40e6"},
-  "Effortless Speaking": {"about": "Effortless English speaking app", "folders": ["agi/projects/effortless_english"], "board": "b3b32c0098374371bfaa51bdaced574c"},
-  "Code Explainer": {"about": "animated code explainer: shows code like a programmer navigating the IDE (name not decided; planning)", "folders": ["side_project/projects/code_explainer"], "board": "246c3dd8f1db43e799e0ba28738f51e8"}
+  "Jarvis": {
+    "about": "this assistant itself (Telegram calls, Notion board, runner)",
+    "folders": [
+      "side_project/projects/jarvis"
+    ],
+    "board": "2e0c596ef4e24baeb896beac4d9d7b13"
+  },
+  "Theater": {
+    "about": "Theater project (formerly called Madaniyat): portal with FastAPI backend + Flutter frontend",
+    "folders": [
+      "backend/madaniyat_backend",
+      "frontend/madaniyat_frontend"
+    ],
+    "board": "7f3380537c0d48d094bbc43c5418a047"
+  },
+  "School": {
+    "about": "EduPulse school system: backend, Flutter app and website",
+    "folders": [
+      "backend/school_backend",
+      "frontend/school_frontend",
+      "frontend/school_web"
+    ],
+    "board": "ac8999f1d6054726893068cb3759e20a"
+  },
+  "Yo'lchi": {
+    "about": "Yo'lchi iOS app",
+    "folders": [
+      "mobile/yolchi-ios"
+    ],
+    "board": "546cc066ba404ec0a87497d9ded7115b"
+  },
+  "Taxi App": {
+    "about": "taxi app: backend, driver app, operator web",
+    "folders": [
+      "side_project/taxi_app"
+    ],
+    "board": "13e5d3d7bd79436783721dca64c74f27"
+  },
+  "Shop Assistant": {
+    "about": "shop assistant AI agent",
+    "folders": [
+      "agi/shop_assistant"
+    ],
+    "board": "96fa75417b274b1395abe219e3bd5c3b"
+  },
+  "Obod Mahalla": {
+    "about": "Obod Mahalla backend API",
+    "folders": [
+      "backend/obod_mahalla_backend"
+    ],
+    "board": "f1e887b91cc24ad2aab3858a095359a0"
+  },
+  "RoadEye": {
+    "about": "RoadEye project (folder not set yet)",
+    "folders": [],
+    "board": "d2838944ba2945159bcfa7ab501a40e6"
+  },
+  "Effortless Speaking": {
+    "about": "Effortless English speaking app",
+    "folders": [
+      "agi/projects/effortless_english"
+    ],
+    "board": "b3b32c0098374371bfaa51bdaced574c"
+  },
+  "Code Explainer": {
+    "about": "animated code explainer: shows code like a programmer navigating the IDE (name not decided; planning)",
+    "folders": [
+      "side_project/projects/code_explainer"
+    ],
+    "board": "246c3dd8f1db43e799e0ba28738f51e8"
+  },
+  "Hikvision": {
+    "about": "run Sanjar's own code on his own Hikvision CCTV cameras (e.g. camera -> Telegram, no NVR); research stage",
+    "folders": [],
+    "board": "66dc104608f94a51b68ebf90c3012467"
+  }
 }
