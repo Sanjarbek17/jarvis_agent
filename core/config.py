@@ -1,5 +1,6 @@
 """Settings shared by every part of Jarvis."""
 import json
+import logging
 import os
 import socket
 from pathlib import Path
@@ -24,7 +25,38 @@ NOTION_TOKEN = os.environ["NOTION_TOKEN"]
 PROJECTS_URL = "https://app.notion.com/p/39bb8d1c364a814486faef3db95d72e5"   # Notion "Projects" page
 
 DEV = Path.home() / "dev"
-PROJECTS: dict[str, dict] = json.loads((HERE / "config" / "projects.json").read_text())
+PROJECTS_FILE = HERE / "config" / "projects.json"
+PROJECTS: dict[str, dict] = {}   # updated in place by reload_projects(), so imports of it stay live
+_projects = {"mtime": 0.0, "version": 0}
+
+
+def reload_projects() -> bool:
+    """Re-read projects.json if it changed on disk (a cheap stat otherwise), so a new project,
+    board or folder works without restarting Jarvis. True if the list changed."""
+    try:
+        mtime = PROJECTS_FILE.stat().st_mtime
+        if mtime == _projects["mtime"]:
+            return False
+        data = json.loads(PROJECTS_FILE.read_text())
+    except (OSError, json.JSONDecodeError) as e:   # half-saved edit: keep the old list, retry next time
+        logging.getLogger("jarvis.config").warning("can't read %s: %r", PROJECTS_FILE.name, e)
+        return False
+    _projects["mtime"] = mtime
+    if data == PROJECTS:
+        return False
+    PROJECTS.clear()
+    PROJECTS.update(data)
+    _projects["version"] += 1
+    return True
+
+
+def projects_version() -> int:
+    """Goes up each time the project list changes (the brain restarts itself when it does)."""
+    reload_projects()
+    return _projects["version"]
+
+
+reload_projects()
 
 STATE = VAR / "state"            # per-project Claude sessions, etc.
 SHOTS = VAR / "shots"            # screenshots to send to me
@@ -61,11 +93,13 @@ def project_dirs(project: str, folder: str = "") -> list[Path]:
         path = (DEV / folder).resolve()
         if path.is_dir() and DEV in [path, *path.parents]:
             return [path]
+    reload_projects()
     dirs = [DEV / f for f in PROJECTS.get(project, {}).get("folders", [])]
     return [d for d in dirs if d.is_dir()] or [DEV]
 
 
 def projects_text() -> str:
+    reload_projects()
     lines = []
     for name, p in PROJECTS.items():
         board = "" if p.get("board") else ", no board"

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from .config import NOTION_TOKEN, PROJECTS
+from .config import NOTION_TOKEN, PROJECTS, reload_projects
 
 API = "https://api.notion.com/v1"
 HEADERS = {"Authorization": f"Bearer {NOTION_TOKEN}", "Notion-Version": "2022-06-28"}
@@ -46,6 +46,7 @@ class Ticket:
 
 
 def boards() -> dict[str, str]:
+    reload_projects()
     return {name: p["board"] for name, p in PROJECTS.items() if p.get("board")}
 
 

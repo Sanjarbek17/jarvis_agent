@@ -10,11 +10,12 @@ import json
 import logging
 from typing import AsyncIterator
 
-from .config import DEV, HERE, PROJECTS, TOOLS_PORT, projects_text
+from .config import DEV, HERE, PROJECTS, TOOLS_PORT, projects_text, projects_version
 
 log = logging.getLogger("jarvis.brain")
 
-BASE_PROMPT = f"""You are J.A.R.V.I.S., Sanjar's personal AI, in the spirit of Tony Stark's Jarvis from
+def base_prompt() -> str:
+    return f"""You are J.A.R.V.I.S., Sanjar's personal AI, in the spirit of Tony Stark's Jarvis from
 the Iron Man films. You run on his MacBook. Sanjar is often away from the computer; you manage
 his projects for him.
 
@@ -100,12 +101,19 @@ def _file_access() -> list[str]:
 class Brain:
     def __init__(self, mode: str, prompt: str = ""):
         """mode: "call" / "chat" with Sanjar, or "guest" (a call to someone else, with `prompt`)."""
-        self.system = prompt or BASE_PROMPT + "\n\n" + (CALL_STYLE if mode == "call" else CHAT_STYLE)
+        self.guest_prompt = prompt
         self.mode = mode
         self.proc: asyncio.subprocess.Process | None = None
         self.lock = asyncio.Lock()
+        self.session_id = ""      # to resume the conversation when restarted
+        self.version = 0          # projects_version() the running process was started with
+
+    def _system(self) -> str:
+        return self.guest_prompt or base_prompt() + "\n\n" + (CALL_STYLE if self.mode == "call" else CHAT_STYLE)
 
     async def start(self):
+        self.version = projects_version()
+        resume = ["--resume", self.session_id] if self.session_id else []
         mcp = {"mcpServers": {"jarvis": {"type": "http", "url": f"http://127.0.0.1:{PORTS[self.mode]}/mcp"}}}
         self.proc = await asyncio.create_subprocess_exec(
             "claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
@@ -114,15 +122,23 @@ class Brain:
             "--setting-sources", "",
             "--mcp-config", json.dumps(mcp), "--strict-mcp-config",
             "--allowedTools", "mcp__jarvis__*",
-            "--no-session-persistence",
-            "--system-prompt", self.system,
+            *(["--no-session-persistence"] if self.mode == "guest" else resume),
+            "--system-prompt", self._system(),
             cwd=HERE, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL, limit=20_000_000)
-        log.info("%s brain started", self.mode)
+        log.info("%s brain started%s", self.mode, " (resumed)" if resume else "")
 
     async def ask(self, text: str) -> AsyncIterator[str]:
         """Send one message; yield the reply text as it streams (only text meant for Sanjar)."""
         async with self.lock:
+            if self.mode != "guest" and self.proc and self.version != projects_version():
+                # projects.json changed: restart with the new list and folders, same conversation
+                log.info("projects changed, restarting the %s brain", self.mode)
+                await self.stop()
+                await self.proc.wait()
+                self.proc = None
+                text = ("[PROJECTS UPDATED] Sanjar's project list changed; this is the current list "
+                        f"(it replaces any earlier one):\n{projects_text()}\n\n{text}")
             if self.proc is None or self.proc.returncode is not None:
                 await self.start()
             msg = {"type": "user", "message": {"role": "user", "content": text}}
@@ -130,6 +146,7 @@ class Brain:
             await self.proc.stdin.drain()
             while line := await self.proc.stdout.readline():
                 event = json.loads(line)
+                self.session_id = event.get("session_id") or self.session_id
                 kind = event.get("type")
                 if kind == "stream_event":
                     delta = event["event"].get("delta", {})
