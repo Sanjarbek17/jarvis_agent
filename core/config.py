@@ -92,6 +92,14 @@ money or payments, or change system settings.
 - Sanjar explicitly allowed THIS ticket to push / merge to main (or master). Push or merge only
   the changes this ticket is about (e.g. the PRs it names), never force-push, and list exactly
   what you pushed or merged (branch, PR numbers, commits) in your summary."""
+# the Mac worker (core/mac.py) may do anything on the Mac except these
+MAC_NEVER_DO = """Never, even if asked in this task: erase or format disks, turn off SIP / FileVault /
+the firewall, delete user folders or large sets of files (move to the Trash instead, never `rm -rf`
+outside temp folders), send passwords, keys, tokens, .env files or Keychain contents anywhere,
+change the login password or Apple ID, or touch anything involving money or payments.
+Ask him first (NEEDS ME) before anything that can't be undone: deleting files for good, quitting
+apps that may have unsaved work, sending messages or emails as him, uninstalling apps, shutting
+down or restarting the Mac (that also stops Jarvis until he's back)."""
 
 
 def project_dirs(project: str, folder: str = "") -> list[Path]:

@@ -18,8 +18,8 @@ fi
 JPID=$(launchctl print "gui/$(id -u)/com.sanjar.jarvis" | awk '$1 == "pid" && $2 == "=" { print $3; exit }')
 [ -n "$JPID" ] || { echo "$(date) Jarvis isn't running under launchd, nothing to do" >> "$LOG"; exit 0; }
 end=$(( $(date +%s) + 3*3600 ))
-busy() {   # a worker (claude -p Ticket ...) or the call brain (its prompt says "live phone call")
-  ps -axww -o ppid=,args= | awk -v p="$JPID" -v c="$CALLS" '$1 == p && (($2 == "claude" && $3 == "-p" && $4 == "Ticket") || (c == "yes" && /live phone call/)) { f = 1 } END { exit !f }'
+busy() {   # a worker (claude -p Ticket ... / Mac task ...) or the call brain (its prompt says "live phone call")
+  ps -axww -o ppid=,args= | awk -v p="$JPID" -v c="$CALLS" '$1 == p && (($2 == "claude" && $3 == "-p" && ($4 == "Ticket" || ($4 == "Mac" && $5 == "task"))) || (c == "yes" && /live phone call/)) { f = 1 } END { exit !f }'
 }
 echo "$(date) waiting for workers$([ $CALLS = yes ] && echo ' and calls') of $JPID to finish" >> "$LOG"
 while [ "$(date +%s)" -lt "$end" ]; do

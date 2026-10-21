@@ -14,8 +14,10 @@ core/
   tools.py           tools the brain can use (MCP on 127.0.0.1:8775-8777)
   board.py           Notion API: each project's board + its Jarvis column
   runner.py          picks Queued tickets and runs Claude Code workers
+  mac.py             Mac worker: does things on the Mac itself (apps, settings, screen)
 config/projects.json project -> folders in ~/dev + its sprint board
 scripts/login.py     one-time Telegram login for the Jarvis account
+scripts/mac.py       mouse, keyboard and screenshots for the Mac worker
 docs/                plan
 var/                 made while running, not in git: Telegram session, logs, state, shots
 .env                 keys (not in git)
@@ -35,7 +37,16 @@ at login, restarts if it crashes, and keeps the Mac awake with `caffeinate`.
 - logs: `var/logs/jarvis.log`; each worker run: `var/logs/<project>-<ticket ref>.jsonl` (Jarvis
   reads these itself when you ask how a ticket is going)
 
-Telegram: plain text or a voice message = talk to Jarvis, `/status [project]`, `/stop <project>`, `/call`, `/transcript`.
+Telegram: plain text or a voice message = talk to Jarvis, `/status [project]`, `/stop <project|mac>`, `/call`, `/transcript`.
+
+Mac control: "turn the volume down", "open Spotify and play my liked songs", "find the PDF I
+downloaded yesterday and send it to me". Quick one-step things Jarvis runs itself (`run_on_mac`);
+anything bigger goes to the Mac worker (`mac_task`): a Claude Code session that uses commands,
+AppleScript, and if needed looks at the screen and clicks and types (`scripts/mac.py`). One job at a
+time, it remembers earlier Mac jobs; a job longer than a minute reports back in Telegram. Logs:
+`var/logs/mac-<time>.jsonl`. Hard limits and "ask first" rules: `MAC_NEVER_DO` in `core/config.py`.
+Needs Accessibility + Screen Recording for Jarvis once (System Settings > Privacy & Security);
+Jarvis checks at start and messages you if they're missing.
 
 Reading files: Jarvis can look things up itself (read-only: Read, Glob, Grep) in every project
 folder from `config/projects.json` and its own folder, e.g. "what port does the taxi backend use".

@@ -16,10 +16,12 @@ from mcp.server.mcpserver import MCPServer
 
 from . import board, grants
 from .config import DEV, PROJECTS, SHOTS, TOOLS_PORT, reload_projects
+from .mac import MacWorker, run_quick
 
 log = logging.getLogger("jarvis.tools")
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 EDITOR = "Antigravity IDE"
+MAC_WAIT = {"Call": 25, "Telegram": 60}   # seconds mac_task waits for a result, then goes on in the background
 
 
 class Hooks:
@@ -28,6 +30,8 @@ class Hooks:
     hang_up: Callable[[], Awaitable[None]]
     call_contact: Callable[[str, str], Awaitable[str]]
     worker_progress: Callable[[str, str], str]
+    mac: MacWorker
+    mac_late: Callable[[str, str, list[Path], bool], Awaitable[None]]   # result after MAC_WAIT
 
 
 hooks = Hooks()
@@ -237,6 +241,48 @@ def make_server(source: str) -> MCPServer:
         call's transcript afterwards. contact: their name as saved in contacts, or @username.
         message: what to tell them, in Sanjar's words. Returns the matches if it's not clear who."""
         return await hooks.call_contact(contact, message)
+
+    @server.tool()
+    async def run_on_mac(script: str, language: str = "shell") -> str:
+        """Run ONE quick shell (zsh) or AppleScript snippet on the Mac right now and get its output:
+        instant things like volume, open/quit an app, play/pause music, lock the screen, battery,
+        what's running. language: "shell" or "applescript". Anything with several steps, the
+        screen, or unknown apps -> mac_task. Same safety rules as mac_task."""
+        log.info("run_on_mac (%s): %s", language, script[:200])
+        return await run_quick(script, language)
+
+    @server.tool()
+    async def mac_task(task: str, sanjar_words: str) -> str:
+        """Have the Mac worker do something on the Mac itself: use any app, change settings, find or
+        move files, fill something in, click and type on the screen. It remembers earlier Mac
+        tasks ("now close it"). task: what to do, clearly. sanjar_words: what he actually said.
+        Waits a little for the result; a longer task finishes in the background and its
+        result comes to Sanjar in Telegram (and to you as an [UPDATE])."""
+        busy = hooks.mac.current
+        job = asyncio.create_task(hooks.mac.run(task, sanjar_words))
+        done, _ = await asyncio.wait({job}, timeout=MAC_WAIT[source])
+        if job not in done:
+            job.add_done_callback(lambda j: asyncio.create_task(hooks.mac_late(task, *j.result())))
+            return ("Still working on it" + (f" (after the task before it: {busy})" if busy else "")
+                    + "; the result goes to Sanjar in Telegram when it's done.")
+        text, photos, question = job.result()
+        for p in photos[:3]:
+            await hooks.send_photo(p, "Mac")
+        return (f"The Mac worker needs Sanjar's decision: {text}" if question else text) + \
+               (f" ({len(photos)} screenshot(s) sent to Telegram)" if photos else "")
+
+    @server.tool()
+    async def mac_progress() -> str:
+        """What the Mac worker is doing now, or did last: its task, last steps and result."""
+        return hooks.mac.progress()
+
+    @server.tool()
+    async def stop_mac_task(forget: bool = False) -> str:
+        """Stop the Mac task that's running. forget=True also clears its memory of earlier Mac tasks."""
+        stopped = hooks.mac.stop()
+        if forget:
+            hooks.mac.forget()
+        return ("Stopped it." if stopped else "No Mac task was running.") + (" Memory cleared." if forget else "")
 
     return server
 

@@ -4,7 +4,7 @@
     uv run jarvis.py --call    # start and call me right away
 
 - Call: my voice -> Gemini transcribe -> Claude (call brain) -> Gemini voice -> call.
-- Telegram text or voice message from me -> Claude (chat brain) -> reply. /status, /stop <project>, /call, /transcript.
+- Telegram text or voice message from me -> Claude (chat brain) -> reply. /status, /stop <project|mac>, /call, /transcript.
 - Runner picks tickets marked Queued (Jarvis column) on each project's Notion board.
 - Jarvis calls me by itself when a ticket needs me or fails, and once a day with a summary
   (not in quiet hours, at most once per CALL_COOLDOWN).
@@ -30,8 +30,9 @@ from telethon.tl.functions.contacts import GetContactsRequest
 from core import board, contacts, tools
 from core.board import Ticket
 from core.brain import Brain, guest_prompt
-from core.config import (CALL_COOLDOWN, CALL_ON, CALL_RATE, DAILY_CALL_AT, LOGS, OWNER_ID, PROJECTS,
+from core.config import (HERE, CALL_COOLDOWN, CALL_ON, CALL_RATE, DAILY_CALL_AT, LOGS, OWNER_ID, PROJECTS,
                          PROJECTS_URL, QUIET_HOURS, SESSION, STATE, TG_API_HASH, TG_API_ID)
+from core.mac import MacWorker
 from core.runner import Runner
 from core.voice import Ears, Mouth, split_sentences, transcribe_audio
 
@@ -309,6 +310,31 @@ async def notify(card: Ticket, kind: str, text: str, photos: list[Path]):
         asyncio.create_task(auto_call(update))
 
 
+async def check_mac_permissions():
+    """At start: can the Mac worker see the screen and use the mouse and keyboard? Asking also
+    puts Jarvis in the lists in System Settings, so I only have to switch it on."""
+    proc = await asyncio.create_subprocess_exec(str(HERE / ".venv/bin/python"), str(HERE / "scripts/mac.py"),
+                                                "check", stdout=asyncio.subprocess.PIPE,
+                                                stderr=asyncio.subprocess.STDOUT)
+    out = (await proc.communicate())[0].decode(errors="replace").strip()
+    if proc.returncode:
+        log.warning("mac permissions missing: %s", out)
+        await tg.send_message(OWNER_ID, f"🖥 For full Mac control I still need permissions:\n\n{out}")
+
+
+async def mac_late(task: str, text: str, photos: list[Path], question: bool):
+    """A Mac task that outlasted mac_task's wait: same path as a ticket result."""
+    head = f"{'❓' if question else '❌' if text.startswith('Failed') else '✅'} Mac: {task}"
+    await tg.send_message(OWNER_ID, f"{head}\n\n{text[:3500]}", silent=call is not None)
+    for p in photos[:5]:
+        await send_photo(p, "Mac")
+    update = f"[UPDATE] Mac task \"{task}\" {'needs his decision' if question else 'finished'}: {text[:800]}"
+    if call and not call.guest:
+        call.tell(update)
+    elif not call and question:
+        asyncio.create_task(auto_call(update))
+
+
 # --- Telegram ------------------------------------------------------------------------------
 
 @tg.on(events.NewMessage(incoming=True, from_users=OWNER_ID, func=lambda e: e.is_private))
@@ -328,6 +354,9 @@ async def on_message(event):
         await event.reply(await board.status_text(project) + f"\n\n{PROJECTS_URL}", link_preview=False)
     elif text.startswith("/stop"):
         project = text.removeprefix("/stop").strip()
+        if project.lower() == "mac":
+            await event.reply("Stopped the Mac task." if mac.stop() else "No Mac task is running.")
+            return
         await event.reply(f"Stopped {project}." if runner.stop_project(project)
                           else f"Nothing running for {project!r}. Projects: {', '.join(PROJECTS)}")
     elif text.startswith("/transcript"):
@@ -367,6 +396,7 @@ async def on_left(_, update: ChatUpdate):
 
 
 runner = Runner(notify)
+mac = MacWorker()
 
 
 async def main():
@@ -374,12 +404,15 @@ async def main():
     tools.hooks.hang_up = hang_up
     tools.hooks.call_contact = call_contact
     tools.hooks.worker_progress = runner.progress
+    tools.hooks.mac = mac
+    tools.hooks.mac_late = mac_late
     background = [asyncio.create_task(tools.serve()), asyncio.create_task(runner.run_forever()),
                   asyncio.create_task(daily_call())]
     await calls.start()
     me = await tg.get_me()
     log.info("Jarvis is up as @%s", me.username)
     await tg.send_message(OWNER_ID, "🟢 Jarvis is online. Call me, message me, or /status.", silent=True)
+    asyncio.create_task(check_mac_permissions())
     if "--call" in sys.argv:
         try:
             await start_call(OWNER_ID)
