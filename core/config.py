@@ -25,6 +25,8 @@ NOTION_TOKEN = os.environ["NOTION_TOKEN"]
 PROJECTS_URL = "https://app.notion.com/p/39bb8d1c364a814486faef3db95d72e5"   # Notion "Projects" page
 
 DEV = Path.home() / "dev"
+# extra folders (inside ~/dev) Jarvis may read even though they aren't projects with a board
+EXTRA_READ_DIRS = ["upwork_job"]
 PROJECTS_FILE = HERE / "config" / "projects.json"
 PROJECTS: dict[str, dict] = {}   # updated in place by reload_projects(), so imports of it stay live
 _projects = {"mtime": 0.0, "version": 0}
