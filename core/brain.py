@@ -109,6 +109,7 @@ Everything you get is what {name} says on the call. Everything you write is spok
 - when it's done or they say goodbye, say bye and call hang_up, then write nothing more"""
 
 
+BRAIN_MODEL = "claude-sonnet-5-5"   # fast replies matter more here than the smartest model
 PORTS = {"call": TOOLS_PORT, "chat": TOOLS_PORT + 1, "guest": TOOLS_PORT + 2}
 SECRETS = ["Read(**/.env)", "Read(**/.env.*)", "Grep(**/.env)", "Grep(**/.env.*)"]
 
@@ -143,7 +144,7 @@ class Brain:
         self.proc = await asyncio.create_subprocess_exec(
             "claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
             "--verbose", "--include-partial-messages",
-            "--effort", "low", *(["--tools", ""] if self.mode == "guest" else _file_access()),
+            "--model", BRAIN_MODEL, "--effort", "low", *(["--tools", ""] if self.mode == "guest" else _file_access()),
             "--setting-sources", "",
             "--mcp-config", json.dumps(mcp), "--strict-mcp-config",
             "--allowedTools", "mcp__jarvis__*",
