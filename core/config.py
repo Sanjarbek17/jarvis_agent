@@ -61,6 +61,7 @@ reload_projects()
 STATE = VAR / "state"            # per-project Claude sessions, etc.
 SHOTS = VAR / "shots"            # screenshots to send to me
 LOGS = VAR / "logs"
+CALLS = STATE / "calls"          # call transcripts
 for d in (STATE, SHOTS, LOGS):
     d.mkdir(exist_ok=True)
 

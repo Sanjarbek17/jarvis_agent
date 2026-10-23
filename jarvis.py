@@ -30,8 +30,8 @@ from telethon.tl.functions.contacts import GetContactsRequest
 from core import board, contacts, tools
 from core.board import Ticket
 from core.brain import Brain, guest_prompt
-from core.config import (HERE, CALL_COOLDOWN, CALL_ON, CALL_RATE, DAILY_CALL_AT, LOGS, OWNER_ID, PROJECTS,
-                         PROJECTS_URL, QUIET_HOURS, SESSION, STATE, TG_API_HASH, TG_API_ID)
+from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_RATE, DAILY_CALL_AT, LOGS, OWNER_ID, PROJECTS,
+                         PROJECTS_URL, QUIET_HOURS, SESSION, TG_API_HASH, TG_API_ID)
 from core.mac import MacWorker
 from core.runner import Runner
 from core.voice import Ears, Mouth, split_sentences, transcribe_audio
@@ -45,7 +45,6 @@ log = logging.getLogger("jarvis")
 tg = TelegramClient(str(SESSION), TG_API_ID, TG_API_HASH)
 calls = PyTgCalls(tg)
 CHUNK = CALL_RATE // 100 * 2 * 2      # 10 ms of 48 kHz stereo s16 going into the call
-CALLS = STATE / "calls"                # call transcripts
 EMOJI = {"done": "✅", "failed": "❌", "needs_me": "❓"}
 
 

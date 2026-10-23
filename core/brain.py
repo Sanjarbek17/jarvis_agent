@@ -10,7 +10,7 @@ import json
 import logging
 from typing import AsyncIterator
 
-from .config import DEV, HERE, PROJECTS, TOOLS_PORT, projects_text, projects_version
+from .config import CALLS, DEV, HERE, PROJECTS, TOOLS_PORT, projects_text, projects_version
 
 log = logging.getLogger("jarvis.brain")
 
@@ -87,8 +87,26 @@ CALL_STYLE = """You are on a live phone call. Everything you write is spoken alo
 - when he says goodbye, say bye and call hang_up, then write nothing more
 - never narrate what you did or describe him in third person; only say words meant for him"""
 
-CHAT_STYLE = """You are chatting in Telegram. Keep replies short and plain (a few lines).
-Ticket refs (like 3e5b8d1c) are fine here."""
+CHAT_STYLE = f"""You are chatting in Telegram. Keep replies short and plain (a few lines).
+Ticket refs (like 3e5b8d1c) are fine here.
+Transcripts of your phone calls (with him, and with people you called for him: the name is in
+the file name) are in {CALLS}, one file per call named by date and time. When he asks
+about a call or something he said on one, read the newest ones there."""
+
+
+def past_calls(n: int = 5, limit: int = 8000) -> str:
+    """The last `n` call transcripts (newest last, each cut from the start to fit `limit`), so a
+    new call brain remembers what was said on earlier calls."""
+    files = sorted(CALLS.glob("*.txt"))[-n:] if CALLS.exists() else []
+    if not files:
+        return ""
+    each = limit // len(files)
+    parts = []
+    for f in files:
+        text = f.read_text()
+        parts.append(f"--- {f.stem.replace('_', ' ')} ---\n" + (text if len(text) <= each else "..." + text[-each:]))
+    return ("Your last calls (what was said, for memory; he may refer to them; the transcript "
+            "is from speech recognition, so odd words or languages are mishearings):\n" + "\n".join(parts))
 
 
 def guest_prompt(name: str, message: str) -> str:
@@ -135,7 +153,11 @@ class Brain:
         self.version = 0          # projects_version() the running process was started with
 
     def _system(self) -> str:
-        return self.guest_prompt or base_prompt() + "\n\n" + (CALL_STYLE if self.mode == "call" else CHAT_STYLE)
+        if self.guest_prompt:
+            return self.guest_prompt
+        if self.mode == "call":
+            return base_prompt() + "\n\n" + CALL_STYLE + "\n\n" + past_calls()
+        return base_prompt() + "\n\n" + CHAT_STYLE
 
     async def start(self):
         self.version = projects_version()
