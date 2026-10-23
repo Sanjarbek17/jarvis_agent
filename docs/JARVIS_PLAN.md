@@ -1,7 +1,7 @@
 # Jarvis — system flow
 
 One program (`jarvis.py`) runs on the Mac as a login agent. It is logged in to Telegram as
-@Sanjarbek177 and only answers Sanjar.
+@Jarvis_Sanjar and only answers Sanjar.
 
 ```mermaid
 flowchart LR

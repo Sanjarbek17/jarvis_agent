@@ -1,6 +1,6 @@
 # Jarvis
 
-My assistant on the MacBook. I call or message it on Telegram (account @Sanjarbek177),
+My assistant on the MacBook. I call or message it on Telegram (account @Jarvis_Sanjar),
 it puts tasks on each project's own Notion board (as tickets marked Queued in the "Jarvis"
 column), and Claude Code workers do them.
 Plan and design: [docs/JARVIS_PLAN.md](docs/JARVIS_PLAN.md).
