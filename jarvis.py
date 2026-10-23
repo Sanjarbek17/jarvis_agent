@@ -10,11 +10,16 @@
   (not in quiet hours, at most once per CALL_COOLDOWN).
 - Jarvis calls other people when I ask (call_contact) to give them a message; that call gets a
   brain with no tools but hang_up, and I get its transcript in Telegram.
+- When a voice chat starts in a group the Jarvis account is in, it joins: keeps a who-said-what
+  transcript, answers only when someone says "Jarvis" (no tools), and sends me a summary with
+  possible tickets afterwards; I pick which become tickets.
 Only OWNER_ID is ever answered.
 """
 import asyncio
 import contextlib
+import functools
 import logging
+import re
 import sys
 import time
 from pathlib import Path
@@ -26,10 +31,11 @@ from pytgcalls.types import (CallConfig, ChatUpdate, Device, Direction, External
 from pytgcalls.types.raw import AudioParameters
 from telethon import TelegramClient, events
 from telethon.tl.functions.contacts import GetContactsRequest
+from telethon.tl.types import MessageActionGroupCall
 
 from core import board, contacts, tools
 from core.board import Ticket
-from core.brain import Brain, guest_prompt
+from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_RATE, DAILY_CALL_AT, LOGS, OWNER_ID, PROJECTS,
                          PROJECTS_URL, QUIET_HOURS, SESSION, TG_API_HASH, TG_API_ID)
 from core.mac import MacWorker
@@ -46,6 +52,7 @@ tg = TelegramClient(str(SESSION), TG_API_ID, TG_API_HASH)
 calls = PyTgCalls(tg)
 CHUNK = CALL_RATE // 100 * 2 * 2      # 10 ms of 48 kHz stereo s16 going into the call
 EMOJI = {"done": "✅", "failed": "❌", "needs_me": "❓"}
+WAKE = re.compile(r"jarvis|джарвис|жарвис", re.I)   # someone in a group call speaks to Jarvis
 
 
 class Call:
@@ -161,7 +168,72 @@ class Call:
         await self.brain.stop()
 
 
+class GroupCall(Call):
+    """A group voice chat Jarvis joined by itself. Every speaker gets their own ears, so the
+    transcript says who said what; the brain only hears it when someone says "Jarvis".
+    Nothing said here is acted on: I pick tickets from the summary afterwards."""
+
+    def __init__(self, chat_id: int, title: str):
+        super().__init__(chat_id)
+        self.title = title
+        self.brain = Brain("group", group_prompt(title))
+        self.speakers: dict[int, Ears] = {}   # audio source -> their ears
+        self.names: dict[int, str] = {}       # audio source -> name
+        self.sent = 0                         # transcript lines the brain has already seen
+
+    async def start(self, reason: str = ""):
+        out_params, in_params = AudioParameters(CALL_RATE, 2), AudioParameters(CALL_RATE, 1)
+        self.tasks = [asyncio.create_task(self.brain.start()), asyncio.create_task(self._think())]
+        await calls.play(self.user_id, MediaStream(ExternalMedia.AUDIO, out_params))
+        self.tasks.append(asyncio.create_task(self._play()))
+        await calls.record(self.user_id, RecordStream(True, in_params))
+        self.tasks.append(asyncio.create_task(self._watch()))
+        log.info("in the group call of %s", self.title)
+
+    def hear(self, source: int, pcm: bytes):
+        source &= 0xFFFFFFFF
+        if source not in self.speakers:
+            self.speakers[source] = Ears(self._no_interrupt, functools.partial(self.on_said, source))
+            self.speakers[source].start()
+        self.speakers[source].hear(pcm)
+
+    async def _no_interrupt(self, text: str):
+        pass   # many people talk in a group; Jarvis's answers are short, let them finish
+
+    async def on_said(self, source: int, text: str):
+        self._note(await self.name_of(source), text)
+        if WAKE.search(text):
+            await self.turns.put("\n".join(self.transcript[self.sent:]))
+            self.sent = len(self.transcript)
+
+    async def name_of(self, source: int) -> str:
+        if source not in self.names:
+            with contextlib.suppress(Exception):
+                for p in await calls.get_participants(self.user_id) or []:
+                    if p.source & 0xFFFFFFFF not in self.names:
+                        self.names[p.source & 0xFFFFFFFF] = (
+                            "Sanjar" if p.user_id == OWNER_ID else contacts.name_of(await tg.get_entity(p.user_id)))
+            self.names.setdefault(source, f"Speaker {len(self.names) + 1}")
+        return self.names[source]
+
+    async def _watch(self):
+        """Leave once everyone else has left (the voice chat may stay open)."""
+        me = (await tg.get_me()).id
+        while not self.ended:
+            await asyncio.sleep(30)
+            with contextlib.suppress(Exception):
+                if not [p for p in await calls.get_participants(self.user_id) or [] if p.user_id != me]:
+                    asyncio.create_task(finish_group())
+                    return
+
+    async def close(self):
+        for ears in self.speakers.values():
+            await ears.stop()
+        await super().close()
+
+
 call: Call | None = None
+group: GroupCall | None = None
 chat = Brain("chat")
 
 
@@ -290,6 +362,50 @@ async def finish_call():
         asyncio.create_task(call_someone(*waiting_calls.pop(0)))
 
 
+async def join_group(chat_id: int, title: str):
+    global group
+    if group:
+        log.info("already in a group call, not joining %s", title)
+        return
+    group = GroupCall(chat_id, title)
+    try:
+        await group.start()
+    except Exception as e:
+        log.warning("couldn't join the group call of %s: %r", title, e)
+        failed, group = group, None
+        await failed.close()
+        await tg.send_message(OWNER_ID, f"🎧 Couldn't join the voice chat in {title}: {e!r}", silent=True)
+        return
+    await tg.send_message(OWNER_ID, f"🎧 Joined the voice chat in {title}, taking notes.", silent=True)
+
+
+async def finish_group():
+    """Leave, save the transcript (later calls remember it), and send me a summary to pick tickets from."""
+    global group
+    if group is None:
+        return
+    done, group = group, None
+    await done.close()
+    with contextlib.suppress(Exception):
+        await calls.leave_call(done.user_id)
+    log.info("left the group call of %s", done.title)
+    if not done.transcript:
+        return
+    CALLS.mkdir(exist_ok=True)
+    path = CALLS / f"{time.strftime('%Y-%m-%d_%H-%M')}_group_{done.title.replace('/', '-')}.txt"
+    path.write_text("\n".join(done.transcript))
+    summarizer = Brain("group", SUMMARY_PROMPT)
+    try:
+        summary = await summarizer.reply(f"Group voice chat in {done.title}:\n\n" + "\n".join(done.transcript))
+    finally:
+        await summarizer.stop()
+    await tg.send_message(OWNER_ID, f"🎧 Voice chat in {done.title}\n\n{summary[:3800]}\n\n"
+                                    "Tell me which ones to make tickets (full transcript: /transcript).")
+    chat.notes.append(f"[GROUP CALL] You sat in on the voice chat in {done.title} and sent Sanjar this "
+                      f"summary in Telegram; if he asks for tickets from it (\"add 1 and 3\"), add_task "
+                      f"each with what was said. Full transcript: {path}\n\n{summary}")
+
+
 async def send_photo(path: Path, caption: str):
     await tg.send_file(OWNER_ID, str(path), caption=caption[:1000])
 
@@ -377,6 +493,9 @@ async def on_audio(_, update: StreamFrames):
     if call and not call.ended and update.chat_id == call.user_id:
         for frame in update.frames:
             call.ears.hear(frame.frame)
+    elif group and not group.ended and update.chat_id == group.user_id:
+        for frame in update.frames:
+            group.hear(frame.ssrc, frame.frame)
 
 
 @calls.on_update(filters.chat_update(ChatUpdate.Status.INCOMING_CALL))
@@ -392,6 +511,18 @@ async def on_incoming_call(_, update: ChatUpdate):
 async def on_left(_, update: ChatUpdate):
     if call and update.chat_id == call.user_id:
         await finish_call()
+    elif group and update.chat_id == group.user_id:
+        await finish_group()
+
+
+@tg.on(events.NewMessage(func=lambda e: isinstance(getattr(e.message, "action", None), MessageActionGroupCall)))
+async def on_voice_chat(event):
+    """A voice chat started (no duration yet) or ended in a group the Jarvis account is in."""
+    if event.message.action.duration is None:
+        chat_ = await event.get_chat()
+        await join_group(event.chat_id, getattr(chat_, "title", "") or str(event.chat_id))
+    elif group and event.chat_id == group.user_id:
+        await finish_group()
 
 
 runner = Runner(notify)

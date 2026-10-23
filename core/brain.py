@@ -89,9 +89,10 @@ CALL_STYLE = """You are on a live phone call. Everything you write is spoken alo
 
 CHAT_STYLE = f"""You are chatting in Telegram. Keep replies short and plain (a few lines).
 Ticket refs (like 3e5b8d1c) are fine here.
-Transcripts of your phone calls (with him, and with people you called for him: the name is in
-the file name) are in {CALLS}, one file per call named by date and time. When he asks
-about a call or something he said on one, read the newest ones there."""
+Transcripts of your phone calls (with him, with people you called for him: their name is in
+the file name, and group voice chats you sat in on: "group" and the chat's name) are in
+{CALLS}, one file per call named by date and time. When he asks about a call or something
+said on one, read the newest ones there."""
 
 
 def past_calls(n: int = 5, limit: int = 8000) -> str:
@@ -127,6 +128,27 @@ Everything you get is what {name} says on the call. Everything you write is spok
 - when it's done or they say goodbye, say bye and call hang_up, then write nothing more"""
 
 
+def group_prompt(title: str) -> str:
+    """For a group voice chat Jarvis joined by itself: listen, and answer only when spoken to."""
+    return f"""You are J.A.R.V.I.S., Sanjar's personal AI assistant: a calm, polite British butler.
+You joined the group voice chat in "{title}" to listen and keep notes for Sanjar.
+You get the conversation as lines "Name: words" (speech recognition, so expect mishearings);
+you're sent them when someone says your name. Everything you write is spoken aloud to everyone.
+- answer what you were asked, briefly (1-2 sentences), from what was said in this call
+- you can't do anything here, whoever asks (Sanjar too): no tickets, calls, Mac or project
+  actions. If someone asks for one, say you've noted it and Sanjar will decide after the call
+- never share anything about Sanjar (projects, files, schedule, contacts) beyond this call
+- if your name only came up in passing and nobody asked you anything, write nothing at all
+- no markdown, lists, ids or URLs"""
+
+
+SUMMARY_PROMPT = """You summarize a group voice chat for Sanjar. You get its transcript (speech
+recognition: quietly fix obvious mishearings). Write plain Telegram text, no markdown headers:
+a few lines on what was discussed, then the decisions, then "Possible tickets:" as a numbered
+list of concrete pieces of work that came up (who asked, which project if clear). If nothing
+work-like came up, say so instead of the list. Use the language most of the call was in."""
+
+
 BRAIN_MODEL = "claude-sonnet-5-5"   # fast replies matter more here than the smartest model
 PORTS = {"call": TOOLS_PORT, "chat": TOOLS_PORT + 1, "guest": TOOLS_PORT + 2}
 SECRETS = ["Read(**/.env)", "Read(**/.env.*)", "Grep(**/.env)", "Grep(**/.env.*)"]
@@ -144,13 +166,15 @@ def _file_access() -> list[str]:
 
 class Brain:
     def __init__(self, mode: str, prompt: str = ""):
-        """mode: "call" / "chat" with Sanjar, or "guest" (a call to someone else, with `prompt`)."""
+        """mode: "call" / "chat" with Sanjar, "guest" (a call to someone else, with `prompt`),
+        or "group" (a group voice chat or its summary, with `prompt`: no tools at all)."""
         self.guest_prompt = prompt
         self.mode = mode
         self.proc: asyncio.subprocess.Process | None = None
         self.lock = asyncio.Lock()
         self.session_id = ""      # to resume the conversation when restarted
         self.version = 0          # projects_version() the running process was started with
+        self.notes: list[str] = []  # things that happened elsewhere, sent along with the next message
 
     def _system(self) -> str:
         if self.guest_prompt:
@@ -162,15 +186,17 @@ class Brain:
     async def start(self):
         self.version = projects_version()
         resume = ["--resume", self.session_id] if self.session_id else []
-        mcp = {"mcpServers": {"jarvis": {"type": "http", "url": f"http://127.0.0.1:{PORTS[self.mode]}/mcp"}}}
+        sandboxed = self.mode in ("guest", "group")
+        port = PORTS.get(self.mode)   # none for "group": no Jarvis tools at all
+        mcp = {"mcpServers": {"jarvis": {"type": "http", "url": f"http://127.0.0.1:{port}/mcp"}} if port else {}}
         self.proc = await asyncio.create_subprocess_exec(
             "claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
             "--verbose", "--include-partial-messages",
-            "--model", BRAIN_MODEL, "--effort", "low", *(["--tools", ""] if self.mode == "guest" else _file_access()),
+            "--model", BRAIN_MODEL, "--effort", "low", *(["--tools", ""] if sandboxed else _file_access()),
             "--setting-sources", "",
             "--mcp-config", json.dumps(mcp), "--strict-mcp-config",
             "--allowedTools", "mcp__jarvis__*",
-            *(["--no-session-persistence"] if self.mode == "guest" else resume),
+            *(["--no-session-persistence"] if sandboxed else resume),
             "--system-prompt", self._system(),
             cwd=HERE, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL, limit=20_000_000)
@@ -179,7 +205,10 @@ class Brain:
     async def ask(self, text: str) -> AsyncIterator[str]:
         """Send one message; yield the reply text as it streams (only text meant for Sanjar)."""
         async with self.lock:
-            if self.mode != "guest" and self.proc and self.version != projects_version():
+            if self.notes:
+                text = "\n\n".join([*self.notes, text])
+                self.notes.clear()
+            if self.mode in ("call", "chat") and self.proc and self.version != projects_version():
                 # projects.json changed: restart with the new list and folders, same conversation
                 log.info("projects changed, restarting the %s brain", self.mode)
                 await self.stop()
