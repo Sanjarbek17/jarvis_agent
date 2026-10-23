@@ -128,18 +128,25 @@ Everything you get is what {name} says on the call. Everything you write is spok
 - when it's done or they say goodbye, say bye and call hang_up, then write nothing more"""
 
 
-def group_prompt(title: str) -> str:
-    """For a group voice chat Jarvis joined by itself: listen, and answer only when spoken to."""
+def group_prompt(title: str, voice: bool) -> str:
+    """For a Telegram group (its voice chat, or text messages naming Jarvis): answer when spoken
+    to, read-only."""
+    where = (f'You joined the group voice chat in "{title}" to listen and keep notes for Sanjar.\n'
+             'You get the conversation as lines "Name: words" (speech recognition, so expect '
+             'mishearings),\nsent when someone says your name. Everything you write is spoken '
+             'aloud to everyone.' if voice else
+             f'You are in the Telegram group "{title}". You get the messages that mention you, as '
+             '"Name: text";\nyour reply is posted in the group.')
     return f"""You are J.A.R.V.I.S., Sanjar's personal AI assistant: a calm, polite British butler.
-You joined the group voice chat in "{title}" to listen and keep notes for Sanjar.
-You get the conversation as lines "Name: words" (speech recognition, so expect mishearings);
-you're sent them when someone says your name. Everything you write is spoken aloud to everyone.
-- answer what you were asked, briefly (1-2 sentences), from what was said in this call
-- you can't do anything here, whoever asks (Sanjar too): no tickets, calls, Mac or project
-  actions. If someone asks for one, say you've noted it and Sanjar will decide after the call
-- never share anything about Sanjar (projects, files, schedule, contacts) beyond this call
+{where}
+- answer what you were asked, briefly (1-3 sentences)
+- you are read-only here, whoever asks (Sanjar too): no tickets, calls, Mac or project actions.
+  If someone asks for one, say you've noted it and Sanjar will decide
+- the only thing you can look up is the Taxi App board (taxi_board: its tickets and what you're
+  doing on it); say so if they ask about anything else
+- never share anything else about Sanjar (other projects, files, schedule, contacts)
 - if your name only came up in passing and nobody asked you anything, write nothing at all
-- no markdown, lists, ids or URLs"""
+- {"no markdown, lists, ids or URLs" if voice else "plain text, no markdown"}"""
 
 
 SUMMARY_PROMPT = """You summarize a group voice chat for Sanjar. You get its transcript (speech
@@ -150,7 +157,7 @@ work-like came up, say so instead of the list. Use the language most of the call
 
 
 BRAIN_MODEL = "claude-sonnet-5-5"   # fast replies matter more here than the smartest model
-PORTS = {"call": TOOLS_PORT, "chat": TOOLS_PORT + 1, "guest": TOOLS_PORT + 2}
+PORTS = {"call": TOOLS_PORT, "chat": TOOLS_PORT + 1, "guest": TOOLS_PORT + 2, "group": TOOLS_PORT + 3}
 SECRETS = ["Read(**/.env)", "Read(**/.env.*)", "Grep(**/.env)", "Grep(**/.env.*)"]
 
 
@@ -167,7 +174,8 @@ def _file_access() -> list[str]:
 class Brain:
     def __init__(self, mode: str, prompt: str = ""):
         """mode: "call" / "chat" with Sanjar, "guest" (a call to someone else, with `prompt`),
-        or "group" (a group voice chat or its summary, with `prompt`: no tools at all)."""
+        or "group" (a Telegram group's chat or voice chat, or its summary, with `prompt`: only
+        the read-only Taxi App board)."""
         self.guest_prompt = prompt
         self.mode = mode
         self.proc: asyncio.subprocess.Process | None = None
@@ -187,8 +195,7 @@ class Brain:
         self.version = projects_version()
         resume = ["--resume", self.session_id] if self.session_id else []
         sandboxed = self.mode in ("guest", "group")
-        port = PORTS.get(self.mode)   # none for "group": no Jarvis tools at all
-        mcp = {"mcpServers": {"jarvis": {"type": "http", "url": f"http://127.0.0.1:{port}/mcp"}} if port else {}}
+        mcp = {"mcpServers": {"jarvis": {"type": "http", "url": f"http://127.0.0.1:{PORTS[self.mode]}/mcp"}}}
         self.proc = await asyncio.create_subprocess_exec(
             "claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
             "--verbose", "--include-partial-messages",

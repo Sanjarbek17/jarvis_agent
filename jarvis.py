@@ -11,8 +11,10 @@
 - Jarvis calls other people when I ask (call_contact) to give them a message; that call gets a
   brain with no tools but hang_up, and I get its transcript in Telegram.
 - When a voice chat starts in a group the Jarvis account is in, it joins: keeps a who-said-what
-  transcript, answers only when someone says "Jarvis" (no tools), and sends me a summary with
-  possible tickets afterwards; I pick which become tickets.
+  transcript, answers only when someone says "Jarvis", and sends me a summary with possible
+  tickets afterwards; I pick which become tickets.
+- In groups it also answers text messages that say "Jarvis". In groups it's read-only: it can
+  only look up the Taxi App board.
 Only OWNER_ID is ever answered.
 """
 import asyncio
@@ -176,7 +178,7 @@ class GroupCall(Call):
     def __init__(self, chat_id: int, title: str):
         super().__init__(chat_id)
         self.title = title
-        self.brain = Brain("group", group_prompt(title))
+        self.brain = Brain("group", group_prompt(title, voice=True))
         self.speakers: dict[int, Ears] = {}   # audio source -> their ears
         self.names: dict[int, str] = {}       # audio source -> name
         self.sent = 0                         # transcript lines the brain has already seen
@@ -235,6 +237,7 @@ class GroupCall(Call):
 call: Call | None = None
 group: GroupCall | None = None
 chat = Brain("chat")
+group_chats: dict[int, Brain] = {}   # group id -> its brain for messages that mention Jarvis
 
 
 async def start_call(user_id: int, reason: str = "", guest: str = "", message: str = ""):
@@ -484,6 +487,21 @@ async def on_message(event):
         async with tg.action(OWNER_ID, "typing"):
             reply = await chat.reply(text)
         await event.reply(reply or "(no reply)")
+
+
+@tg.on(events.NewMessage(incoming=True, func=lambda e: e.is_group and bool(WAKE.search(e.raw_text or ""))))
+async def on_group_message(event):
+    """Someone in a group says "Jarvis" in a message: answer it there (read-only)."""
+    if event.chat_id not in group_chats:
+        title = getattr(await event.get_chat(), "title", "") or str(event.chat_id)
+        group_chats[event.chat_id] = Brain("group", group_prompt(title, voice=False))
+    sender = await event.get_sender()
+    name = "Sanjar" if event.sender_id == OWNER_ID else (
+        contacts.name_of(sender) if hasattr(sender, "first_name") else getattr(sender, "title", "someone"))
+    async with tg.action(event.chat_id, "typing"):
+        reply = await group_chats[event.chat_id].reply(f"{name}: {event.raw_text}")
+    if reply:
+        await event.reply(reply)
 
 
 # --- calls ---------------------------------------------------------------------------------

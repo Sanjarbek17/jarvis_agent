@@ -1,7 +1,8 @@
 """Jarvis tools for the Claude brain, served as MCP over local HTTP from inside jarvis.py.
 
-Three servers: the call brain (has hang_up), the Telegram brain, and the guest brain for calls
-Jarvis places to other people (only hang_up, so the person on the line can't use the others).
+Four servers: the call brain (has hang_up), the Telegram brain, the guest brain for calls
+Jarvis places to other people (only hang_up, so the person on the line can't use the others),
+and the group brain (Telegram groups: only the read-only Taxi App board status).
 The tools hold the Notion token and the Telegram session; Claude only sees results.
 """
 import asyncio
@@ -21,6 +22,7 @@ from .mac import MacWorker, run_quick
 log = logging.getLogger("jarvis.tools")
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 EDITOR = "Antigravity IDE"
+GROUP_PROJECT = "Taxi App"   # the one board people in groups may ask about
 MAC_WAIT = {"Call": 25, "Telegram": 60}   # seconds mac_task waits for a result, then goes on in the background
 
 
@@ -96,6 +98,14 @@ def make_server(source: str) -> MCPServer:
             return "Hanging up"
 
     if source == "Guest":
+        return server
+
+    if source == "Group":
+        @server.tool()
+        async def taxi_board() -> str:
+            """The Taxi App board, read-only: what Jarvis is doing on it, and its open tickets by sprint."""
+            return (f"Jarvis's work:\n{await board.status_text(GROUP_PROJECT)}\n\n"
+                    f"Board:\n{await board.project_board(GROUP_PROJECT)}")
         return server
 
     @server.tool()
@@ -290,7 +300,8 @@ def make_server(source: str) -> MCPServer:
 async def serve() -> None:
     """Run the tools servers until cancelled."""
     servers = []
-    for port, source in ((TOOLS_PORT, "Call"), (TOOLS_PORT + 1, "Telegram"), (TOOLS_PORT + 2, "Guest")):
+    for port, source in ((TOOLS_PORT, "Call"), (TOOLS_PORT + 1, "Telegram"), (TOOLS_PORT + 2, "Guest"),
+                         (TOOLS_PORT + 3, "Group")):
         app = make_server(source).streamable_http_app(stateless_http=True, json_response=True)
         config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
         server = uvicorn.Server(config)
@@ -298,5 +309,5 @@ async def serve() -> None:
         # several servers the signal got lost and `pkill` left Jarvis running. Leave signals alone.
         server.capture_signals = contextlib.nullcontext
         servers.append(server.serve())
-    log.info("tools servers on ports %s-%s", TOOLS_PORT, TOOLS_PORT + 2)
+    log.info("tools servers on ports %s-%s", TOOLS_PORT, TOOLS_PORT + 3)
     await asyncio.gather(*servers)
