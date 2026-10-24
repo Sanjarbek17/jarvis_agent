@@ -159,16 +159,29 @@ class Mouth:
     have no daily limit, while the TTS models allow only 10 requests a day.
     """
 
+    # if a text has been sent but no audio and no turn-complete arrive within this long, the TTS
+    # stream is treated as dead: the pending turn is cleared and the session restarted, so `busy`
+    # can't get stuck on (which used to make the call ignore Sanjar as "echo")
+    SILENCE_TIMEOUT = 8.0
+
     def __init__(self):
         self.out = bytearray()              # 48 kHz stereo audio waiting to be played
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._pending = 0                   # texts sent but not fully spoken yet
         self._spoken = 0                    # bytes of audio for the current text
+        self._active = time.monotonic()     # last time a turn started / produced audio / completed
         self._task = asyncio.create_task(self._run())
+        self._watchdog = asyncio.create_task(self._watch())
 
     @property
     def busy(self) -> bool:
         return bool(self.out) or self._pending > 0 or not self._queue.empty()
+
+    @property
+    def playing(self) -> bool:
+        """Audio is actually going out to the call right now (buffer has sound). Use this, not
+        `busy`, to tell Sanjar's voice from Jarvis's own echo: a pending-but-silent turn isn't echo."""
+        return bool(self.out)
 
     def say(self, text: str):
         if text.strip():
@@ -181,11 +194,27 @@ class Mouth:
         """
         if not self.busy:
             return
+        self._restart()
+
+    def _restart(self):
+        """Drop everything queued/pending and reconnect with a fresh TTS session."""
         while not self._queue.empty():
             self._queue.get_nowait()
         self.out.clear()
+        self._pending = 0
+        self._active = time.monotonic()
         self._task.cancel()
         self._task = asyncio.create_task(self._run())
+
+    async def _watch(self):
+        """If a turn was sent but nothing comes back (no audio, no turn-complete) for too long,
+        the stream is dead: clear the stuck turn and reconnect so `busy` doesn't latch on."""
+        while True:
+            await asyncio.sleep(0.5)
+            if self._pending > 0 and not self.out and time.monotonic() - self._active > self.SILENCE_TIMEOUT:
+                log.error("TTS produced no audio for %.0fs; dropping %d stuck turn(s) and reconnecting",
+                          self.SILENCE_TIMEOUT, self._pending)
+                self._restart()
 
     async def wait_done(self, timeout: float = 20):
         with contextlib.suppress(TimeoutError):
@@ -195,6 +224,7 @@ class Mouth:
 
     async def close(self):
         self._task.cancel()
+        self._watchdog.cancel()
 
     async def _run(self):
         config = types.LiveConnectConfig(
@@ -222,6 +252,7 @@ class Mouth:
             text = await self._queue.get()
             self._pending += 1
             self._spoken = 0
+            self._active = time.monotonic()
             await session.send_client_content(
                 turns=types.Content(role="user", parts=[types.Part(text=text)]), turn_complete=True)
 
@@ -236,7 +267,12 @@ class Mouth:
                         if part.inline_data and part.inline_data.data:
                             self.out += to_48k(part.inline_data.data)
                             self._spoken += len(part.inline_data.data)
+                            self._active = time.monotonic()
                 if sc.turn_complete:
                     self._pending = max(0, self._pending - 1)
-                    log.info("mouth spoke %.1f s of audio", self._spoken / 48000)  # 24 kHz s16
+                    self._active = time.monotonic()
+                    if self._spoken:
+                        log.info("mouth spoke %.1f s of audio", self._spoken / 48000)  # 24 kHz s16
+                    else:
+                        log.error("TTS stream ended with no audio for a reply")
                     self._spoken = 0

@@ -92,13 +92,15 @@ class Call:
 
     async def on_speaking(self, text: str):
         # the other side talks over Jarvis: stop it. 3+ words, because a phone on speaker sends
-        # bits of Jarvis's own voice back ("hour", "Hello") and that kept cutting it off
-        if self.mouth.busy and len(text.split()) >= 3:
+        # bits of Jarvis's own voice back ("hour", "Hello") and that kept cutting it off.
+        # Gate on `playing` (audio actually going out), not `busy`: if a reply is stuck with no
+        # audio, that's not echo and must not swallow Sanjar.
+        if self.mouth.playing and len(text.split()) >= 3:
             self.turn_id += 1
             self.mouth.stop()
 
     async def on_sentence(self, text: str):
-        if self.mouth.busy and len(text.split()) < 3:
+        if self.mouth.playing and len(text.split()) < 3:
             log.info("ignored while Jarvis talks (likely echo): %s", text)
             return
         self._note(self.guest or "Sanjar", text)
