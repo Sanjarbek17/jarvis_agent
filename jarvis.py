@@ -509,6 +509,9 @@ async def on_message(event):
     elif text.startswith("/call"):
         await event.reply("Calling you.")
         await start_call(OWNER_ID)
+    elif text.startswith("/clear"):
+        await chat.clear()
+        await event.reply("Cleared.")
     else:
         ctx = await reply_context(event)
         async with tg.action(OWNER_ID, "typing"):
