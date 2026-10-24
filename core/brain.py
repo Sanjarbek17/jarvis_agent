@@ -6,6 +6,7 @@ things up itself, while the runner's workers do the actual project work.
 The guest brain (calls to other people) has none of these, only hang_up.
 """
 import asyncio
+import contextlib
 import json
 import logging
 from typing import AsyncIterator
@@ -251,6 +252,18 @@ class Brain:
 
     async def reply(self, text: str) -> str:
         return "".join([chunk async for chunk in self.ask(text)]).strip()
+
+    async def clear(self):
+        """Forget the conversation so far: stop the process and drop the resume session, so the
+        next message starts fresh."""
+        async with self.lock:
+            await self.stop()
+            if self.proc:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(self.proc.wait(), 5)
+            self.proc = None
+            self.session_id = ""
+            self.notes.clear()
 
     async def stop(self):
         if self.proc and self.proc.returncode is None:
