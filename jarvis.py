@@ -39,7 +39,7 @@ from core import board, contacts, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_RATE, DAILY_CALL_AT, LOGS, OWNER_ID, PROJECTS,
-                         PROJECTS_URL, QUIET_HOURS, SESSION, TG_API_HASH, TG_API_ID)
+                         PROJECTS_URL, QUIET_HOURS, SESSION, SOFT_SKILLS_REMINDER_AT, TG_API_HASH, TG_API_ID)
 from core.mac import MacWorker
 from core.runner import Runner
 from core.voice import Ears, Mouth, split_sentences, transcribe_audio
@@ -289,6 +289,21 @@ async def daily_call():
         await auto_call("[DAILY SUMMARY] Give Sanjar a short spoken summary of today: use get_status "
                         "for all projects; say what got done, what's still running, and anything "
                         "that needs him. Keep it under a minute.")
+
+
+async def daily_reminder():
+    """Once a day at SOFT_SKILLS_REMINDER_AT: a Telegram nudge to continue soft skills; he calls."""
+    while True:
+        now = time.time()
+        h, m = SOFT_SKILLS_REMINDER_AT
+        t = time.localtime(now)
+        target = time.mktime((t.tm_year, t.tm_mon, t.tm_mday, h, m, 0, 0, 0, -1))
+        if target <= now:
+            target += 24 * 3600
+        await asyncio.sleep(target - now)
+        with contextlib.suppress(Exception):
+            await tg.send_message(OWNER_ID, "🎓 Soft skills time, sir. Shall we continue where we "
+                                  "left off? Call me when you're ready.")
 
 
 waiting_calls: list[tuple[int, str, str]] = []   # (user id, name, message) to call after this call
@@ -599,7 +614,7 @@ async def main():
     tools.hooks.mac = mac
     tools.hooks.mac_late = mac_late
     background = [asyncio.create_task(tools.serve()), asyncio.create_task(runner.run_forever()),
-                  asyncio.create_task(daily_call())]
+                  asyncio.create_task(daily_call()), asyncio.create_task(daily_reminder())]
     await calls.start()
     me = await tg.get_me()
     log.info("Jarvis is up as @%s", me.username)
