@@ -74,5 +74,12 @@
     "about": "run Sanjar's own code on his own Hikvision CCTV cameras (e.g. camera -> Telegram, no NVR); research stage",
     "folders": [],
     "board": "66dc104608f94a51b68ebf90c3012467"
+  },
+  "Soft Skills": {
+    "about": "Sanjar's 12-week soft-skills coaching program; Jarvis coaches live on calls, a worker logs each session to memory/",
+    "folders": [
+      "agi/projects/soft_skills"
+    ],
+    "board": "42a3ced033524471b95d0bc404d119e2"
   }
 }
