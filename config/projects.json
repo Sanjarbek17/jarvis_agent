@@ -81,5 +81,12 @@
       "agi/projects/soft_skills"
     ],
     "board": "42a3ced033524471b95d0bc404d119e2"
+  },
+  "Upwork": {
+    "about": "Upwork job search: a worker finds and scores matching jobs, drafts a tailored proposal, and sends it to Sanjar for approval; Sanjar submits himself (no auto-submit)",
+    "folders": [
+      "upwork_job"
+    ],
+    "board": "7b1950c38ce94dbba9e920afa6654ea5"
   }
 }
