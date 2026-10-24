@@ -210,6 +210,15 @@ async def drop(t: Ticket, reason: str) -> str:
     return how
 
 
+async def mark_done(t: Ticket, reason: str) -> str:
+    """Mark the ticket Done: the Jarvis column Done, and the board's own Status to its done stage
+    (every board here has a "Done"). Returns how it was marked."""
+    done = await _status_value(boards()[t.project], "done")
+    await update(t, jarvis="Done", note=f"done: {reason}", stage="done")
+    await append_log(t.page_id, [f"Marked Done: {reason}"])
+    return "Status + Jarvis Done" if done else "Jarvis Done (board has no Done status)"
+
+
 async def body_lines(page_id: str) -> list[str]:
     """The ticket page's text, block by block (plain text, no formatting)."""
     r = await _http.get(f"/blocks/{page_id}/children", params={"page_size": 100})

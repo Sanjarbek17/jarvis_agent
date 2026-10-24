@@ -175,6 +175,17 @@ def make_server(source: str) -> MCPServer:
         return f"Dropped {t.ref} ({how}): {t.title}"
 
     @server.tool()
+    async def mark_done(ticket_ref: str, reason: str = "") -> str:
+        """Mark a ticket Done on its board (Jarvis column + the board's Status both set to Done),
+        e.g. one Sanjar tested himself and confirmed works. Only on his clear say-so, not your own
+        call. reason: his words or why it's done."""
+        t = await _editable(ticket_ref)
+        if isinstance(t, str):
+            return t
+        how = await board.mark_done(t, reason or "Sanjar confirmed it works")
+        return f"Marked {t.ref} Done ({how}): {t.title}"
+
+    @server.tool()
     async def move_ticket(ticket_ref: str, to_project: str, reason: str) -> str:
         """Move a ticket to another project's board, e.g. filed on the wrong board. The copy keeps
         the title and text and is queued if the original was; the original is marked Dropped."""
