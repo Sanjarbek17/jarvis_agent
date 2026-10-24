@@ -11,7 +11,7 @@ import json
 import logging
 from typing import AsyncIterator
 
-from .config import CALLS, DEV, EXTRA_READ_DIRS, HERE, PROJECTS, TOOLS_PORT, projects_text, projects_version
+from .config import CALLS, DEV, HERE, PROJECTS, TOOLS_PORT, projects_text, projects_version
 
 log = logging.getLogger("jarvis.brain")
 
@@ -164,14 +164,10 @@ SECRETS = ["Read(**/.env)", "Read(**/.env.*)", "Grep(**/.env)", "Grep(**/.env.*)
 
 
 def _file_access() -> list[str]:
-    """claude flags: read-only file tools in every project folder (claude's cwd is Jarvis's own).
-    Not allow-listed, so reads outside these folders are refused instead of prompted."""
-    folders = [f for p in PROJECTS.values() for f in p.get("folders", [])] + EXTRA_READ_DIRS
-    dirs = sorted({str(DEV / f) for f in folders if (DEV / f).is_dir()})
-    flags = ["--tools", "Read,Glob,Grep", "--disallowedTools", *SECRETS]
-    for d in dirs:
-        flags += ["--add-dir", d]
-    return flags
+    """claude flags: read-only file tools across all of ~/dev (every project and folder lives
+    there; claude's own cwd is inside it too). .env files are blocked. Reads outside ~/dev (home,
+    ~/.ssh, ~/Documents, ...) are refused, not prompted."""
+    return ["--tools", "Read,Glob,Grep", "--disallowedTools", *SECRETS, "--add-dir", str(DEV)]
 
 
 class Brain:

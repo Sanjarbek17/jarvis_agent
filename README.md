@@ -48,9 +48,9 @@ time, it remembers earlier Mac jobs; a job longer than a minute reports back in 
 Needs Accessibility + Screen Recording for Jarvis once (System Settings > Privacy & Security);
 Jarvis checks at start and messages you if they're missing.
 
-Reading files: Jarvis can look things up itself (read-only: Read, Glob, Grep) in every project
-folder from `config/projects.json` and its own folder, e.g. "what port does the taxi backend use".
-No `.env` files, nothing outside those folders; changing anything is still a ticket.
+Reading files: Jarvis can look things up itself (read-only: Read, Glob, Grep) anywhere under
+`~/dev`, e.g. "what port does the taxi backend use". No `.env` files, nothing outside `~/dev`
+(home, `~/.ssh`, `~/Documents` stay off limits); changing anything is still a ticket.
 
 Calling other people: "call Olimjon and tell him ..." (by message or on a call). Jarvis looks the
 name up in the Jarvis account's Telegram contacts and chats (or takes an @username), asks if it's
