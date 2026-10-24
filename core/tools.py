@@ -29,6 +29,7 @@ MAC_WAIT = {"Call": 25, "Telegram": 60}   # seconds mac_task waits for a result,
 class Hooks:
     """Filled in by jarvis.py so tools can reach Telegram and the call."""
     send_photo: Callable[[Path, str], Awaitable[None]]
+    send_photos: Callable[[list[Path], str], Awaitable[None]]
     hang_up: Callable[[], Awaitable[None]]
     call_contact: Callable[[str, str], Awaitable[str]]
     worker_progress: Callable[[str, str], str]
@@ -287,8 +288,7 @@ def make_server(source: str) -> MCPServer:
             return ("Still working on it" + (f" (after the task before it: {busy})" if busy else "")
                     + "; the result goes to Sanjar in Telegram when it's done.")
         text, photos, question = job.result()
-        for p in photos[:3]:
-            await hooks.send_photo(p, "Mac")
+        await hooks.send_photos(photos[:10], "Mac")
         return (f"The Mac worker needs Sanjar's decision: {text}" if question else text) + \
                (f" ({len(photos)} screenshot(s) sent to Telegram)" if photos else "")
 
