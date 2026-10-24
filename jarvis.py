@@ -413,14 +413,27 @@ async def send_photo(path: Path, caption: str):
     await tg.send_file(OWNER_ID, str(path), caption=caption[:1000])
 
 
+async def send_photos(paths: list[Path], caption: str):
+    """Send several images as one Telegram album (gallery) instead of one message each. One image
+    goes as a normal photo; albums cap at 10, so more are sent in groups of 10 (caption on the first)."""
+    paths = [p for p in paths if p.exists()]
+    if not paths:
+        return
+    if len(paths) == 1:
+        await send_photo(paths[0], caption)
+        return
+    for i in range(0, len(paths), 10):
+        chunk = [str(p) for p in paths[i:i + 10]]
+        await tg.send_file(OWNER_ID, chunk, caption=caption[:1000] if i == 0 else "")
+
+
 async def notify(card: Ticket, kind: str, text: str, photos: list[Path]):
     """Runner result: tell me on the call if I'm on one, and always leave it in Telegram."""
     head = f"{EMOJI[kind]} {card.ref} [{card.project}] {card.title}"
     body = f"Question: {text}" if kind == "needs_me" else text
     await tg.send_message(OWNER_ID, f"{head}\n\n{body[:3500]}\n\n{card.url}",
                           silent=call is not None, link_preview=False)
-    for p in photos[:5]:
-        await send_photo(p, f"{card.ref} screenshot")
+    await send_photos(photos[:10], f"{card.ref} screenshots")
     update = f"[UPDATE] ticket {card.ref} \"{card.title}\" ({card.project}) is {kind.replace('_', ' ')}: {text[:800]}"
     if call and not call.guest:
         call.tell(update)
@@ -444,8 +457,7 @@ async def mac_late(task: str, text: str, photos: list[Path], question: bool):
     """A Mac task that outlasted mac_task's wait: same path as a ticket result."""
     head = f"{'❓' if question else '❌' if text.startswith('Failed') else '✅'} Mac: {task}"
     await tg.send_message(OWNER_ID, f"{head}\n\n{text[:3500]}", silent=call is not None)
-    for p in photos[:5]:
-        await send_photo(p, "Mac")
+    await send_photos(photos[:10], "Mac")
     update = f"[UPDATE] Mac task \"{task}\" {'needs his decision' if question else 'finished'}: {text[:800]}"
     if call and not call.guest:
         call.tell(update)
@@ -580,6 +592,7 @@ mac = MacWorker()
 
 async def main():
     tools.hooks.send_photo = send_photo
+    tools.hooks.send_photos = send_photos
     tools.hooks.hang_up = hang_up
     tools.hooks.call_contact = call_contact
     tools.hooks.worker_progress = runner.progress
