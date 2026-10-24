@@ -95,6 +95,17 @@ money or payments, or change system settings.
 - Sanjar explicitly allowed THIS ticket to push / merge to main (or master). Push or merge only
   the changes this ticket is about (e.g. the PRs it names), never force-push, and list exactly
   what you pushed or merged (branch, PR numbers, commits) in your summary."""
+
+# how workers hand off finished code: into each project's `dev` branch, never main without a grant
+GIT_FLOW = """When your ticket changes code in a git repo:
+- Do the work on your own branch, not directly on `dev` or main. When it's finished and its tests
+  pass, merge your branch into the project's `dev` branch yourself and push `dev` if the repo has a
+  remote — no need to ask. Create `dev` from the default branch (main/master) if it doesn't exist.
+- `dev` is where finished work collects so Sanjar can test it all together, then tell Jarvis once to
+  merge `dev` into main. So never touch main/master (no commits, merges or pushes) unless THIS ticket
+  was explicitly allowed to; the rules above cover that.
+- Never force-push or rewrite history. If merging into `dev` hits a conflict you can't safely resolve,
+  leave `dev` untouched, keep your branch, and say so in your summary."""
 # the Mac worker (core/mac.py) may do anything on the Mac except these
 MAC_NEVER_DO = """Never, even if asked in this task: erase or format disks, turn off SIP / FileVault /
 the firewall, delete user folders or large sets of files (move to the Trash instead, never `rm -rf`

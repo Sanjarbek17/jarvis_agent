@@ -14,7 +14,8 @@ from typing import Awaitable, Callable
 
 from . import board, grants
 from .board import Ticket
-from .config import HERE, LOGS, MAX_WORKERS, NEVER_DO, NEVER_DO_MAIN_OK, POLL_SECONDS, SHOTS, STATE, project_dirs
+from .config import (GIT_FLOW, HERE, LOGS, MAX_WORKERS, NEVER_DO, NEVER_DO_MAIN_OK, POLL_SECONDS,
+                     SHOTS, STATE, project_dirs)
 
 log = logging.getLogger("jarvis.runner")
 SESSIONS = STATE / "sessions.json"
@@ -49,6 +50,7 @@ notes for working on board tickets (CLAUDE.md, a <project>-board skill), follow 
 
 Sanjar is away from the computer and won't approve anything, so work on your own until it's done.
 {NEVER_DO_MAIN_OK if grants.allowed(t.ref, grants.PUSH_MAIN) else NEVER_DO}
+{GIT_FLOW}
 - If you change something visible in a web app, start it (or use the running one) and save a
   screenshot of the result as a PNG in {shots}/ (e.g. with headless Chrome or Playwright).
 - Never touch ~/Documents, ~/Desktop or ~/Downloads (not even `ls`): macOS asks for permission
