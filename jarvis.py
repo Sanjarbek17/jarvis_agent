@@ -455,6 +455,32 @@ async def mac_late(task: str, text: str, photos: list[Path], question: bool):
 
 # --- Telegram ------------------------------------------------------------------------------
 
+async def reply_context(event) -> str:
+    """If this message is a reply, a short block with the quoted message so the brain can see what
+    Sanjar is pointing at ("make a ticket about this", "what does this mean"). Voice notes in the
+    quoted message are transcribed. Empty string if the message isn't a reply."""
+    if not event.is_reply:
+        return ""
+    try:
+        r = await event.get_reply_message()
+    except Exception:
+        log.warning("couldn't fetch the replied-to message", exc_info=True)
+        return ""
+    if r is None:
+        return ""
+    who = "you (Jarvis)" if r.out else "Sanjar" if r.sender_id == OWNER_ID else "someone"
+    body = (r.raw_text or "").strip()
+    if not body and (r.voice or r.video_note or r.audio):
+        try:
+            body = await transcribe_audio(await r.download_media(file=bytes))
+            body = f"(voice) {body}" if body else ""
+        except Exception:
+            body = ""
+    if not body:
+        body = "[a photo]" if r.photo else "[a file]" if r.document else "[no text]"
+    return f"[Replying to this earlier message from {who}:\n{body[:3000]}\n]\n\n"
+
+
 @tg.on(events.NewMessage(incoming=True, from_users=OWNER_ID, func=lambda e: e.is_private))
 async def on_message(event):
     text = (event.raw_text or "").strip()
@@ -484,8 +510,9 @@ async def on_message(event):
         await event.reply("Calling you.")
         await start_call(OWNER_ID)
     else:
+        ctx = await reply_context(event)
         async with tg.action(OWNER_ID, "typing"):
-            reply = await chat.reply(text)
+            reply = await chat.reply(ctx + text)
         await event.reply(reply or "(no reply)")
 
 
@@ -498,8 +525,9 @@ async def on_group_message(event):
     sender = await event.get_sender()
     name = "Sanjar" if event.sender_id == OWNER_ID else (
         contacts.name_of(sender) if hasattr(sender, "first_name") else getattr(sender, "title", "someone"))
+    ctx = await reply_context(event)
     async with tg.action(event.chat_id, "typing"):
-        reply = await group_chats[event.chat_id].reply(f"{name}: {event.raw_text}")
+        reply = await group_chats[event.chat_id].reply(f"{ctx}{name}: {event.raw_text}")
     if reply:
         await event.reply(reply)
 
