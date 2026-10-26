@@ -24,6 +24,7 @@ import logging
 import re
 import sys
 import time
+from collections import deque
 from pathlib import Path
 
 from pytgcalls import PyTgCalls, filters
@@ -56,6 +57,9 @@ calls = PyTgCalls(tg)
 CHUNK = CALL_RATE // 100 * 2 * 2      # 10 ms of 48 kHz stereo s16 going into the call
 EMOJI = {"done": "✅", "failed": "❌", "needs_me": "❓"}
 WAKE = re.compile(r"jarvis|джарвис|жарвис", re.I)   # someone in a group call speaks to Jarvis
+# a group message about arranging a meeting (Uzbek / Russian / English); Jarvis may step in to help
+MEETING = re.compile(r"uchrash|yig'?ilish|majlis|meeting|schedule|созвон|встреч|собра|митинг|"
+                     r"davomida|soat\s*\d|\bat\s*\d{1,2}(:\d{2})?\s*(am|pm|да)?\b", re.I)
 
 
 class Call:
@@ -241,6 +245,7 @@ call: Call | None = None
 group: GroupCall | None = None
 chat = Brain("chat")
 group_chats: dict[int, Brain] = {}   # group id -> its brain for messages that mention Jarvis
+group_history: dict[int, deque] = {}  # group id -> recent "Name: text" lines, so Jarvis follows the whole chat
 
 
 async def start_call(user_id: int, reason: str = "", guest: str = "", message: str = ""):
@@ -586,20 +591,37 @@ async def on_message(event):
         await event.reply(reply or "(no reply)")
 
 
-@tg.on(events.NewMessage(incoming=True, func=lambda e: e.is_group and bool(WAKE.search(e.raw_text or ""))))
+@tg.on(events.NewMessage(incoming=True, func=lambda e: e.is_group and bool((e.raw_text or "").strip())))
 async def on_group_message(event):
-    """Someone in a group says "Jarvis" in a message: answer it there (read-only)."""
-    if event.chat_id not in group_chats:
-        title = getattr(await event.get_chat(), "title", "") or str(event.chat_id)
-        group_chats[event.chat_id] = Brain("group", group_prompt(title, voice=False))
+    """Follow the whole group conversation (read-only). Jarvis keeps the recent messages so it has
+    the full thread, but only speaks up when it's addressed by name or a meeting is being arranged
+    (e.g. "Jarvis, schedule it"). It answers in the language the group is using."""
+    text = (event.raw_text or "").strip()
     sender = await event.get_sender()
     name = "Sanjar" if event.sender_id == OWNER_ID else (
         contacts.name_of(sender) if hasattr(sender, "first_name") else getattr(sender, "title", "someone"))
+    hist = group_history.setdefault(event.chat_id, deque(maxlen=40))
+    hist.append(f"{name}: {text}")
+
+    meeting = bool(MEETING.search(text))
+    if not (WAKE.search(text) or meeting):
+        return   # just listening; keep the context, say nothing
+    title = getattr(await event.get_chat(), "title", "") or str(event.chat_id)
+    if event.chat_id not in group_chats:
+        group_chats[event.chat_id] = Brain("group", group_prompt(title, voice=False))
     ctx = await reply_context(event)
+    convo = "\n".join(hist)
+    msg = (f"{ctx}Recent conversation in the group (most recent last):\n{convo}\n\n"
+           f"The latest message is from {name}. Reply only if you were addressed by name, or if the "
+           f"group is asking you to arrange, schedule, or note a meeting; otherwise reply with nothing.")
     async with tg.action(event.chat_id, "typing"):
-        reply = await group_chats[event.chat_id].reply(f"{ctx}{name}: {event.raw_text}")
-    if reply:
+        reply = await group_chats[event.chat_id].reply(msg)
+    if reply.strip():
         await event.reply(reply)
+        # a meeting was arranged in a group: make sure Sanjar actually has it
+        if meeting and event.sender_id != OWNER_ID:
+            with contextlib.suppress(Exception):
+                await tg.send_message(OWNER_ID, f"📅 Possible meeting in \"{title}\":\n{reply}", silent=True)
 
 
 # --- calls ---------------------------------------------------------------------------------
