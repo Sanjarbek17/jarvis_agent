@@ -289,18 +289,45 @@ async def status_text(project: str = "") -> str:
     return "\n".join(t.line() for t in tickets)
 
 
-async def project_board(project: str, include_done: bool = False) -> str:
-    """The whole board: counts per status and the open tickets by sprint."""
+async def project_board(project: str, sprint: str = "", status: str = "", limit: int = 60) -> str:
+    """The board, optionally filtered. sprint: an exact sprint like "S5" (empty = any). status:
+    "" / "open" (open tickets, the default), "done", "all", or a specific status name. Always shows
+    counts per status and per sprint; if the filtered list is longer than `limit`, says so."""
     tickets = await _query(project)
-    counts: dict[str, int] = {}
+    by_status: dict[str, int] = {}
+    by_sprint: dict[str, int] = {}
     for t in tickets:
-        counts[t.status or "no status"] = counts.get(t.status or "no status", 0) + 1
-    rows = [t for t in tickets if include_done or t.status.lower() not in FINISHED]
-    rows.sort(key=lambda t: (t.sprint or "~", t.title))
-    lines = ["Counts: " + ", ".join(f"{k} {v}" for k, v in counts.items())]
-    for t in rows[:40]:
+        by_status[t.status or "no status"] = by_status.get(t.status or "no status", 0) + 1
+        by_sprint[t.sprint or "no sprint"] = by_sprint.get(t.sprint or "no sprint", 0) + 1
+
+    want = status.strip().lower()
+    sprint_l = sprint.strip().lower()
+
+    def keep(t: Ticket) -> bool:
+        if sprint_l and (t.sprint or "").lower() != sprint_l:
+            return False
+        s = (t.status or "").lower()
+        if want in ("", "open", "todo", "to do", "not done", "not finished"):
+            return s not in FINISHED
+        if want in ("done", "finished", "closed"):
+            return s in FINISHED
+        if want == "all":
+            return True
+        return s == want                 # a specific status option name
+
+    rows = [t for t in tickets if keep(t)]
+    rows.sort(key=lambda t: (t.sprint or "~", t.status or "", t.title))
+
+    scope = " ".join(p for p in (sprint, want if want and want != "open" else "open") if p) or "open"
+    lines = [f"{project}: {len(tickets)} tickets total.",
+             "By status: " + ", ".join(f"{k} {v}" for k, v in sorted(by_status.items())),
+             "By sprint: " + ", ".join(f"{k} {v}" for k, v in sorted(by_sprint.items())),
+             f"Showing {scope} ({len(rows)}):"]
+    for t in rows[:limit]:
         lines.append(f"- {t.ref} [{t.status or '?'}] {t.title}" + (f" ({t.sprint})" if t.sprint else "")
                      + (f" — Jarvis {t.jarvis}" if t.jarvis else ""))
-    if len(rows) > 40:
-        lines.append(f"... and {len(rows) - 40} more")
+    if not rows:
+        lines.append("(none match; try another sprint or status, or status 'all')")
+    if len(rows) > limit:
+        lines.append(f"... and {len(rows) - limit} more — narrow it with a sprint (e.g. S5) or status.")
     return "\n".join(lines)
