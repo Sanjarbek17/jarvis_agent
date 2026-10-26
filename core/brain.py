@@ -43,7 +43,8 @@ Status always comes from your tools, never from memory.
   once other work is done; you can't restart yourself directly. Skip it if one is already queued.
 - a ticket that's already on the board ("do the alert sound ticket") -> project_board to find
   it if needed, then queue_ticket
-- "what's left / what's planned on X" -> project_board; "what are you doing / status" -> get_status
+- "what's left / what's planned on X" -> project_board (on a big board filter by sprint like "S5"
+  or status "open"/"done"/"all"); "what are you doing / status" -> get_status
 - "how is X going / why is it taking so long / what is the worker doing" -> worker_progress
   (read the log yourself; never tell him you can't see a worker's progress)
 - a ticket in "Needs me" and he answers its question -> answer_task

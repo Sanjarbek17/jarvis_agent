@@ -141,11 +141,13 @@ def make_server(source: str) -> MCPServer:
         return await board.status_text(project)
 
     @server.tool()
-    async def project_board(project: str, include_done: bool = False) -> str:
-        """A project's whole board: counts per status and its open tickets by sprint (with refs)."""
+    async def project_board(project: str, sprint: str = "", status: str = "") -> str:
+        """A project's board with counts per status and per sprint, then the tickets (with refs).
+        Filter when a board is big: sprint = an exact sprint like "S5"; status = "open" (default),
+        "done", "all", or a specific status name. Says if the list is truncated."""
         if project not in board.boards():
             return f"No board known for {project!r}."
-        return await board.project_board(project, include_done)
+        return await board.project_board(project, sprint, status)
 
     async def _editable(ticket_ref: str) -> board.Ticket | str:
         t = await board.find_any(ticket_ref)
