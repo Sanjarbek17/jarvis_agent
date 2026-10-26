@@ -38,8 +38,9 @@ from telethon.tl.types import MessageActionGroupCall
 from core import board, contacts, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt
-from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_RATE, DAILY_CALL_AT, LOGS, OWNER_ID, PROJECTS,
-                         PROJECTS_URL, QUIET_HOURS, SESSION, SOFT_SKILLS_REMINDER_AT, TG_API_HASH, TG_API_ID)
+from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
+                         PROJECTS, PROJECTS_URL, QUIET_HOURS, SESSION, SOFT_SKILLS_REMINDER_AT, TG_API_HASH,
+                         TG_API_ID)
 from core.mac import MacWorker
 from core.runner import Runner
 from core.voice import Ears, Mouth, split_sentences, transcribe_audio
@@ -484,6 +485,33 @@ async def mac_late(task: str, text: str, photos: list[Path], question: bool):
 
 # --- Telegram ------------------------------------------------------------------------------
 
+def _has_file(message) -> bool:
+    """A real attachment to save (document, photo, video, ...) — not a voice note, which is
+    transcribed separately."""
+    return bool(message.document or message.photo) and not (
+        message.voice or message.video_note or message.audio)
+
+
+async def save_incoming_file(message) -> str:
+    """Save an attachment Sanjar sent to var/state/inbox and return a one-line note for the brain
+    with the file's name, absolute path and type, so it can read it. Empty string if none/failed."""
+    if not _has_file(message):
+        return ""
+    f = message.file
+    ext = (f.ext or "").lstrip(".") if f else ""
+    name = (f.name if f and f.name else f"{message.id}" + (f".{ext}" if ext else "")) or str(message.id)
+    path = INBOX / f"{message.id}_{Path(name).name}"
+    try:
+        await tg.download_media(message, file=str(path))
+    except Exception:
+        log.warning("couldn't save an incoming file", exc_info=True)
+        return ""
+    mime = (f.mime_type if f else "") or "unknown"
+    size = path.stat().st_size if path.exists() else 0
+    return (f"[Sanjar sent a file, saved on the Mac: name={Path(name).name}, path={path}, "
+            f"type={mime}, size={size // 1024 or 1} KB. Read it with your file tools to answer.]")
+
+
 async def reply_context(event) -> str:
     """If this message is a reply, a short block with the quoted message so the brain can see what
     Sanjar is pointing at ("make a ticket about this", "what does this mean"). Voice notes in the
@@ -505,8 +533,11 @@ async def reply_context(event) -> str:
             body = f"(voice) {body}" if body else ""
         except Exception:
             body = ""
+    if _has_file(r):
+        saved = await save_incoming_file(r)
+        body = f"{body}\n{saved}".strip() if saved else (body or "[a file]")
     if not body:
-        body = "[a photo]" if r.photo else "[a file]" if r.document else "[no text]"
+        body = "[no text]"
     return f"[Replying to this earlier message from {who}:\n{body[:3000]}\n]\n\n"
 
 
@@ -520,7 +551,14 @@ async def on_message(event):
             await event.reply("I couldn't make out that voice message, sir.")
             return
         await event.reply(f"🎙 I heard: {text}")
-    if not text:
+    file_note = await save_incoming_file(event.message)
+    if not text and not file_note:
+        return
+    if file_note:
+        ctx = await reply_context(event)
+        async with tg.action(OWNER_ID, "typing"):
+            reply = await chat.reply("\n".join(p for p in (file_note, ctx + text) if p.strip()))
+        await event.reply(reply or "Saved it, sir.")
         return
     if text.startswith("/status"):
         project = text.removeprefix("/status").strip()

@@ -62,7 +62,8 @@ STATE = VAR / "state"            # per-project Claude sessions, etc.
 SHOTS = VAR / "shots"            # screenshots to send to me
 LOGS = VAR / "logs"
 CALLS = STATE / "calls"          # call transcripts
-for d in (STATE, SHOTS, LOGS):
+INBOX = STATE / "inbox"          # files Sanjar sends in the Telegram chat, saved for the brain to read
+for d in (STATE, SHOTS, LOGS, INBOX):
     d.mkdir(exist_ok=True)
 
 # voice
