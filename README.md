@@ -37,7 +37,9 @@ at login, restarts if it crashes, and keeps the Mac awake with `caffeinate`.
 - logs: `var/logs/jarvis.log`; each worker run: `var/logs/<project>-<ticket ref>.jsonl` (Jarvis
   reads these itself when you ask how a ticket is going)
 
-Telegram: plain text or a voice message = talk to Jarvis, `/status [project]`, `/stop <project|mac>`, `/call`, `/transcript`.
+Telegram: plain text or a voice message = talk to Jarvis, `/status [project]`, `/stop <project|mac>`, `/call`, `/transcript`, `/clear`.
+Send a file (document, photo, …), with or without a caption, and Jarvis saves it to `var/state/inbox/`
+and reads it to answer; a file sent as a reply works too.
 
 Mac control: "turn the volume down", "open Spotify and play my liked songs", "find the PDF I
 downloaded yesterday and send it to me". Quick one-step things Jarvis runs itself (`run_on_mac`);
