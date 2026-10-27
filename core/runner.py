@@ -150,6 +150,7 @@ class Runner:
         self.running: dict[str, asyncio.Task] = {}      # project -> worker
         self.procs: dict[str, asyncio.subprocess.Process] = {}
         self.current: dict[str, Ticket] = {}            # project -> ticket being worked on
+        self.finished: dict[str, float] = {}            # ticket ref -> when it finished (monotonic)
 
     async def run_forever(self):
         await self._recover()
@@ -168,10 +169,16 @@ class Runner:
             await self.notify(t, "failed", "Interrupted by a Jarvis restart.", [])
 
     async def _tick(self):
+        cutoff = time.monotonic() - 120
+        self.finished = {ref: ts for ref, ts in self.finished.items() if ts > cutoff}
         for t in await board.queued():
             if len(self.running) >= MAX_WORKERS:
                 return
             if t.project in self.running:
+                continue
+            if t.ref in self.finished:
+                # just finished (the board may still read as Queued for a moment); don't re-run it
+                log.info("skipping %s: finished %.0fs ago", t.ref, time.monotonic() - self.finished[t.ref])
                 continue
             task = asyncio.create_task(self._work(t), name=f"worker:{t.project}")
             self.running[t.project] = task
@@ -262,6 +269,7 @@ class Runner:
         await board.update(card, jarvis=status, note=question or result[-1900:],
                            stage="done" if status == "Done" else None)
         await board.append_log(card.page_id, [f"Jarvis {status}: {result[-1800:]}"])
+        self.finished[card.ref] = time.monotonic()   # don't re-pick it while the board catches up
         log.info("%s %s", card.ref, status)
         await self.notify(card, kind, question or result, photos)
 

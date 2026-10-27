@@ -19,6 +19,7 @@ Only OWNER_ID is ever answered.
 """
 import asyncio
 import contextlib
+import fcntl
 import functools
 import logging
 import re
@@ -284,34 +285,39 @@ async def auto_call(reason: str) -> bool:
         return False
 
 
-async def daily_call():
-    """Once a day at DAILY_CALL_AT: a short spoken summary of what Jarvis did and what needs me."""
+async def daily_at(hhmm, job):
+    """Run `job()` once a day at hh:mm (Mac local time). Fires at most once per calendar day and
+    ignores an early wake-up, so the same minute can't trigger two messages."""
+    h, m = hhmm
+    last_fired = ""
     while True:
         now = time.time()
-        h, m = DAILY_CALL_AT
         t = time.localtime(now)
         target = time.mktime((t.tm_year, t.tm_mon, t.tm_mday, h, m, 0, 0, 0, -1))
         if target <= now:
             target += 24 * 3600
-        await asyncio.sleep(target - now)
-        await auto_call("[DAILY SUMMARY] Give Sanjar a short spoken summary of today: use get_status "
-                        "for all projects; say what got done, what's still running, and anything "
-                        "that needs him. Keep it under a minute.")
+        await asyncio.sleep(max(1.0, target - now))
+        day = time.strftime("%Y-%m-%d", time.localtime(target))
+        if time.time() < target - 1 or last_fired == day:
+            continue                       # woke early, or already fired for this day
+        last_fired = day
+        with contextlib.suppress(Exception):
+            await job()
+
+
+async def daily_call():
+    """Once a day at DAILY_CALL_AT: a short spoken summary of what Jarvis did and what needs me."""
+    await daily_at(DAILY_CALL_AT, lambda: auto_call(
+        "[DAILY SUMMARY] Give Sanjar a short spoken summary of today: use get_status for all "
+        "projects; say what got done, what's still running, and anything that needs him. "
+        "Keep it under a minute."))
 
 
 async def daily_reminder():
     """Once a day at SOFT_SKILLS_REMINDER_AT: a Telegram nudge to continue soft skills; he calls."""
-    while True:
-        now = time.time()
-        h, m = SOFT_SKILLS_REMINDER_AT
-        t = time.localtime(now)
-        target = time.mktime((t.tm_year, t.tm_mon, t.tm_mday, h, m, 0, 0, 0, -1))
-        if target <= now:
-            target += 24 * 3600
-        await asyncio.sleep(target - now)
-        with contextlib.suppress(Exception):
-            await tg.send_message(OWNER_ID, "🎓 Soft skills time, sir. Shall we continue where we "
-                                  "left off? Call me when you're ready.")
+    await daily_at(SOFT_SKILLS_REMINDER_AT, lambda: tg.send_message(
+        OWNER_ID, "🎓 Soft skills time, sir. Shall we continue where we left off? "
+        "Call me when you're ready."))
 
 
 waiting_calls: list[tuple[int, str, str]] = []   # (user id, name, message) to call after this call
@@ -667,7 +673,31 @@ runner = Runner(notify)
 mac = MacWorker()
 
 
+_lock_fd = None
+
+
+def take_single_instance_lock(timeout: float = 90) -> bool:
+    """Hold an exclusive lock so only one Jarvis runs. After a restart the new process waits here
+    for the old one to die and release it, so two instances never both answer messages, poll the
+    board, or fire the daily timers. Returns False if the old one won't let go."""
+    global _lock_fd
+    _lock_fd = open(HERE / "var" / "jarvis.lock", "w")
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if time.monotonic() > deadline:
+                return False
+            time.sleep(1)
+
+
 async def main():
+    if not take_single_instance_lock():
+        log.error("another Jarvis still holds the lock after waiting; exiting so it keeps running")
+        return
+    log.info("single-instance lock held")
     tools.hooks.send_photo = send_photo
     tools.hooks.send_photos = send_photos
     tools.hooks.hang_up = hang_up
