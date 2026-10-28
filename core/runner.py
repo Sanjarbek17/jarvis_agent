@@ -8,6 +8,7 @@ Steps go to the ticket live; Done / Failed / Needs me go to Sanjar via `notify`.
 import asyncio
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -21,6 +22,23 @@ from .config import (GIT_FLOW, HERE, LOGS, MAX_WORKERS, NEVER_DO, NEVER_DO_MAIN_
 log = logging.getLogger("jarvis.runner")
 SESSIONS = STATE / "sessions.json"
 NEEDS_ME = "NEEDS ME:"
+# a "done" result whose ending says it is waiting on Sanjar (a merge, approval, decision...)
+_BLOCKED = re.compile(
+    r"(once|after|when|until)\b[^.\n]{0,80}\b(merged?|approved?|approve|push(ed)? to main|you (decide|confirm|choose|answer|reply))"
+    r"|waiting (on|for) (you|your|sanjar|a merge|the merge|approval|a decision)"
+    r"|blocked (on|by|until)|needs? your (approval|decision|ok|go-ahead|answer|input)"
+    r"|(can'?t|cannot) (continue|proceed|go on) (until|without)", re.I)
+
+
+def blocked_question(result: str) -> str:
+    """If a finished worker's last lines say it's waiting on Sanjar but it didn't use NEEDS ME,
+    return a question for him built from those lines; empty string if it isn't blocked."""
+    tail = result.strip()[-700:]
+    if not _BLOCKED.search(tail):
+        return ""
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", tail) if s.strip()]
+    hits = [s for s in sentences if _BLOCKED.search(s)]
+    return ("Blocked, waiting on you: " + " ".join(hits[-2:]))[:600]
 
 # notify(ticket, kind, text, photos) — kind is "done", "failed" or "needs_me"
 Notify = Callable[[Ticket, str, str, list[Path]], Awaitable[None]]
@@ -61,6 +79,9 @@ Sanjar is away from the computer and won't approve anything, so work on your own
   {HERE / ".venv/bin/python"} {HERE / "scripts/send_file.py"} <file> "<caption>"
 - If you truly can't continue without a decision from Sanjar, stop and make the LAST line of
   your final message: {NEEDS_ME} <one short question>
+- The same if your work is done for now but the next step waits on him: a merge, a push to main,
+  an approval, a choice, a key or account ("I'll continue once X is merged"). Never finish quietly
+  and wait — end with {NEEDS_ME} saying exactly what he needs to do so the work can go on.
 - Finish with a short plain summary (2-4 sentences): what you changed, which files, whether
   tests pass, anything he should know."""
 
@@ -265,6 +286,8 @@ class Runner:
         lines = result.strip().splitlines()
         if lines and lines[-1].strip().upper().startswith(NEEDS_ME):
             question = lines[-1].split(":", 1)[1].strip()
+        elif not is_error:
+            question = blocked_question(result)   # safety net: it waits on Sanjar but didn't say so
         status, kind = ("Needs me", "needs_me") if question else ("Failed", "failed") if is_error else ("Done", "done")
         if status == "Done":
             grants.revoke(card.ref)          # a permission covers one ticket's work, not later ones
