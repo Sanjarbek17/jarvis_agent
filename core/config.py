@@ -26,6 +26,7 @@ PROJECTS_URL = "https://app.notion.com/p/39bb8d1c364a814486faef3db95d72e5"   # N
 
 DEV = Path.home() / "dev"
 PROJECTS_FILE = HERE / "config" / "projects.json"
+RULES_FILE = HERE / "config" / "rules.md"   # Sanjar's standing rules, read live by workers and the brain
 PROJECTS: dict[str, dict] = {}   # updated in place by reload_projects(), so imports of it stay live
 _projects = {"mtime": 0.0, "version": 0}
 
@@ -96,14 +97,25 @@ money or payments, or change system settings.
   the changes this ticket is about (e.g. the PRs it names), never force-push, and list exactly
   what you pushed or merged (branch, PR numbers, commits) in your summary."""
 
+def rules_text() -> str:
+    """Sanjar's standing rules (config/rules.md), read fresh each time so edits apply at once."""
+    try:
+        return RULES_FILE.read_text().strip()
+    except OSError:
+        return ""
+
+
 # how workers hand off finished code: into each project's `dev` branch, never main without a grant
 GIT_FLOW = """When your ticket changes code in a git repo:
 - Do the work on your own branch, not directly on `dev` or main. When it's finished and its tests
   pass, merge your branch into the project's `dev` branch yourself and push `dev` if the repo has a
   remote — no need to ask. Create `dev` from the default branch (main/master) if it doesn't exist.
-- `dev` is where finished work collects so Sanjar can test it all together, then tell Jarvis once to
-  merge `dev` into main. So never touch main/master (no commits, merges or pushes) unless THIS ticket
-  was explicitly allowed to; the rules above cover that.
+- Never ask Sanjar before merging into `dev`, and never wait for someone else to merge into `dev`:
+  if your next step needs something in `dev`, merge it yourself and carry on.
+- `dev` is where finished work collects so Sanjar can test it all together. Never touch main/master
+  (no commits, merges or pushes) unless THIS ticket was explicitly allowed to, and don't ask him
+  about main for a single ticket. Only if your ticket finishes a whole build or sprint (no open
+  tickets left for it on the board) end with NEEDS ME: merge dev into main?
 - Never force-push or rewrite history. If merging into `dev` hits a conflict you can't safely resolve,
   leave `dev` untouched, keep your branch, and say so in your summary.
 - If you made a git worktree for this ticket, clean it up once your branch is merged into `dev` and

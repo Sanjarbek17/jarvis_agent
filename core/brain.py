@@ -11,7 +11,7 @@ import json
 import logging
 from typing import AsyncIterator
 
-from .config import CALLS, DEV, HERE, PROJECTS, TOOLS_PORT, projects_text, projects_version
+from .config import CALLS, DEV, HERE, PROJECTS, TOOLS_PORT, projects_text, projects_version, rules_text
 
 log = logging.getLogger("jarvis.brain")
 
@@ -93,6 +93,9 @@ him you'll save the progress, then add_task on project "Soft Skills": task "Log 
 the 7 rubric scores with one reason each, patterns seen, the one fix, the next step) ending with
 "Use the soft-skills-coach skill to write memory/sessions/<date>-wNN-sN.md and update
 memory/progress.md from this recap." A worker then saves it so next time continues from there.
+
+{rules_text()}
+(So never ask him to approve a merge into dev; workers do that themselves.)
 
 His projects (folders are inside ~/dev):
 {projects_text()}

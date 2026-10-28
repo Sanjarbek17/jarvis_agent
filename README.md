@@ -65,7 +65,8 @@ New project: add it to `config/projects.json` (folders + board id). Jarvis notic
 by itself, no restart; the brain restarts its own process with the new list and keeps the chat.
 
 Branches: a worker merges its finished, tested work into the project's `dev` branch itself (no
-asking) and pushes `dev`. You test `dev` as a whole, then tell Jarvis once to merge it to main.
+asking) and pushes `dev`. Sanjar's standing rules live in `config/rules.md` (workers and the brain
+read it live). You test `dev` as a whole, then tell Jarvis once to merge it to main.
 Workers never touch main unless you allow it for one ticket ("you may push ticket X to main").
 Jarvis stores that in `var/state/grants.json` (not in Notion, so a worker can't grant itself); it
 ends when the ticket is Done, or after 7 days.
