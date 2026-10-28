@@ -95,5 +95,12 @@
       "qarsdaftar"
     ],
     "board": "4b3126acdca0429abbb711a3e15f436d"
+  },
+  "Game": {
+    "about": "a polished browser game with good animation and game feel (not started)",
+    "folders": [
+      "side_project/projects/game"
+    ],
+    "board": "360a0a0ca8184bffa1cdea94fa23d836"
   }
 }
