@@ -88,5 +88,12 @@
       "upwork_job"
     ],
     "board": "7b1950c38ce94dbba9e920afa6654ea5"
+  },
+  "QarsDaftar": {
+    "about": "debt-ledger app for sellers who sell on credit: track debts, SMS reminders, agreed late penalty, tamper-evident evidence for authorities (planning)",
+    "folders": [
+      "qarsdaftar"
+    ],
+    "board": "4b3126acdca0429abbb711a3e15f436d"
   }
 }
