@@ -16,7 +16,7 @@ from typing import Awaitable, Callable
 from . import board, grants
 from .brain import BRAIN_MODEL   # workers run on the same model as the Jarvis brain (Opus)
 from .board import Ticket
-from .config import (GIT_FLOW, HERE, LOGS, MAX_WORKERS, NEVER_DO, NEVER_DO_MAIN_OK, POLL_SECONDS,
+from .config import (rules_text, GIT_FLOW, HERE, LOGS, MAX_WORKERS, NEVER_DO, NEVER_DO_MAIN_OK, POLL_SECONDS,
                      SHOTS, STATE, project_dirs)
 
 log = logging.getLogger("jarvis.runner")
@@ -37,7 +37,10 @@ def blocked_question(result: str) -> str:
     if not _BLOCKED.search(tail):
         return ""
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", tail) if s.strip()]
-    hits = [s for s in sentences if _BLOCKED.search(s)]
+    # merging into dev is the worker's own job, never something to wait on Sanjar for
+    hits = [s for s in sentences if _BLOCKED.search(s) and not re.search(r"\bdev\b", s, re.I)]
+    if not hits:
+        return ""
     return ("Blocked, waiting on you: " + " ".join(hits[-2:]))[:600]
 
 # notify(ticket, kind, text, photos) — kind is "done", "failed" or "needs_me"
@@ -79,9 +82,11 @@ Sanjar is away from the computer and won't approve anything, so work on your own
   {HERE / ".venv/bin/python"} {HERE / "scripts/send_file.py"} <file> "<caption>"
 - If you truly can't continue without a decision from Sanjar, stop and make the LAST line of
   your final message: {NEEDS_ME} <one short question>
-- The same if your work is done for now but the next step waits on him: a merge, a push to main,
-  an approval, a choice, a key or account ("I'll continue once X is merged"). Never finish quietly
-  and wait — end with {NEEDS_ME} saying exactly what he needs to do so the work can go on.
+- The same if your work is done for now but the next step waits on him: a push to main, an
+  approval, a choice, a key or account. Never finish quietly and wait — end with {NEEDS_ME} saying
+  exactly what he needs to do. (Merging into `dev` is never a reason to wait: do it yourself.)
+
+{rules_text()}
 - Finish with a short plain summary (2-4 sentences): what you changed, which files, whether
   tests pass, anything he should know."""
 

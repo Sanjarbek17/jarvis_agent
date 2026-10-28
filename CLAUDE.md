@@ -20,6 +20,7 @@ say what it's waiting for (list running workers: `ps -axww -o ppid=,args= | grep
 Not needed after editing config/projects.json: Jarvis reloads that by itself.
 
 ## Other rules
+- Standing rules from Sanjar are in config/rules.md (also put into every worker's prompt).
 - Git: work on your own branch, then merge it into `dev` and push `dev` yourself (no asking).
   Never touch main unless this ticket was explicitly allowed to; Sanjar tests `dev`, then has it
   merged to main in one go. If you made a worktree for the ticket, remove it after the merge to
