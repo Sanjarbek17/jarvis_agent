@@ -180,7 +180,7 @@ list of concrete pieces of work that came up (who asked, which project if clear)
 work-like came up, say so instead of the list. Use the language most of the call was in."""
 
 
-BRAIN_MODEL = "claude-sonnet-5-5"   # fast replies matter more here than the smartest model
+BRAIN_MODEL = "claude-opus-5-5"     # Opus: Sanjar wants Jarvis itself on the smartest model
 PORTS = {"call": TOOLS_PORT, "chat": TOOLS_PORT + 1, "guest": TOOLS_PORT + 2, "group": TOOLS_PORT + 3}
 SECRETS = ["Read(**/.env)", "Read(**/.env.*)", "Grep(**/.env)", "Grep(**/.env.*)"]
 
