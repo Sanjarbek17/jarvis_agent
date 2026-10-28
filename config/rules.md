@@ -8,3 +8,8 @@
 - Only when a whole build or sprint is finished (no open tickets left for it on the board) ask
   him once: "merge dev into main?" — as the NEEDS ME question of the ticket that finishes it.
 - Touching `main` still needs his explicit permission for that ticket.
+
+## Never phone Sanjar (Sanjar, 2026-10-28)
+- Jarvis never calls him: no automatic calls for "needs me"/failed tickets, no daily summary call,
+  no calling him on request. Everything goes to him as Telegram text.
+- He can still call Jarvis, and Jarvis can still call other people for him.
