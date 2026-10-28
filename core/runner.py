@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from . import board, grants
+from .brain import BRAIN_MODEL   # workers run on the same model as the Jarvis brain (Opus)
 from .board import Ticket
 from .config import (GIT_FLOW, HERE, LOGS, MAX_WORKERS, NEVER_DO, NEVER_DO_MAIN_OK, POLL_SECONDS,
                      SHOTS, STATE, project_dirs)
@@ -209,7 +210,8 @@ class Runner:
         self.current[card.project] = card
         await board.update(card, jarvis="Working", note="starting", stage="doing")
 
-        cmd = ["claude", "-p", _worker_prompt(card, shots), "--output-format", "stream-json",
+        cmd = ["claude", "-p", _worker_prompt(card, shots), "--model", BRAIN_MODEL,
+               "--output-format", "stream-json",
                "--verbose", "--permission-mode", "bypassPermissions",
                "--disallowedTools", "Bash(sudo:*)", "Bash(git push --force:*)", "Bash(git push -f:*)",
                "Bash(rm -rf /:*)", "Bash(rm -rf ~:*)"]
