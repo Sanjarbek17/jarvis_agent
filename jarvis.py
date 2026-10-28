@@ -6,7 +6,7 @@
 - Call: my voice -> Gemini transcribe -> Claude (call brain) -> Gemini voice -> call.
 - Telegram text or voice message from me -> Claude (chat brain) -> reply. /status, /stop <project|mac>, /call, /transcript.
 - Runner picks tickets marked Queued (Jarvis column) on each project's Notion board.
-- Jarvis calls me by itself when a ticket needs me or fails, and once a day with a summary
+- Jarvis never phones me (CALL_SANJAR off): updates and the daily summary come as Telegram text
   (not in quiet hours, at most once per CALL_COOLDOWN).
 - Jarvis calls other people when I ask (call_contact) to give them a message; that call gets a
   brain with no tools but hang_up, and I get its transcript in Telegram.
@@ -40,7 +40,7 @@ from telethon.tl.types import MessageActionGroupCall
 from core import board, contacts, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt
-from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
+from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
                          PROJECTS, PROJECTS_URL, QUIET_HOURS, SESSION, SOFT_SKILLS_REMINDER_AT, TG_API_HASH,
                          TG_API_ID)
 from core.mac import MacWorker
@@ -249,8 +249,12 @@ group_chats: dict[int, Brain] = {}   # group id -> its brain for messages that m
 group_history: dict[int, deque] = {}  # group id -> recent "Name: text" lines, so Jarvis follows the whole chat
 
 
-async def start_call(user_id: int, reason: str = "", guest: str = "", message: str = ""):
+async def start_call(user_id: int, reason: str = "", guest: str = "", message: str = "",
+                     incoming: bool = False):
     global call
+    if user_id == OWNER_ID and not incoming and not CALL_SANJAR:
+        log.info("not calling Sanjar (he asked for text only): %s", reason[:120])
+        return
     if call:
         return
     call = Call(user_id, guest, message)
@@ -273,6 +277,8 @@ def quiet_now() -> bool:
 async def auto_call(reason: str) -> bool:
     """Jarvis calls me by itself, unless I'm already on a call, it's quiet hours, or it just called."""
     global last_auto_call
+    if not CALL_SANJAR:
+        return False   # text only; the Telegram message was already sent
     if call or quiet_now() or time.monotonic() - last_auto_call < CALL_COOLDOWN:
         return False
     last_auto_call = time.monotonic()
@@ -305,12 +311,21 @@ async def daily_at(hhmm, job):
             await job()
 
 
+async def daily_summary_text():
+    reply = await chat.reply("[DAILY SUMMARY] Write Sanjar a short summary of today for Telegram: use "
+                             "get_status for all projects; what got done, what's still running, and "
+                             "anything that needs him. A few lines.")
+    if reply.strip():
+        await tg.send_message(OWNER_ID, f"🗓 {reply}", link_preview=False)
+
+
 async def daily_call():
-    """Once a day at DAILY_CALL_AT: a short spoken summary of what Jarvis did and what needs me."""
+    """Once a day at DAILY_CALL_AT: a summary of what Jarvis did and what needs me (a call only if
+    calling Sanjar is allowed; otherwise a Telegram message)."""
     await daily_at(DAILY_CALL_AT, lambda: auto_call(
         "[DAILY SUMMARY] Give Sanjar a short spoken summary of today: use get_status for all "
         "projects; say what got done, what's still running, and anything that needs him. "
-        "Keep it under a minute."))
+        "Keep it under a minute.") if CALL_SANJAR else daily_summary_text())
 
 
 async def daily_reminder():
@@ -347,6 +362,8 @@ async def call_contact(query: str, message: str) -> str:
         names = "".join(f"\n- {contacts.name_of(u)}" + (f" (@{u.username})" if u.username else "") for u in found[:10])
         return f"Not sure who {query!r} is ({len(found)} {'matches' if sure else 'maybe'}); ask Sanjar:{names}"
     person = sure[0]
+    if person.id == OWNER_ID and not CALL_SANJAR:
+        return "Sanjar asked never to be phoned; tell him in text instead."
     name = contacts.name_of(person)
     if call:
         waiting_calls.append((person.id, name, message))
@@ -585,6 +602,9 @@ async def on_message(event):
         files = sorted(CALLS.glob("*.txt")) if CALLS.exists() else []
         await event.reply(f"📞 {files[-1].stem}\n\n" + files[-1].read_text()[-3800:] if files else "No calls yet.")
     elif text.startswith("/call"):
+        if not CALL_SANJAR:
+            await event.reply("I don't phone you any more, sir, as you asked. Call me instead and I'll pick up.")
+            return
         await event.reply("Calling you.")
         await start_call(OWNER_ID)
     elif text.startswith("/clear"):
@@ -648,7 +668,7 @@ async def on_incoming_call(_, update: ChatUpdate):
         log.info("ignoring call from %s", update.chat_id)
         return
     log.info("Sanjar is calling, picking up")
-    await start_call(update.chat_id)
+    await start_call(update.chat_id, incoming=True)
 
 
 @calls.on_update(filters.chat_update(ChatUpdate.Status.LEFT_CALL))
@@ -712,7 +732,7 @@ async def main():
     log.info("Jarvis is up as @%s", me.username)
     await tg.send_message(OWNER_ID, "🟢 Jarvis is online. Call me, message me, or /status.", silent=True)
     asyncio.create_task(check_mac_permissions())
-    if "--call" in sys.argv:
+    if "--call" in sys.argv and CALL_SANJAR:
         try:
             await start_call(OWNER_ID)
         except Exception as e:

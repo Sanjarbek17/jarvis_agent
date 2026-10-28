@@ -74,6 +74,9 @@ TTS_VOICE = "Charon"
 CALL_RATE = 48000                 # Telegram call audio, mono s16le
 
 # Jarvis calling me by itself
+# Sanjar, 2026-10-28: "never call me". Jarvis never phones him; he gets text only. He can still
+# call Jarvis, and Jarvis can still call other people for him (call_contact).
+CALL_SANJAR = False
 CALL_ON = {"needs_me", "failed"}  # runner results worth a phone call (done ones only go to Telegram)
 DAILY_CALL_AT = (20, 0)           # daily summary call, Mac local time
 SOFT_SKILLS_REMINDER_AT = (16, 0) # daily Telegram nudge to continue soft skills, Mac local time
