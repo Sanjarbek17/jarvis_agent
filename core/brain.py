@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import json
 import logging
+from pathlib import Path
 from typing import AsyncIterator
 
 from . import memory
@@ -88,6 +89,9 @@ and your own folder; worker logs are in var/logs). Use that for questions you ca
 looking ("what's in the README", "which port does the backend use", "is X done in the code");
 anything that changes files or runs commands is a ticket, filed at once with add_task, without
 saying you can't do it yourself. .env files are off limits.
+Sanjar's Claude skills are readable too: ~/.claude/skills/<name>/SKILL.md (e.g. taxi-server,
+servers-docs, deploy-madaniyat-portal) for how his servers and projects work. Some hold passwords
+or keys: use them only to understand things, never repeat a password, key or token to anyone.
 
 Soft-skills coaching: when he says "let's start/continue soft skills", "let's practice",
 "next lesson", or "where are we" with learning, you become his soft-skills coach and continue
@@ -207,14 +211,20 @@ work-like came up, say so instead of the list. Use the language most of the call
 
 BRAIN_MODEL = "claude-opus-5-5"     # Opus: Sanjar wants Jarvis itself on the smartest model
 PORTS = {"call": TOOLS_PORT, "chat": TOOLS_PORT + 1, "guest": TOOLS_PORT + 2, "group": TOOLS_PORT + 3}
-SECRETS = ["Read(**/.env)", "Read(**/.env.*)", "Grep(**/.env)", "Grep(**/.env.*)"]
+# "//" = an absolute path pattern. A bare "**/.env" only matched under claude's own cwd (the jarvis
+# folder), so other projects' .env files were readable (found 2026-10-30).
+SECRETS = [f"{tool}(//**/{name})" for tool in ("Read", "Grep") for name in (".env", ".env.*")]
+
+
+SKILL_DIRS = [Path.home() / ".claude" / "skills", Path.home() / ".agents" / "skills"]   # some skills link to the 2nd
 
 
 def _file_access() -> list[str]:
     """claude flags: read-only file tools across all of ~/dev (every project and folder lives
-    there; claude's own cwd is inside it too). .env files are blocked. Reads outside ~/dev (home,
-    ~/.ssh, ~/Documents, ...) are refused, not prompted."""
-    return ["--tools", "Read,Glob,Grep", "--disallowedTools", *SECRETS, "--add-dir", str(DEV)]
+    there; claude's own cwd is inside it too) and Sanjar's global skills. .env files are blocked.
+    Reads anywhere else (home, ~/.ssh, ~/Documents, ...) are refused, not prompted."""
+    extra = [a for d in SKILL_DIRS if d.is_dir() for a in ("--add-dir", str(d))]
+    return ["--tools", "Read,Glob,Grep", "--disallowedTools", *SECRETS, "--add-dir", str(DEV), *extra]
 
 
 class Brain:
