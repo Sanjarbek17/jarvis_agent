@@ -731,6 +731,7 @@ async def main():
     tools.hooks.hang_up = hang_up
     tools.hooks.call_contact = call_contact
     tools.hooks.worker_progress = runner.progress
+    runner.message = lambda text: tg.send_message(OWNER_ID, text, link_preview=False)
     tools.hooks.mac = mac
     tools.hooks.mac_late = mac_late
     background = [asyncio.create_task(tools.serve()), asyncio.create_task(runner.run_forever()),
