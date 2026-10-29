@@ -596,6 +596,31 @@ async def reply_context(event) -> str:
     return f"[Replying to this earlier message from {who}:\n{body[:3000]}\n]\n\n"
 
 
+JOBS_DIR = Path.home() / "dev" / "upwork_job"     # the Upwork job worker (tgjobs) and its own login
+JOB_PHONE = "+79062609156"                          # its second Telegram account (Sanjar, 2026-10-28)
+UV = "/opt/homebrew/bin/uv"
+
+
+async def tgjobs(*args: str, detach: bool = False) -> str:
+    """Run the job worker's own login commands. Its own process and its own session file for the
+    +7 906 account: never Jarvis's session, so nothing here can freeze Jarvis."""
+    cmd = [UV, "run", "tgjobs/tgjobs.py", "login", *args]
+    if detach:          # the QR login waits for a scan for minutes; it reports through the hunter bot
+        out = open(JOBS_DIR / ".captures" / "tgjobs-qr.out", "a")
+        await asyncio.create_subprocess_exec(*cmd, cwd=JOBS_DIR, stdout=out, stderr=out,
+                                             stdin=asyncio.subprocess.DEVNULL, start_new_session=True)
+        return ""
+    proc = await asyncio.create_subprocess_exec(*cmd, cwd=JOBS_DIR, stdout=asyncio.subprocess.PIPE,
+                                                stderr=asyncio.subprocess.STDOUT, stdin=asyncio.subprocess.DEVNULL)
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), 120)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return "it took too long, sir; nothing finished."
+    lines = [l for l in out.decode(errors="replace").splitlines() if l.strip() and not l.startswith(("INFO", "WARNING"))]
+    return (lines[-1] if lines else "(no output)")[:500]
+
+
 async def remember_history():
     """At start: scrub secrets out of stored memory, index old call transcripts, and import our
     Telegram chat (all of it the first time, then only newer messages) through this connection."""
@@ -666,6 +691,30 @@ async def on_message(event):
         outbox.SECRET_2FA.chmod(0o600)
         outbox.SECRET_2FA.write_text(pw)
         await event.respond("🔑 Got the password (your message is deleted). Finishing the login…")
+    elif text.startswith("/joblogin"):
+        # log in the job account (+7 906) for the Upwork messaging worker: QR by default, or a code
+        if text.removeprefix("/joblogin").strip().lower() == "code":
+            out = await tgjobs("send", JOB_PHONE)
+            await event.reply(f"🔐 {out}\nWhen the code arrives in the +7 906 account (the blue-tick \"Telegram\" "
+                              "chat), send it as /jobcode 1-2-3-4-5, with dashes.")
+        else:
+            state = await tgjobs("check")
+            if state.startswith("Logged in"):
+                await event.reply(f"🔐 The job account is already logged in: {state}")
+                return
+            await tgjobs("qr", "15", detach=True)
+            await event.reply("🔐 The QR for the +7 906 job account is coming in the hunter bot chat (new one every "
+                              "~30 s, for 15 minutes). Open that chat on any computer or web.telegram.org, then on your "
+                              "phone switch to the +7 906 account: Settings → Devices → Link Desktop Device → scan it. "
+                              "Or: /joblogin code.")
+    elif text.startswith("/jobcode"):
+        with contextlib.suppress(Exception):
+            await event.delete()            # a login code shouldn't stay in a chat
+        code = re.sub(r"\D", "", text.removeprefix("/jobcode"))
+        if not code:
+            await event.respond("Send it as /jobcode 1-2-3-4-5, sir.")
+            return
+        await event.respond(f"🔐 {await tgjobs('code', code)}")
     elif text.startswith("/clear"):
         await chat.clear()
         await event.reply("Cleared.")
