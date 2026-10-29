@@ -78,7 +78,9 @@ tg = TelegramClient(str(SESSION), TG_API_ID, TG_API_HASH)
 calls = PyTgCalls(tg)
 CHUNK = CALL_RATE // 100 * 2 * 2      # 10 ms of 48 kHz stereo s16 going into the call
 EMOJI = {"done": "✅", "failed": "❌", "needs_me": "❓"}
-WAKE = re.compile(r"jarvis|джарвис|жарвис", re.I)   # someone in a group call speaks to Jarvis
+# someone in a group call speaks to Jarvis; also the ways speech-to-text tends to spell it
+WAKE = re.compile(r"d?[jy]arvi[sz]?|jarves|jervis|jarbis|charvis|[дж]?жарви[сз]?|джарвис|ժարվիս|"
+                  r"जार्विस|जारविस|जार्वि|ज़ार्विस|ジャービス|ジャーヴィス|자비스|贾维斯", re.I)
 # a group message about arranging a meeting (Uzbek / Russian / English); Jarvis may step in to help
 MEETING = re.compile(r"uchrash|yig'?ilish|majlis|meeting|schedule|созвон|встреч|собра|митинг|"
                      r"davomida|soat\s*\d|\bat\s*\d{1,2}(:\d{2})?\s*(am|pm|да)?\b", re.I)
