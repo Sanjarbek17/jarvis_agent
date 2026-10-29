@@ -17,6 +17,8 @@ core/
   mac.py             Mac worker: does things on the Mac itself (apps, settings, screen)
 config/projects.json project -> folders in ~/dev + its sprint board
 scripts/login.py     one-time Telegram login for the Jarvis account
+scripts/relogin.py   fresh Telegram login, no scan/code: the current login approves it, 2FA from
+                     .env; saved as var/jarvis_new.session, swapped in at Jarvis's next start
 scripts/mac.py       mouse, keyboard and screenshots for the Mac worker
 docs/                plan
 var/                 made while running, not in git: Telegram session, logs, state, shots

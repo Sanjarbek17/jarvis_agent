@@ -22,7 +22,9 @@ import contextlib
 import fcntl
 import functools
 import logging
+import os
 import re
+import shutil
 import sys
 import time
 from collections import deque
@@ -53,6 +55,23 @@ for noisy in ("telethon", "google_genai", "httpx", "websockets", "mcp", "uvicorn
     logging.getLogger(noisy).setLevel(logging.WARNING)
 log = logging.getLogger("jarvis")
 
+
+
+def swap_in_new_login() -> None:
+    """scripts/relogin.py leaves a fresh login next to the old one; put it in place before the
+    session file is opened. Never while another Jarvis runs (it has the old file open)."""
+    new, live = SESSION.with_name("jarvis_new.session"), SESSION.with_suffix(".session")
+    if not new.exists() or outbox.jarvis_running():
+        return
+    backup = live.with_name(f"jarvis.session.bak-{time.strftime('%Y%m%d-%H%M%S')}")
+    if live.exists():
+        shutil.copy2(live, backup)
+    live.with_name("jarvis.session-journal").unlink(missing_ok=True)
+    os.replace(new, live)
+    log.info("switched to the new Telegram login from relogin.py (old one: %s)", backup.name)
+
+
+swap_in_new_login()
 tg = TelegramClient(str(SESSION), TG_API_ID, TG_API_HASH)
 calls = PyTgCalls(tg)
 CHUNK = CALL_RATE // 100 * 2 * 2      # 10 ms of 48 kHz stereo s16 going into the call

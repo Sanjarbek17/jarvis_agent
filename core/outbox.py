@@ -10,6 +10,7 @@ directly (nothing to collide with then).
 This module has no Jarvis imports, so scripts can use it cheaply.
 """
 import asyncio
+import base64
 import fcntl
 import json
 import logging
@@ -41,15 +42,19 @@ def jarvis_running() -> bool:
 
 
 def send(text: str = "", file: str | Path = "", caption: str = "", key: str = "",
-         delete_key: str = "", document: bool = False, whoami: bool = False, wait: float = 120) -> dict:
+         delete_key: str = "", document: bool = False, whoami: bool = False, accept_login: bytes = b"",
+         wait: float = 120) -> dict:
     """Queue a message for Jarvis to send to Sanjar and wait for the result.
     key: name this message; a later message with the same key replaces it (old one deleted).
     delete_key: just delete the message saved under that key.
-    whoami: also return the Jarvis account as "me": {"id", "username"}. Returns {"ok": bool, ...}."""
+    whoami: also return the Jarvis account as "me": {"id", "username"}.
+    accept_login: a QR login token; Jarvis approves it, like scanning it on a logged-in phone.
+    Returns {"ok": bool, ...}."""
     OUTBOX.mkdir(parents=True, exist_ok=True)
     name = f"{time.time():.6f}-{uuid.uuid4().hex[:6]}"
     note = {"text": text, "file": str(Path(file).resolve()) if file else "", "caption": caption,
-            "key": key, "delete_key": delete_key, "document": document, "whoami": whoami}
+            "key": key, "delete_key": delete_key, "document": document, "whoami": whoami,
+            "accept_login": base64.b64encode(accept_login).decode()}
     tmp = OUTBOX / f"{name}.tmp"
     tmp.write_text(json.dumps(note, ensure_ascii=False))
     tmp.rename(OUTBOX / f"{name}.json")            # appears complete, never half-written
@@ -73,6 +78,9 @@ async def run(tg, owner_id: int) -> None:
             result: dict = {"ok": True}
             try:
                 note = json.loads(f.read_text())
+                if note.get("accept_login"):
+                    from telethon.tl.functions.auth import AcceptLoginTokenRequest
+                    await tg(AcceptLoginTokenRequest(base64.b64decode(note["accept_login"])))
                 if note.get("whoami"):
                     me = await tg.get_me()
                     result["me"] = {"id": me.id, "username": me.username}
