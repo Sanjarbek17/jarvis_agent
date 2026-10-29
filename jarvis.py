@@ -37,7 +37,7 @@ from telethon import TelegramClient, events
 from telethon.tl.functions.contacts import GetContactsRequest
 from telethon.tl.types import MessageActionGroupCall
 
-from core import board, contacts, memory, tools
+from core import board, contacts, memory, outbox, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
@@ -615,6 +615,22 @@ async def on_message(event):
             return
         await event.reply("Calling you.")
         await start_call(OWNER_ID)
+    elif text.startswith("/2fa"):
+        # the 2FA password for a waiting Telegram re-login (scripts/qr_login.py). Never goes to the
+        # brain or memory; Sanjar's message with it is deleted right away.
+        with contextlib.suppress(Exception):
+            await event.delete()
+        pw = text.removeprefix("/2fa").strip()
+        if not outbox.WANT_2FA.exists():
+            await event.respond("No login is waiting for a 2FA password, sir, so I didn't keep it.")
+            return
+        if not pw:
+            await event.respond("Send it as /2fa <password>, sir.")
+            return
+        outbox.SECRET_2FA.touch(mode=0o600)
+        outbox.SECRET_2FA.chmod(0o600)
+        outbox.SECRET_2FA.write_text(pw)
+        await event.respond("🔑 Got the password (your message is deleted). Finishing the login…")
     elif text.startswith("/clear"):
         await chat.clear()
         await event.reply("Cleared.")
@@ -748,6 +764,7 @@ async def main():
     await tg.send_message(OWNER_ID, "🟢 Jarvis is online. Call me, message me, or /status.", silent=True)
     asyncio.create_task(check_mac_permissions())
     asyncio.create_task(memory.backfill_calls())
+    asyncio.create_task(outbox.run(tg, OWNER_ID))   # scripts send Sanjar things through us
     if "--call" in sys.argv and CALL_SANJAR:
         try:
             await start_call(OWNER_ID)

@@ -37,7 +37,9 @@ at login, restarts if it crashes, and keeps the Mac awake with `caffeinate`.
 - logs: `var/logs/jarvis.log`; each worker run: `var/logs/<project>-<ticket ref>.jsonl` (Jarvis
   reads these itself when you ask how a ticket is going)
 
-Telegram: plain text or a voice message = talk to Jarvis, `/status [project]`, `/stop <project|mac>`, `/call`, `/transcript`, `/clear`.
+Telegram: plain text or a voice message = talk to Jarvis, `/status [project]`, `/stop <project|mac>`, `/call`, `/transcript`, `/clear`, `/2fa <password>` (only while `scripts/qr_login.py` waits for it; the message is deleted at once).
+Scripts that message Sanjar (`send_file.py`, `qr_login.py`) go through Jarvis's outbox (`core/outbox.py`)
+while it runs: a second copy of its Telegram session would make Telegram stop delivering messages to Jarvis.
 Send a file (document, photo, …), with or without a caption, and Jarvis saves it to `var/state/inbox/`
 and reads it to answer; a file sent as a reply works too.
 
