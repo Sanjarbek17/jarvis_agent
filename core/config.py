@@ -77,6 +77,16 @@ CALL_RATE = 48000                 # Telegram call audio, mono s16le
 # Sanjar, 2026-10-28: "never call me". Jarvis never phones him; he gets text only. He can still
 # call Jarvis, and Jarvis can still call other people for him (call_contact).
 CALL_SANJAR = False
+
+# Sanjar, 2026-10-29: "you only watch taxi loyiha group". Jarvis ignores every other group (no
+# listening, replies, meeting alerts or joining voice chats). Title is a fallback in case Telegram
+# turns the group into a supergroup, which changes its id.
+WATCHED_GROUP_IDS = {-5521286080}
+WATCHED_GROUP_TITLES = {"taxi loyiha"}
+
+
+def watched_group(chat_id: int, title: str = "") -> bool:
+    return chat_id in WATCHED_GROUP_IDS or title.strip().lower() in WATCHED_GROUP_TITLES
 CALL_ON = {"needs_me", "failed"}  # runner results worth a phone call (done ones only go to Telegram)
 DAILY_CALL_AT = (20, 0)           # daily summary call, Mac local time
 SOFT_SKILLS_REMINDER_AT = (16, 0) # daily Telegram nudge to continue soft skills, Mac local time

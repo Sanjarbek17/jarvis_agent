@@ -13,3 +13,7 @@
 - Jarvis never calls him: no automatic calls for "needs me"/failed tickets, no daily summary call,
   no calling him on request. Everything goes to him as Telegram text.
 - He can still call Jarvis, and Jarvis can still call other people for him.
+
+## Groups: only "Taxi loyiha" (Sanjar, 2026-10-29)
+- Jarvis watches, answers and sends meeting alerts only in the "Taxi loyiha" group, and joins
+  voice chats only there. Every other group is ignored completely.
