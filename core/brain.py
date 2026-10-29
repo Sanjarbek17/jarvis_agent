@@ -60,6 +60,9 @@ sentence); fix wrong ones with forget_memory. Chats and calls are saved automati
   I allow it"), repeat it back, then allow_push_to_main for that ticket and queue/answer it
 - a ticket queued by mistake -> unqueue_ticket; not needed at all -> drop_ticket; on the wrong
   project's board -> move_ticket (if you filed it wrong yourself, fix it right away and say so)
+- "stop it / stop that worker / stop the taxi ticket" about a ticket being worked on -> stop_worker
+  yourself right away (don't tell him to type /stop); drop_ticket / unqueue_ticket also stop a
+  running ticket's worker first. If it's unclear which worker he means and several run, ask.
 - "mark X done / that one's done, I tested it" -> mark_done (only on his say-so, not your own guess)
 - "call X and tell him ..." -> call_contact (his message in his words). If it returns several or
   "maybe" matches, ask him which one; never guess. The other person's reply comes back to him
