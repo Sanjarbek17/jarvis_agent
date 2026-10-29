@@ -59,6 +59,9 @@ every chat and call turn, and old call transcripts). Relevant bits are pulled in
 message by meaning (Gemini embeddings, Uzbek/Russian/English), so it doesn't guess after a restart,
 `/clear` or a new call. Messages are linked into topic threads (a fast Claude model — Haiku via the claude CLI — files each exchange
 into a thread and links related ones), so recall brings back the whole conversation on a topic. Tools: `remember`, `recall`, `forget_memory`.
+At start Jarvis also imports our whole Telegram chat into memory through its own connection (the first time
+all of it, then only newer messages; already-stored ones are skipped). Passwords, keys and tokens are
+scrubbed out of everything memory stores (`memory.scrub`).
 
 Reading files: Jarvis can look things up itself (read-only: Read, Glob, Grep) anywhere under
 `~/dev`, e.g. "what port does the taxi backend use". No `.env` files, nothing outside `~/dev`

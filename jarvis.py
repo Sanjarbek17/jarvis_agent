@@ -596,6 +596,22 @@ async def reply_context(event) -> str:
     return f"[Replying to this earlier message from {who}:\n{body[:3000]}\n]\n\n"
 
 
+async def remember_history():
+    """At start: scrub secrets out of stored memory, index old call transcripts, and import our
+    Telegram chat (all of it the first time, then only newer messages) through this connection."""
+    memory.scrub_existing()
+    await memory.backfill_calls()
+    first = not memory.TG_STATE.exists()
+    try:
+        added = await memory.backfill_telegram(tg, OWNER_ID)
+    except Exception:
+        log.exception("chat history backfill failed")
+        return
+    if first and added:
+        await tg.send_message(OWNER_ID, f"🧠 I read through our whole chat here and put {added} exchanges "
+                                        "into my memory, sorted into topics. Passwords and keys were left out.")
+
+
 @tg.on(events.NewMessage(incoming=True, from_users=OWNER_ID, func=lambda e: e.is_private))
 async def on_message(event):
     text = (event.raw_text or "").strip()
@@ -782,7 +798,7 @@ async def main():
     log.info("Jarvis is up as @%s", me.username)
     await tg.send_message(OWNER_ID, "🟢 Jarvis is online. Call me, message me, or /status.", silent=True)
     asyncio.create_task(check_mac_permissions())
-    asyncio.create_task(memory.backfill_calls())
+    asyncio.create_task(remember_history())
     asyncio.create_task(outbox.run(tg, OWNER_ID))   # scripts send Sanjar things through us
     if "--call" in sys.argv and CALL_SANJAR:
         try:
