@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -22,6 +23,10 @@ from .config import (rules_text, GIT_FLOW, HERE, LOGS, MAX_WORKERS, NEVER_DO, NE
 log = logging.getLogger("jarvis.runner")
 SESSIONS = STATE / "sessions.json"
 NEEDS_ME = "NEEDS ME:"
+MAX_CONTINUES = 3            # resume a worker this many times if its background work was cut off
+SWEEP_EVERY = 30 * 60        # how often to look for tickets stuck In Progress
+STUCK_AFTER = 2 * 3600       # In Progress this long with no live worker = stuck
+STUCK_TOLD = STATE / "stuck_told.json"   # ticket ref -> when Sanjar was last told it's stuck
 # a "done" result whose ending says it is waiting on Sanjar (a merge, approval, decision...)
 _BLOCKED = re.compile(
     r"(once|after|when|until)\b[^.\n]{0,80}\b(merged?|approved?|approve|push(ed)? to main|you (decide|confirm|choose|answer|reply))"
@@ -45,6 +50,13 @@ def blocked_question(result: str) -> str:
 
 # notify(ticket, kind, text, photos) — kind is "done", "failed" or "needs_me"
 Notify = Callable[[Ticket, str, str, list[Path]], Awaitable[None]]
+
+
+def _load_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
 
 
 def _load_sessions() -> dict[str, str]:
@@ -82,6 +94,9 @@ Sanjar is away from the computer and won't approve anything, so work on your own
   {HERE / ".venv/bin/python"} {HERE / "scripts/send_file.py"} <file> "<caption>"
 - If you truly can't continue without a decision from Sanjar, stop and make the LAST line of
   your final message: {NEEDS_ME} <one short question>
+- Never end your turn while background agents, workflows or background commands you started are
+  still running: wait for each to finish (or stop it on purpose) before your final summary. When
+  your turn ends, anything still running is killed and its work is lost.
 - The same if your work is done for now but the next step waits on him: a push to main, an
   approval, a choice, a key or account. Never finish quietly and wait — end with {NEEDS_ME} saying
   exactly what he needs to do. (Merging into `dev` is never a reason to wait: do it yourself.)
@@ -178,6 +193,8 @@ class Runner:
         self.procs: dict[str, asyncio.subprocess.Process] = {}
         self.current: dict[str, Ticket] = {}            # project -> ticket being worked on
         self.finished: dict[str, float] = {}            # ticket ref -> when it finished (monotonic)
+        self.message: Callable[[str], Awaitable] | None = None   # plain Telegram text to Sanjar
+        self.last_sweep = 0.0
 
     async def run_forever(self):
         await self._recover()
@@ -186,7 +203,41 @@ class Runner:
                 await self._tick()
             except Exception:
                 log.exception("runner tick failed")
+            if time.monotonic() - self.last_sweep > SWEEP_EVERY:
+                self.last_sweep = time.monotonic()
+                try:
+                    await self._sweep_stuck()
+                except Exception:
+                    log.exception("stuck-ticket sweep failed")
             await asyncio.sleep(POLL_SECONDS)
+
+    async def _sweep_stuck(self):
+        """Tickets sitting In Progress for STUCK_AFTER with no live worker (e.g. sub-agents that
+        were killed): tell Sanjar once a day per ticket so nothing silently rots."""
+        if not self.message:
+            return
+        told = _load_json(STUCK_TOLD)
+        now = time.time()
+        live = {t.ref for t in self.current.values()}
+        stuck = []
+        for project in board.boards():
+            for t in await board.in_progress(project):
+                if t.ref in live or t.jarvis in ("Queued", "Working"):
+                    continue
+                try:
+                    edited = datetime.fromisoformat(t.edited.replace("Z", "+00:00")).timestamp()
+                except ValueError:
+                    continue
+                if now - edited < STUCK_AFTER or now - told.get(t.ref, 0) < 86400:
+                    continue
+                stuck.append((t, (now - edited) / 3600))
+                told[t.ref] = now
+        if stuck:
+            STUCK_TOLD.write_text(json.dumps(told))
+            lines = [f"- {t.ref} [{t.project}] {t.title} — untouched {h:.0f} h" + (f", Jarvis {t.jarvis}" if t.jarvis else "")
+                     for t, h in stuck[:15]]
+            await self.message("⏸ Stuck In Progress with nobody working on them:\n" + "\n".join(lines)
+                               + "\n\nTell me to queue any of them (e.g. \"queue " + stuck[0][0].ref + "\") and a worker will pick it up.")
 
     async def _recover(self):
         """Tickets left Working by a crash/restart can't be resumed mid-step: mark them Failed."""
@@ -236,48 +287,88 @@ class Runner:
         self.current[card.project] = card
         await board.update(card, jarvis="Working", note="starting", stage="doing")
 
-        cmd = ["claude", "-p", _worker_prompt(card, shots), "--model", BRAIN_MODEL,
-               "--output-format", "stream-json",
-               "--verbose", "--permission-mode", "bypassPermissions",
-               "--disallowedTools", "Bash(sudo:*)", "Bash(git push --force:*)", "Bash(git push -f:*)",
-               "Bash(rm -rf /:*)", "Bash(rm -rf ~:*)"]
-        for extra in dirs[1:]:
-            cmd += ["--add-dir", str(extra)]
-        session = _load_sessions().get(card.project)
-        if session:
-            cmd += ["--resume", session]
+        def make_cmd(prompt: str) -> list[str]:
+            cmd = ["claude", "-p", prompt, "--model", BRAIN_MODEL,
+                   "--output-format", "stream-json",
+                   "--verbose", "--permission-mode", "bypassPermissions",
+                   "--disallowedTools", "Bash(sudo:*)", "Bash(git push --force:*)", "Bash(git push -f:*)",
+                   "Bash(rm -rf /:*)", "Bash(rm -rf ~:*)"]
+            for extra in dirs[1:]:
+                cmd += ["--add-dir", str(extra)]
+            session = _load_sessions().get(card.project)
+            if session:
+                cmd += ["--resume", session]
+            return cmd
 
         result, is_error, last_push, pending = "", False, 0.0, []
+        prompt, attempt = _worker_prompt(card, shots), 0
         logfile = (LOGS / f"{card.project}-{card.ref}.jsonl").open("w")
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd, cwd=dirs[0], stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT, limit=50_000_000)
-            self.procs[card.project] = proc
-            while line := await proc.stdout.readline():
-                logfile.write(line.decode(errors="replace"))
-                logfile.flush()   # worker_progress reads it live
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if event.get("session_id"):
-                    _save_session(card.project, event["session_id"])
-                if event.get("type") == "assistant":
-                    for block in event["message"].get("content", []):
-                        if block.get("type") == "tool_use":
-                            pending.append(_step_text(block))
-                elif event.get("type") == "result":
-                    result, is_error = event.get("result") or "", bool(event.get("is_error"))
-                # push steps to Notion at most every 5 s
-                if pending and time.monotonic() - last_push > 5:
+            while True:
+                bg: dict[str, str] = {}        # background tasks started in this run, still running
+                cut: dict[str, str] = {}       # ...and ones killed before finishing
+                stopped_on_purpose: set[str] = set()
+                proc = await asyncio.create_subprocess_exec(
+                    *make_cmd(prompt), cwd=dirs[0], stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, limit=50_000_000)
+                self.procs[card.project] = proc
+                while line := await proc.stdout.readline():
+                    logfile.write(line.decode(errors="replace"))
+                    logfile.flush()   # worker_progress reads it live
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if event.get("session_id"):
+                        _save_session(card.project, event["session_id"])
+                    kind = event.get("type")
+                    if kind == "assistant":
+                        for block in event["message"].get("content", []):
+                            if block.get("type") == "tool_use":
+                                pending.append(_step_text(block))
+                                if block.get("name") == "TaskStop":
+                                    args = block.get("input", {})
+                                    stopped_on_purpose.add(str(args.get("task_id") or args.get("shell_id") or ""))
+                    elif kind == "system" and event.get("subtype") == "task_started":
+                        bg[event.get("task_id", "")] = event.get("description", "")
+                    elif kind == "system" and event.get("subtype") == "task_notification":
+                        tid = event.get("task_id", "")
+                        if tid in bg:
+                            desc = bg.pop(tid)
+                            if event.get("status") == "stopped" and tid not in stopped_on_purpose:
+                                cut[tid] = desc
+                    elif kind == "result":
+                        result, is_error = event.get("result") or "", bool(event.get("is_error"))
+                    # push steps to Notion at most every 5 s
+                    if pending and time.monotonic() - last_push > 5:
+                        await self._push_steps(card, pending)
+                        pending, last_push = [], time.monotonic()
+                await proc.wait()
+                if pending:
                     await self._push_steps(card, pending)
-                    pending, last_push = [], time.monotonic()
-            await proc.wait()
-            if pending:
-                await self._push_steps(card, pending)
-            if proc.returncode and not result:
-                is_error, result = True, f"Worker exited with code {proc.returncode}."
+                    pending = []
+                if proc.returncode and not result:
+                    is_error, result = True, f"Worker exited with code {proc.returncode}."
+                unfinished = [d for d in [*bg.values(), *cut.values()] if d]
+                if is_error or not unfinished or attempt >= MAX_CONTINUES or proc.returncode < 0:
+                    if unfinished and not is_error:
+                        result += ("\n\nNote: background work was still unfinished after "
+                                   f"{attempt} continuation(s): " + "; ".join(unfinished[:6]))
+                    break
+                # the turn ended while sub-agents / background commands were running: they were
+                # killed, so the ticket isn't done. Resume the same session and finish them.
+                attempt += 1
+                log.info("%s: %d background task(s) cut off, continuing (%d/%d)",
+                         card.ref, len(unfinished), attempt, MAX_CONTINUES)
+                await self._push_steps(card, [f"continuing: {len(unfinished)} background task(s) "
+                                              "were cut off when the turn ended"])
+                prompt = ("Your turn ended while background work you started was still running, so it was "
+                          "stopped before finishing: " + "; ".join(f'"{d}"' for d in unfinished[:10]) +
+                          ". The ticket is not done yet. Finish that work now yourself: run those agents or "
+                          "commands again in the foreground (not in the background), or do the steps "
+                          "directly, wait for everything to complete, check the results, merge into dev as "
+                          "the rules say, and only then give your final summary.")
+                result = ""
         except Exception as e:
             log.exception("worker crashed for %s", card.ref)
             is_error, result = True, f"Worker crashed: {e}"

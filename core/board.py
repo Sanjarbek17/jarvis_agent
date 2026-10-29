@@ -38,6 +38,7 @@ class Ticket:
     note: str
     sprint: str
     url: str
+    edited: str = ""    # last edited time (ISO), for spotting tickets stuck In Progress
 
     def line(self) -> str:
         jarvis = f"Jarvis {self.jarvis}" if self.jarvis else "not for Jarvis"
@@ -96,7 +97,7 @@ def _ticket(project: str, page) -> Ticket:
         title=next((_text(v) for v in p.values() if v["type"] == "title"), ""),
         status=_choice(p.get("Status")), jarvis=_choice(p.get("Jarvis")),
         note=_text(p["Jarvis note"]) if "Jarvis note" in p else "",
-        sprint=_choice(p.get("Sprint")), url=page["url"],
+        sprint=_choice(p.get("Sprint")), url=page["url"], edited=page.get("last_edited_time", ""),
     )
 
 
@@ -116,6 +117,11 @@ async def _query(project: str, filter_: dict | None = None, sorts=None) -> list[
 
 def _jarvis_is(*states: str) -> dict:
     return {"or": [{"property": "Jarvis", "select": {"equals": s}} for s in states]}
+
+
+async def in_progress(project: str) -> list[Ticket]:
+    """Tickets whose board Status is the in-progress stage (In Progress / Doing)."""
+    return [t for t in await _query(project) if (t.status or "").lower() in STAGE_NAMES["doing"]]
 
 
 async def queued() -> list[Ticket]:
