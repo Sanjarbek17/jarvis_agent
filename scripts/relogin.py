@@ -24,7 +24,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError
+from telethon.errors import PasswordHashInvalidError, SessionPasswordNeededError
+from telethon.tl.functions.account import GetPasswordRequest
 from telethon.tl.functions.auth import AcceptLoginTokenRequest
 
 HERE = Path(__file__).parent.parent
@@ -81,14 +82,27 @@ async def main() -> int:
     try:
         await new.connect()
         qr = await new.qr_login()
+        waiting = asyncio.create_task(qr.wait(60))     # listen before approving, so the update can't be missed
+        await asyncio.sleep(0.5)
         old_id, old_name = await approve(qr.token, via_outbox)
+        log(f"approved by the current login: @{old_name} (id {old_id})")
         try:
-            await qr.wait(60)
+            await waiting
         except SessionPasswordNeededError:
-            pw = os.environ.get("TG_2FA_PASSWORD", "")
+            pw = os.environ.get("TG_2FA_PASSWORD", "").strip()
             if not pw:
                 raise RuntimeError("the account has 2FA and TG_2FA_PASSWORD isn't in .env")
-            await new.sign_in(password=pw)
+            info = await new(GetPasswordRequest())     # what Telegram says about this account's 2FA
+            log(f"2FA: has_password={info.has_password} algo={type(info.current_algo).__name__} "
+                f"hint={'yes' if info.hint else 'no'} recovery_email={info.has_recovery} "
+                f"pending_reset={bool(info.pending_reset_date)} password_len={len(pw)}")
+            try:
+                await new.sign_in(password=pw)
+            except PasswordHashInvalidError:
+                if via_outbox and info.hint:       # to Sanjar's private chat only, never to logs or Notion
+                    await asyncio.to_thread(outbox.send, text=f"🔑 Telegram says TG_2FA_PASSWORD isn't the 2FA "
+                                            f"password of @{old_name}. That account's password hint is: {info.hint}")
+                raise
         me = await new.get_me()
         if me.id != old_id:
             await new.log_out()
