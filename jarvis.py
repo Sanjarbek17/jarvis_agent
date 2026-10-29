@@ -40,7 +40,7 @@ from telethon.tl.types import MessageActionGroupCall
 from core import board, contacts, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
-from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
+from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
                          PROJECTS, PROJECTS_URL, QUIET_HOURS, SESSION, SOFT_SKILLS_REMINDER_AT, TG_API_HASH,
                          TG_API_ID)
 from core.mac import MacWorker
@@ -623,7 +623,11 @@ async def on_message(event):
 async def on_group_message(event):
     """Follow the whole group conversation (read-only). Jarvis keeps the recent messages so it has
     the full thread, but only speaks up when it's addressed by name or a meeting is being arranged
-    (e.g. "Jarvis, schedule it"). It answers in the language the group is using."""
+    (e.g. "Jarvis, schedule it"). It answers in the language the group is using.
+    Only the watched group ("Taxi loyiha"); every other group is ignored."""
+    title = getattr(await event.get_chat(), "title", "") or ""
+    if not watched_group(event.chat_id, title):
+        return
     text = (event.raw_text or "").strip()
     sender = await event.get_sender()
     name = "Sanjar" if event.sender_id == OWNER_ID else (
@@ -634,7 +638,7 @@ async def on_group_message(event):
     meeting = bool(MEETING.search(text))
     if not (WAKE.search(text) or meeting):
         return   # just listening; keep the context, say nothing
-    title = getattr(await event.get_chat(), "title", "") or str(event.chat_id)
+    title = title or str(event.chat_id)
     if event.chat_id not in group_chats:
         group_chats[event.chat_id] = Brain("group", group_prompt(title, voice=False))
     ctx = await reply_context(event)
@@ -686,6 +690,8 @@ async def on_voice_chat(event):
     """A voice chat started (no duration yet) or ended in a group the Jarvis account is in."""
     if event.message.action.duration is None:
         chat_ = await event.get_chat()
+        if not watched_group(event.chat_id, getattr(chat_, "title", "") or ""):
+            return
         await join_group(event.chat_id, getattr(chat_, "title", "") or str(event.chat_id))
     elif group and event.chat_id == group.user_id:
         await finish_group()
