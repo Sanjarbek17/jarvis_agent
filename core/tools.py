@@ -15,7 +15,7 @@ from typing import Awaitable, Callable
 import uvicorn
 from mcp.server.mcpserver import MCPServer
 
-from . import board, grants
+from . import board, grants, memory
 from .config import DEV, PROJECTS, SHOTS, TOOLS_PORT, reload_projects
 from .mac import MacWorker, run_quick
 
@@ -108,6 +108,27 @@ def make_server(source: str) -> MCPServer:
             return (f"Jarvis's work:\n{await board.status_text(GROUP_PROJECT)}\n\n"
                     f"Board:\n{await board.project_board(GROUP_PROJECT)}")
         return server
+
+    @server.tool()
+    async def remember(fact: str) -> str:
+        """Save something to Jarvis's long-term memory so it's known in every later chat and call:
+        a preference, decision, plan, name, fact about him or a project. One clear self-contained
+        sentence (who/what/when), e.g. "Sanjar wants the taxi app work on the dev branch"."""
+        item = await memory.add(fact, "fact", "brain")
+        return f"Remembered (id {item})." if item else "Nothing to remember."
+
+    @server.tool()
+    async def recall(query: str) -> str:
+        """Search long-term memory (saved facts, past chats and calls, from every session) for
+        anything about `query`. Use it before answering about the past instead of guessing."""
+        hits = await memory.search(query, k=8)
+        hits = [h for h in hits if h[0] >= 0.60]
+        return memory.format_items(hits) if hits else "Nothing in memory about that."
+
+    @server.tool()
+    async def forget_memory(item_id: str) -> str:
+        """Delete one memory item (by the id shown in recall / memory notes), e.g. a wrong or outdated fact."""
+        return "Forgotten." if memory.forget(item_id.strip()) else f"No memory item {item_id}."
 
     @server.tool()
     async def add_task(project: str, task: str, my_words: str) -> str:

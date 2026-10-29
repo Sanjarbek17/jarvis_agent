@@ -37,7 +37,7 @@ from telethon import TelegramClient, events
 from telethon.tl.functions.contacts import GetContactsRequest
 from telethon.tl.types import MessageActionGroupCall
 
-from core import board, contacts, tools
+from core import board, contacts, memory, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
@@ -405,7 +405,12 @@ async def finish_call():
     if done.transcript:  # kept on disk; sent only when I ask with /transcript (a guest call: always)
         CALLS.mkdir(exist_ok=True)
         suffix = f"_{done.guest}" if done.guest else ""
-        (CALLS / f"{time.strftime('%Y-%m-%d_%H-%M')}{suffix}.txt").write_text("\n".join(done.transcript))
+        saved = CALLS / f"{time.strftime('%Y-%m-%d_%H-%M')}{suffix}.txt"
+        saved.write_text("\n".join(done.transcript))
+        if done.guest:   # a call to someone else: its brain doesn't log turns, so index the transcript
+            asyncio.create_task(memory.index_file(saved))
+        else:            # Sanjar's own call: every turn is already in memory
+            memory.mark_indexed(saved.name)
     if done.guest:
         text = "\n".join(done.transcript) or "(they didn't say anything)"
         await tg.send_message(OWNER_ID, f"📞 Call with {done.guest}\n\n{text[-3800:]}")
@@ -445,6 +450,7 @@ async def finish_group():
     CALLS.mkdir(exist_ok=True)
     path = CALLS / f"{time.strftime('%Y-%m-%d_%H-%M')}_group_{done.title.replace('/', '-')}.txt"
     path.write_text("\n".join(done.transcript))
+    asyncio.create_task(memory.index_file(path))
     summarizer = Brain("group", SUMMARY_PROMPT)
     try:
         summary = await summarizer.reply(f"Group voice chat in {done.title}:\n\n" + "\n".join(done.transcript))
@@ -741,6 +747,7 @@ async def main():
     log.info("Jarvis is up as @%s", me.username)
     await tg.send_message(OWNER_ID, "🟢 Jarvis is online. Call me, message me, or /status.", silent=True)
     asyncio.create_task(check_mac_permissions())
+    asyncio.create_task(memory.backfill_calls())
     if "--call" in sys.argv and CALL_SANJAR:
         try:
             await start_call(OWNER_ID)

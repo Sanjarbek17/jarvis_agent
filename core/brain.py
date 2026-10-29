@@ -11,6 +11,7 @@ import json
 import logging
 from typing import AsyncIterator
 
+from . import memory
 from .config import CALLS, DEV, HERE, PROJECTS, TOOLS_PORT, projects_text, projects_version, rules_text
 
 log = logging.getLogger("jarvis.brain")
@@ -34,6 +35,12 @@ board with tickets and a "Jarvis" column. A ticket marked Queued there is picked
 runner on the Mac, and a Claude Code worker does it (one per project at a time, several
 projects in parallel). Lines starting with [UPDATE] are from the runner, not from Sanjar.
 Status always comes from your tools, never from memory.
+
+Memory: you have long-term memory that outlives this session (restarts, /clear, new calls).
+Relevant bits come in front of his messages as [MEMORY — ...]. Never guess about the past —
+what he said, decided or asked earlier: use those notes, call recall, or say you don't know.
+When he tells you a lasting preference, decision, plan or fact, save it with remember (one clear
+sentence); fix wrong ones with forget_memory. Chats and calls are saved automatically.
 
 - new piece of work -> add_task right away (short title, his exact words in my_words). Never
   tell him you can't do it or that it needs a ticket, and don't ask whether to make one: just
@@ -246,7 +253,21 @@ class Brain:
         log.info("%s brain started%s", self.mode, " (resumed)" if resume else "")
 
     async def ask(self, text: str) -> AsyncIterator[str]:
-        """Send one message; yield the reply text as it streams (only text meant for Sanjar)."""
+        """Send one message; yield the reply text as it streams (only text meant for Sanjar).
+        Chat and call brains get relevant long-term memory in front of the message, and every
+        exchange is saved to memory afterwards, so nothing depends on this one session."""
+        said, out = text, []
+        remembers = self.mode in ("call", "chat")
+        if remembers:
+            with contextlib.suppress(Exception):
+                text = await memory.context_for(said) + text
+        async for chunk in self._ask(text):
+            out.append(chunk)
+            yield chunk
+        if remembers and not said.startswith("[DAILY SUMMARY]"):
+            asyncio.create_task(memory.log_exchange(self.mode, said, "".join(out)))
+
+    async def _ask(self, text: str) -> AsyncIterator[str]:
         async with self.lock:
             if self.notes:
                 text = "\n\n".join([*self.notes, text])

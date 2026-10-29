@@ -50,6 +50,11 @@ time, it remembers earlier Mac jobs; a job longer than a minute reports back in 
 Needs Accessibility + Screen Recording for Jarvis once (System Settings > Privacy & Security);
 Jarvis checks at start and messages you if they're missing.
 
+Memory: Jarvis keeps long-term memory in `var/state/memory/` (facts it was told to `remember`, plus
+every chat and call turn, and old call transcripts). Relevant bits are pulled in front of each
+message by meaning (Gemini embeddings, Uzbek/Russian/English), so it doesn't guess after a restart,
+`/clear` or a new call. Tools: `remember`, `recall`, `forget_memory`.
+
 Reading files: Jarvis can look things up itself (read-only: Read, Glob, Grep) anywhere under
 `~/dev`, e.g. "what port does the taxi backend use". No `.env` files, nothing outside `~/dev`
 (home, `~/.ssh`, `~/Documents` stay off limits); changing anything is still a ticket.
