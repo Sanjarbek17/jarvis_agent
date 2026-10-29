@@ -8,7 +8,8 @@ Search is by meaning (Gemini embeddings, works across Uzbek / Russian / English)
 fallback when embeddings are unavailable, so nothing breaks offline.
 
 Items are linked, because one chat covers many topics and a single line out of context is useless:
-- `thread`: items about the same topic share a thread id. A small fast model (TOPIC_MODELS) sees the
+- `thread`: items about the same topic share a thread id. A small fast Claude model (TOPIC_MODEL,
+  through the `claude` CLI, so no Gemini rate limit) sees the
   new exchange and the labels of recent threads and says which thread it continues, or that it is
   a new topic (with a short label), plus any other threads it relates to (`related` links). This
   runs in the background after the reply, so it costs no time. Embedding similarity alone can't do
@@ -37,9 +38,10 @@ ITEMS = DIR / "items.jsonl"
 INDEXED = DIR / "indexed_calls.json"   # call transcript files already put into memory
 MODEL, DIM = "gemini-embedding-001", 768
 EMBED_TIMEOUT = 2.0                    # a call turn must not wait long for memory
-# assign exchanges to threads; the free plan allows ~5 requests/minute per model, so on a limit
-# error the next one is tried
-TOPIC_MODELS = ("gemini-2.5-flash", "gemini-flash-lite-latest")
+# assigns exchanges to threads. Claude via the `claude` CLI (Sanjar: Gemini's free tier allows only
+# ~5 requests/minute). Haiku: fast and cheap, and this runs after every exchange.
+TOPIC_MODEL = "claude-haiku-5-5"
+TOPIC_TIMEOUT = 90
 THREADS = DIR / "threads.json"         # thread id -> {"label", "last", "count", "related": [...]}
 CONTINUE_WINDOW = 10 * 60              # seconds
 SHORT_FOLLOWUP = 6                     # words: "ok do it" right after = same thread
@@ -124,6 +126,27 @@ Pick an existing thread when the exchange continues that topic (also short follo
 that continue the previous exchange). Use "new" only for a genuinely different topic."""
 
 
+async def _ask_claude_json(prompt: str) -> dict:
+    """One quick, tool-less Claude call through the CLI; returns the JSON object it answers with."""
+    proc = await asyncio.create_subprocess_exec(
+        "claude", "-p", prompt, "--model", TOPIC_MODEL, "--output-format", "json", "--tools", "",
+        "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence",
+        stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), TOPIC_TIMEOUT)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise
+    envelope = json.loads(out)
+    if envelope.get("is_error"):
+        raise RuntimeError(f"claude: {str(envelope.get('result'))[:200]}")
+    text = envelope.get("result") or ""
+    m = re.search(r"\{.*\}", text, re.S)       # tolerate ```json fences or stray words around it
+    if not m:
+        raise ValueError(f"no JSON in topic answer: {text[:200]!r}")
+    return json.loads(m.group(0))
+
+
 async def _pick_thread(text: str, channel: str, said: str, now: float) -> tuple[str, list[str]]:
     """(thread id, related thread ids) for a new item — see the module docstring."""
     threads = _threads()
@@ -133,18 +156,7 @@ async def _pick_thread(text: str, channel: str, said: str, now: float) -> tuple[
     try:
         listing = "\n".join(f"{tid}: {t.get('label', '')}" for tid, t in recent) or "(none yet)"
         prompt = TOPIC_PROMPT.format(threads=listing, last=last_thread or "(none)", text=text[:2500])
-        ans, err = None, None
-        for model in TOPIC_MODELS:
-            try:
-                r = await asyncio.wait_for(_gemini.aio.models.generate_content(
-                    model=model, contents=prompt,
-                    config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0)), 30)
-                ans = json.loads(r.text)
-                break
-            except Exception as e:   # rate limit / timeout / bad JSON: try the next model
-                err = e
-        if ans is None:
-            raise err or RuntimeError("no topic model answered")
+        ans = await _ask_claude_json(prompt)
         tid = str(ans.get("thread", "new")).strip()
         related = [x for x in ans.get("related", []) if x in threads and x != tid]
         if tid not in threads:
