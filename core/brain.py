@@ -149,6 +149,18 @@ Everything you get is what {name} says on the call. Everything you write is spok
 - when it's done or they say goodbye, say bye and call hang_up, then write nothing more"""
 
 
+NO_REPLY = "NO_REPLY"   # what the group brain answers when it should stay silent
+_SILENT = {"", "no_reply", "no reply", "noreply", "nothing", "none", "silence", "silent", "n/a",
+           "no response", "empty", "skip", "-", "..."}
+
+
+def is_silent(text: str) -> bool:
+    """True if a brain reply means "say nothing": empty, the NO_REPLY sentinel, or a placeholder
+    like "(no reply)" / "[nothing]" the model sometimes writes instead. Never post or forward those."""
+    t = (text or "").strip().strip("\"'`*_.!?…").strip().strip("()[]{}<>").strip().lower()
+    return t in _SILENT or t.startswith(("no reply", "no_reply", "(no reply"))
+
+
 def group_prompt(title: str, voice: bool) -> str:
     """For a Telegram group (its voice chat, or text messages naming Jarvis): answer when spoken
     to, read-only."""
@@ -164,7 +176,7 @@ def group_prompt(title: str, voice: bool) -> str:
 - answer what you were asked, briefly (1-3 sentences)
 - reply in the language the group is using (if they speak Uzbek, answer in Uzbek; Russian -> Russian)
 - speak up ONLY when you were addressed by name, or when the group is asking you to arrange,
-  schedule or note a meeting. Otherwise write nothing at all, even though you can see everything
+  schedule or note a meeting. Otherwise answer with exactly NO_REPLY and nothing else
 - scheduling a meeting: use the whole conversation to pin down the details — day, time, who's
   coming, the topic — and confirm them clearly in one short message. You can't write to a calendar,
   so state the agreed time and that you've noted it for Sanjar
