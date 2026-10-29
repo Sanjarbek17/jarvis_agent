@@ -6,6 +6,17 @@ Everything lives in var/state/memory/items.jsonl (one item per line, with its em
   call  - one turn of a call, logged automatically; old call transcripts are indexed once at start
 Search is by meaning (Gemini embeddings, works across Uzbek / Russian / English), with a keyword
 fallback when embeddings are unavailable, so nothing breaks offline.
+
+Items are linked, because one chat covers many topics and a single line out of context is useless:
+- `thread`: items about the same topic share a thread id. A small fast model (TOPIC_MODELS) sees the
+  new exchange and the labels of recent threads and says which thread it continues, or that it is
+  a new topic (with a short label), plus any other threads it relates to (`related` links). This
+  runs in the background after the reply, so it costs no time. Embedding similarity alone can't do
+  this: all chat messages look alike to it. If the model is unavailable, a short follow-up within
+  CONTINUE_WINDOW stays in the last thread, anything else starts a new one. All chunks of one call
+  transcript are one thread.
+- `prev`: the item said just before it in the same channel, so neighbours can be pulled in too.
+Recall returns whole threads in time order, not isolated messages.
 """
 import asyncio
 import json
@@ -26,6 +37,14 @@ ITEMS = DIR / "items.jsonl"
 INDEXED = DIR / "indexed_calls.json"   # call transcript files already put into memory
 MODEL, DIM = "gemini-embedding-001", 768
 EMBED_TIMEOUT = 2.0                    # a call turn must not wait long for memory
+# assign exchanges to threads; the free plan allows ~5 requests/minute per model, so on a limit
+# error the next one is tried
+TOPIC_MODELS = ("gemini-2.5-flash", "gemini-flash-lite-latest")
+THREADS = DIR / "threads.json"         # thread id -> {"label", "last", "count", "related": [...]}
+CONTINUE_WINDOW = 10 * 60              # seconds
+SHORT_FOLLOWUP = 6                     # words: "ok do it" right after = same thread
+THREAD_ITEMS = 12                      # at most this many items of one thread in recall
+RECENT_THREADS = 30                    # thread labels shown to the topic model
 
 _gemini = genai.Client(api_key=GEMINI_API_KEY)
 _items: list[dict] | None = None       # loaded lazily
@@ -77,14 +96,100 @@ async def _embed(texts: list[str], query: bool = False) -> list[list[float]] | N
         return None
 
 
-async def add(text: str, kind: str, source: str = "") -> str:
-    """Store one memory item and return its id."""
+_last: dict[str, dict] = {}            # channel -> last item added there (for threads and prev links)
+
+
+def _threads() -> dict[str, dict]:
+    try:
+        return json.loads(THREADS.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_threads(t: dict) -> None:
+    DIR.mkdir(parents=True, exist_ok=True)
+    THREADS.write_text(json.dumps(t, ensure_ascii=False, indent=1))
+
+
+TOPIC_PROMPT = """You file one new exchange from Sanjar's assistant into conversation threads.
+Threads (id: label), most recent first:
+{threads}
+The previous exchange in this conversation was in thread: {last}
+
+New exchange:
+{text}
+
+Answer with JSON only: {{"thread": "<an existing id, or new>", "label": "<if new: 3-8 word topic label, in English>", "related": ["<ids of other threads it clearly connects to>"]}}
+Pick an existing thread when the exchange continues that topic (also short follow-ups like "ok do it"
+that continue the previous exchange). Use "new" only for a genuinely different topic."""
+
+
+async def _pick_thread(text: str, channel: str, said: str, now: float) -> tuple[str, list[str]]:
+    """(thread id, related thread ids) for a new item — see the module docstring."""
+    threads = _threads()
+    last = _last.get(channel)
+    last_thread = last["thread"] if last and now - last["ts"] < CONTINUE_WINDOW else ""
+    recent = sorted(threads.items(), key=lambda kv: -kv[1].get("last", 0))[:RECENT_THREADS]
+    try:
+        listing = "\n".join(f"{tid}: {t.get('label', '')}" for tid, t in recent) or "(none yet)"
+        prompt = TOPIC_PROMPT.format(threads=listing, last=last_thread or "(none)", text=text[:2500])
+        ans, err = None, None
+        for model in TOPIC_MODELS:
+            try:
+                r = await asyncio.wait_for(_gemini.aio.models.generate_content(
+                    model=model, contents=prompt,
+                    config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0)), 30)
+                ans = json.loads(r.text)
+                break
+            except Exception as e:   # rate limit / timeout / bad JSON: try the next model
+                err = e
+        if ans is None:
+            raise err or RuntimeError("no topic model answered")
+        tid = str(ans.get("thread", "new")).strip()
+        related = [x for x in ans.get("related", []) if x in threads and x != tid]
+        if tid not in threads:
+            tid = uuid.uuid4().hex[:8]
+            threads[tid] = {"label": str(ans.get("label") or text[:60]).strip()[:80], "count": 0, "related": []}
+    except Exception as e:
+        log.warning("topic model failed (%r); threading by time only", e)
+        related = []
+        if last_thread and len(said.split()) <= SHORT_FOLLOWUP:
+            tid = last_thread
+        else:
+            tid = uuid.uuid4().hex[:8]
+            threads[tid] = {"label": (said or text)[:60].replace("\n", " "), "count": 0, "related": []}
+    t = threads.setdefault(tid, {"label": (said or text)[:60], "count": 0, "related": []})
+    t["last"], t["count"] = now, t.get("count", 0) + 1
+    for rid in related:   # links go both ways
+        t.setdefault("related", [])
+        if rid not in t["related"]:
+            t["related"].append(rid)
+        other = threads[rid].setdefault("related", [])
+        if tid not in other:
+            other.append(tid)
+    _save_threads(threads)
+    return tid, related
+
+
+async def add(text: str, kind: str, source: str = "", thread: str = "", said: str = "") -> str:
+    """Store one memory item, linked into a thread, and return its id. `said`: Sanjar's own words
+    (used to spot short follow-ups); `thread`: force a thread (e.g. one per call transcript)."""
     text = text.strip()[:4000]
     if not text:
         return ""
     vec = await _embed([text])
-    it = {"id": uuid.uuid4().hex[:8], "ts": time.time(), "kind": kind, "source": source, "text": text,
+    now = time.time()
+    channel = source or kind
+    if not thread:
+        thread, _ = await _pick_thread(text, channel, said or text, now)
+    elif thread not in (th := _threads()):
+        th[thread] = {"label": text[:60].replace("\n", " "), "last": now, "count": 1, "related": []}
+        _save_threads(th)
+    prev = _last.get(channel)
+    it = {"id": uuid.uuid4().hex[:8], "ts": now, "kind": kind, "source": source, "text": text,
+          "thread": thread, "prev": prev["id"] if prev else "",
           "vec": [round(x, 5) for x in vec[0]] if vec else None}
+    _last[channel] = it
     _load().append(it)
     with ITEMS.open("a") as f:
         f.write(json.dumps(it, ensure_ascii=False) + "\n")
@@ -144,19 +249,76 @@ def format_items(hits: list[tuple[float, dict]]) -> str:
     return "\n".join(f"- [{it['kind']} {_when(it['ts'])} id={it['id']}] {it['text'][:700]}" for _, it in hits)
 
 
+def threads_for(hits: list[tuple[float, dict]], max_threads: int = 3) -> list[tuple[str, list[dict]]]:
+    """Expand search hits into their whole threads (plus each hit's direct neighbours, and threads
+    linked as related), each in time order, best-matching first: [(label, items), ...]."""
+    items = _load()
+    meta = _threads()
+    order, seen = [], set()
+    for _, it in hits:
+        t = it.get("thread") or it["id"]
+        if t not in seen:
+            seen.add(t)
+            order.append((t, it))
+    for t, hit in list(order[:max_threads]):     # one hop along "related" links
+        for rid in meta.get(t, {}).get("related", []):
+            if rid not in seen:
+                seen.add(rid)
+                latest = max((it for it in items if it.get("thread") == rid), key=lambda it: it["ts"], default=None)
+                if latest:
+                    order.append((rid, latest))
+    out = []
+    for t, hit in order[:max_threads + 2]:
+        chain = sorted((it for it in items if (it.get("thread") or it["id"]) == t), key=lambda it: it["ts"])
+        if len(chain) > THREAD_ITEMS:   # keep the hit and the latest ones
+            keep = {hit["id"]} | {it["id"] for it in chain[-(THREAD_ITEMS - 1):]}
+            chain = [it for it in chain if it["id"] in keep]
+        out.append((meta.get(t, {}).get("label", ""), chain))
+    return out
+
+
+def format_threads(threads: list[tuple[str, list[dict]]], per_item: int = 500, total: int = 6000) -> str:
+    parts, used = [], 0
+    for label, chain in threads:
+        head = (f"Thread «{label or 'untitled'}» ({len(chain)} items, "
+                f"{_when(chain[0]['ts'])} → {_when(chain[-1]['ts'])}):")
+        lines = [head] + [f"  - [{it['kind']} {_when(it['ts'])} id={it['id']}] "
+                          f"{it['text'][:per_item].replace(chr(10), ' / ')}" for it in chain]
+        block = "\n".join(lines)
+        if used + len(block) > total and parts:
+            break
+        parts.append(block)
+        used += len(block)
+    return "\n".join(parts)
+
+
+def _strong(hits: list[tuple[float, dict]], min_score: float, margin: float = 0.05) -> list[tuple[float, dict]]:
+    """Hits above `min_score` and close to the best one: weak matches would drag whole unrelated
+    threads in, since everything scores somewhat similar."""
+    if not hits or hits[0][0] < min_score:
+        return []
+    return [h for h in hits if h[0] >= max(min_score, hits[0][0] - margin)]
+
+
+async def recall_text(query: str, min_score: float = 0.60) -> str:
+    hits = _strong(await search(query, k=8), min_score)
+    return format_threads(threads_for(hits)) if hits else ""
+
+
 async def context_for(text: str, k: int = 5, min_score: float = 0.70) -> str:
-    """A memory block to put in front of Sanjar's message, or "" if nothing relevant."""
-    hits = [h for h in await search(text, k) if h[0] >= min_score]
+    """A memory block (whole linked threads) to put in front of Sanjar's message, or ""."""
+    hits = _strong(await search(text, k), min_score)
     if not hits:
         return ""
-    return ("[MEMORY — notes and past conversations that may be relevant. Use them instead of guessing; "
-            "if they don't answer it, use recall or say you don't know]\n" + format_items(hits) + "\n\n")
+    return ("[MEMORY — earlier conversations and notes on this, as linked threads (oldest first). Use "
+            "them instead of guessing; if they don't answer it, use recall or say you don't know]\n"
+            + format_threads(threads_for(hits, max_threads=2), total=4000) + "\n\n")
 
 
 async def log_exchange(channel: str, said: str, reply: str) -> None:
     """Keep one exchange (Sanjar's words and Jarvis's reply) so later sessions can find it."""
     if said.strip() and reply.strip():
-        await add(f"Sanjar: {said.strip()[:1800]}\nJarvis: {reply.strip()[:1800]}", channel)
+        await add(f"Sanjar: {said.strip()[:1800]}\nJarvis: {reply.strip()[:1800]}", channel, said=said)
 
 
 def mark_indexed(filename: str) -> None:
@@ -174,7 +336,7 @@ async def index_file(f) -> int:
     for i in range(0, len(text), 1500):
         chunk = text[i:i + 1500].strip()
         if chunk:
-            await add(f"(call {f.stem}) {chunk}", "call", f.name)
+            await add(f"(call {f.stem}) {chunk}", "call", f.name, thread=f"call-{f.stem}")
             added += 1
     mark_indexed(f.name)
     return added

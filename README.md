@@ -53,7 +53,8 @@ Jarvis checks at start and messages you if they're missing.
 Memory: Jarvis keeps long-term memory in `var/state/memory/` (facts it was told to `remember`, plus
 every chat and call turn, and old call transcripts). Relevant bits are pulled in front of each
 message by meaning (Gemini embeddings, Uzbek/Russian/English), so it doesn't guess after a restart,
-`/clear` or a new call. Tools: `remember`, `recall`, `forget_memory`.
+`/clear` or a new call. Messages are linked into topic threads (a fast Gemini model files each exchange
+into a thread and links related ones), so recall brings back the whole conversation on a topic. Tools: `remember`, `recall`, `forget_memory`.
 
 Reading files: Jarvis can look things up itself (read-only: Read, Glob, Grep) anywhere under
 `~/dev`, e.g. "what port does the taxi backend use". No `.env` files, nothing outside `~/dev`
