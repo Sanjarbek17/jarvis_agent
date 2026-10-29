@@ -120,10 +120,9 @@ def make_server(source: str) -> MCPServer:
     @server.tool()
     async def recall(query: str) -> str:
         """Search long-term memory (saved facts, past chats and calls, from every session) for
-        anything about `query`. Use it before answering about the past instead of guessing."""
-        hits = await memory.search(query, k=8)
-        hits = [h for h in hits if h[0] >= 0.60]
-        return memory.format_items(hits) if hits else "Nothing in memory about that."
+        anything about `query`. Returns whole linked threads (everything said on that topic, in order),
+        not single lines. Use it before answering about the past instead of guessing."""
+        return await memory.recall_text(query) or "Nothing in memory about that."
 
     @server.tool()
     async def forget_memory(item_id: str) -> str:
