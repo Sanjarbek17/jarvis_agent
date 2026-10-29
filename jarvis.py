@@ -39,7 +39,7 @@ from telethon.tl.types import MessageActionGroupCall
 
 from core import board, contacts, tools
 from core.board import Ticket
-from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt
+from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
                          PROJECTS, PROJECTS_URL, QUIET_HOURS, SESSION, SOFT_SKILLS_REMINDER_AT, TG_API_HASH,
                          TG_API_ID)
@@ -125,10 +125,12 @@ class Call:
                     buffer += chunk
                     sentences, buffer = split_sentences(buffer)
                     for s in sentences:
+                        if is_silent(s):
+                            continue           # "NO_REPLY" / "(no reply)": say nothing
                         said.append(s)
                         if turn == self.turn_id:   # not interrupted since
                             self.mouth.say(s)
-                if buffer.strip():
+                if buffer.strip() and not is_silent(buffer):
                     said.append(buffer.strip())
                     if turn == self.turn_id:
                         self.mouth.say(buffer.strip())
@@ -639,10 +641,10 @@ async def on_group_message(event):
     convo = "\n".join(hist)
     msg = (f"{ctx}Recent conversation in the group (most recent last):\n{convo}\n\n"
            f"The latest message is from {name}. Reply only if you were addressed by name, or if the "
-           f"group is asking you to arrange, schedule, or note a meeting; otherwise reply with nothing.")
+           f"group is asking you to arrange, schedule, or note a meeting; otherwise answer exactly NO_REPLY.")
     async with tg.action(event.chat_id, "typing"):
         reply = await group_chats[event.chat_id].reply(msg)
-    if reply.strip():
+    if not is_silent(reply):
         await event.reply(reply)
         # a meeting was arranged in a group: make sure Sanjar actually has it
         if meeting and event.sender_id != OWNER_ID:
