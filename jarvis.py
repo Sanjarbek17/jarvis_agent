@@ -77,7 +77,7 @@ swap_in_new_login()
 tg = TelegramClient(str(SESSION), TG_API_ID, TG_API_HASH)
 calls = PyTgCalls(tg)
 CHUNK = CALL_RATE // 100 * 2 * 2      # 10 ms of 48 kHz stereo s16 going into the call
-EMOJI = {"done": "✅", "failed": "❌", "needs_me": "❓"}
+EMOJI = {"done": "✅", "failed": "❌", "needs_me": "❓", "stopped": "⏹"}
 # someone in a group call speaks to Jarvis; also the ways speech-to-text tends to spell it
 WAKE = re.compile(r"d?[jy]arvi[sz]?|jarves|jervis|jarbis|charvis|[дж]?жарви[сз]?|джарвис|ժարվիս|"
                   r"जार्विस|जारविस|जार्वि|ज़ार्विस|ジャービス|ジャーヴィス|자비스|贾维斯", re.I)
@@ -879,6 +879,7 @@ async def main():
     tools.hooks.worker_progress = runner.progress
     runner.message = lambda text: tg.send_message(OWNER_ID, text, link_preview=False)
     tools.hooks.mac = mac
+    tools.hooks.runner = runner
     tools.hooks.mac_late = mac_late
     background = [asyncio.create_task(tools.serve()), asyncio.create_task(runner.run_forever()),
                   asyncio.create_task(daily_call()), asyncio.create_task(daily_reminder())]

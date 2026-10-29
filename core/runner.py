@@ -6,6 +6,7 @@ at once. Each project keeps its own Claude session, so it remembers earlier task
 Steps go to the ticket live; Done / Failed / Needs me go to Sanjar via `notify`.
 """
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -192,6 +193,7 @@ class Runner:
         self.running: dict[str, asyncio.Task] = {}      # project -> worker
         self.procs: dict[str, asyncio.subprocess.Process] = {}
         self.current: dict[str, Ticket] = {}            # project -> ticket being worked on
+        self.stop_reasons: dict[str, str] = {}          # project -> why its worker was stopped on purpose
         self.finished: dict[str, float] = {}            # ticket ref -> when it finished (monotonic)
         self.message: Callable[[str], Awaitable] | None = None   # plain Telegram text to Sanjar
         self.last_sweep = 0.0
@@ -272,12 +274,24 @@ class Runner:
             return f"No worker log for {project!r}" + (f" ticket {ticket}" if ticket else "") + "."
         return progress_text(path, running=current is not None and path.stem.endswith(current.ref))
 
-    def stop_project(self, project: str) -> bool:
+    def stop_project(self, project: str, reason: str = "Sanjar used /stop") -> bool:
+        """Stop a project's worker on purpose: its ticket goes off the queue (not "Failed")."""
         proc = self.procs.get(project)
         if proc and proc.returncode is None:
+            self.stop_reasons[project] = reason
             proc.terminate()
             return True
         return False
+
+    async def stop_and_wait(self, project: str, reason: str, timeout: float = 30) -> Ticket | None:
+        """stop_project, then wait until the worker has wrapped up; returns the ticket it was on."""
+        card = self.current.get(project)
+        if not self.stop_project(project, reason):
+            return None
+        end = time.monotonic() + timeout
+        while project in self.current and time.monotonic() < end:
+            await asyncio.sleep(0.5)
+        return card
 
     async def _work(self, card: Ticket):
         dirs = project_dirs(card.project)
@@ -350,7 +364,8 @@ class Runner:
                 if proc.returncode and not result:
                     is_error, result = True, f"Worker exited with code {proc.returncode}."
                 unfinished = [d for d in [*bg.values(), *cut.values()] if d]
-                if is_error or not unfinished or attempt >= MAX_CONTINUES or proc.returncode < 0:
+                if (is_error or not unfinished or attempt >= MAX_CONTINUES or proc.returncode < 0
+                        or card.project in self.stop_reasons):
                     if unfinished and not is_error:
                         result += ("\n\nNote: background work was still unfinished after "
                                    f"{attempt} continuation(s): " + "; ".join(unfinished[:6]))
@@ -375,7 +390,17 @@ class Runner:
         finally:
             logfile.close()
             self.procs.pop(card.project, None)
+            stopped = self.stop_reasons.pop(card.project, None)
+            if stopped is not None:          # stopped on purpose: off the queue, not "Failed"
+                with contextlib.suppress(Exception):
+                    await board.unqueue(card, f"stopped: {stopped}")
+                self.finished[card.ref] = time.monotonic()
             self.current.pop(card.project, None)
+        if stopped is not None:
+            log.info("%s stopped: %s", card.ref, stopped)
+            await self.notify(card, "stopped", f"Stopped the worker ({stopped}). It's off the queue; "
+                                               "queue it again to start over.", [])
+            return
 
         photos = sorted(shots.glob("*.png"))
         question = ""

@@ -35,6 +35,7 @@ class Hooks:
     worker_progress: Callable[[str, str], str]
     mac: MacWorker
     mac_late: Callable[[str, str, list[Path], bool], Awaitable[None]]   # result after MAC_WAIT
+    runner: "Runner"                                                    # core.runner.Runner
 
 
 hooks = Hooks()
@@ -169,19 +170,43 @@ def make_server(source: str) -> MCPServer:
             return f"No board known for {project!r}."
         return await board.project_board(project, sprint, status)
 
-    async def _editable(ticket_ref: str) -> board.Ticket | str:
+    async def _editable(ticket_ref: str, stop: str = "") -> board.Ticket | str:
+        """The ticket, if it may be changed. stop: a reason to stop its running worker first
+        (drop / unqueue); without it a ticket being worked on is left alone."""
         t = await board.find_any(ticket_ref)
         if not t:
             return f"No ticket {ticket_ref}. Use project_board to find its ref."
         if t.jarvis == "Working":
-            return f"{t.ref} is being worked on right now; stop that project's worker first (/stop {t.project})."
+            running = hooks.runner.current.get(t.project)
+            if running and running.ref == t.ref:
+                if not stop:
+                    return f"{t.ref} is being worked on right now; stop it first with stop_worker."
+                await hooks.runner.stop_and_wait(t.project, stop)
+                t = await board.find_any(ticket_ref) or t
         return t
+
+    @server.tool()
+    async def stop_worker(project: str, reason: str = "") -> str:
+        """Stop the worker running on a project's board right now (same as Sanjar's /stop command),
+        e.g. when he says "stop it" about a ticket in progress. project: the project name, or the
+        ref of the ticket it's working on. Its ticket goes off the queue; nothing else changes.
+        reason: his words."""
+        name = next((n for n in hooks.runner.current if n.lower() == project.strip().lower()), None)
+        if not name:
+            name = next((p for p, c in hooks.runner.current.items() if c.ref == project.strip()), None)
+        if not name:
+            busy = ", ".join(f"{p} ({c.ref})" for p, c in hooks.runner.current.items()) or "none"
+            return f"No worker is running for {project!r}. Running now: {busy}."
+        card = await hooks.runner.stop_and_wait(name, reason or "Sanjar asked to stop it")
+        if not card:
+            return f"The {name} worker had already finished."
+        return f"Stopped the {name} worker on {card.ref} ({card.title}); that ticket is off the queue."
 
     @server.tool()
     async def unqueue_ticket(ticket_ref: str, reason: str) -> str:
         """Take a ticket off Jarvis's queue (clears its Jarvis column), e.g. queued by mistake.
         It stays on the board as it is; Jarvis just won't work on it."""
-        t = await _editable(ticket_ref)
+        t = await _editable(ticket_ref, stop=f"unqueued: {reason}")
         if isinstance(t, str):
             return t
         await board.unqueue(t, reason)
@@ -191,7 +216,7 @@ def make_server(source: str) -> MCPServer:
     async def drop_ticket(ticket_ref: str, reason: str) -> str:
         """Drop a ticket that isn't needed: off Jarvis's queue and marked Dropped on its board
         (nothing is deleted; Sanjar can undo it in Notion)."""
-        t = await _editable(ticket_ref)
+        t = await _editable(ticket_ref, stop=f"dropped: {reason}")
         if isinstance(t, str):
             return t
         how = await board.drop(t, reason)
