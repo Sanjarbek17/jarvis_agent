@@ -14,9 +14,10 @@ import numpy as np
 from google import genai
 from google.genai import types
 
-from .config import GEMINI_API_KEY, TRANSCRIBE_MODEL, TTS_MODEL, TTS_VOICE
+from .config import GEMINI_API_KEY, TRANSCRIBE_LANGUAGES, TRANSCRIBE_MODEL, TRANSCRIBE_VOCAB, TTS_MODEL, TTS_VOICE
 
 log = logging.getLogger("jarvis.voice")
+QUOTA_WAIT = 30                        # seconds to wait when Gemini says the live quota is used up
 gemini = genai.Client(api_key=GEMINI_API_KEY)
 
 
@@ -54,7 +55,7 @@ class Ears:
                 await self._task
 
     async def _run(self):
-        config = types.LiveConnectConfig(input_audio_transcription=types.AudioTranscriptionConfig())
+        config = types.LiveConnectConfig(input_audio_transcription=types.AudioTranscriptionConfig(language_codes=TRANSCRIBE_LANGUAGES, custom_vocabulary=TRANSCRIBE_VOCAB))
         while True:  # sessions can drop or time out; reconnect for the whole call
             try:
                 async with gemini.aio.live.connect(model=TRANSCRIBE_MODEL, config=config) as session:
@@ -66,7 +67,11 @@ class Ears:
                         sender.cancel()
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as e:
+                if "quota" in str(e).lower():   # Gemini's live-session limit (e.g. many speakers at once)
+                    log.warning("ears: Gemini live quota reached, retrying in %ds", QUOTA_WAIT)
+                    await asyncio.sleep(QUOTA_WAIT)
+                    continue
                 log.exception("ears dropped, reconnecting")
                 await asyncio.sleep(1)
 
@@ -103,7 +108,7 @@ async def transcribe_audio(data: bytes) -> str:
     if not pcm:
         return ""
     pcm += bytes(16000 * 2 * 2)  # 2 s of silence so the last sentence gets finished
-    config = types.LiveConnectConfig(input_audio_transcription=types.AudioTranscriptionConfig())
+    config = types.LiveConnectConfig(input_audio_transcription=types.AudioTranscriptionConfig(language_codes=TRANSCRIBE_LANGUAGES, custom_vocabulary=TRANSCRIBE_VOCAB))
     sentences: list[str] = []
     async with gemini.aio.live.connect(model=TRANSCRIBE_MODEL, config=config) as session:
         async def send():
@@ -243,7 +248,11 @@ class Mouth:
                         sender.cancel()
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as e:
+                if "quota" in str(e).lower():   # Gemini's live-session limit (e.g. many speakers at once)
+                    log.warning("mouth: Gemini live quota reached, retrying in %ds", QUOTA_WAIT)
+                    await asyncio.sleep(QUOTA_WAIT)
+                    continue
                 log.exception("mouth dropped, reconnecting")
                 await asyncio.sleep(1)
 

@@ -69,6 +69,10 @@ for d in (STATE, SHOTS, LOGS, INBOX):
 
 # voice
 TRANSCRIBE_MODEL = "gemini-3.5-transcribe-live"
+# Without hints the model guesses the language per sentence and turns Uzbek speech into Hindi,
+# Turkish or Chinese text (seen in the Taxi loyiha call, 2026-10-29), which also hid "Jarvis".
+TRANSCRIBE_LANGUAGES = ["uz-UZ", "ru-RU", "en-US"]
+TRANSCRIBE_VOCAB = ["Jarvis", "Джарвис"]
 TTS_MODEL = "gemini-3.8-live"      # Live model used as a reader: no daily limit on the free plan
 TTS_VOICE = "Charon"
 CALL_RATE = 48000                 # Telegram call audio, mono s16le
