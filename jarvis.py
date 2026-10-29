@@ -37,12 +37,14 @@ from pytgcalls.types import (CallConfig, ChatUpdate, Device, Direction, External
 from pytgcalls.types.raw import AudioParameters
 from telethon import TelegramClient, events
 from telethon.tl.functions.contacts import GetContactsRequest
-from telethon.tl.types import MessageActionGroupCall
+from telethon.tl.functions.channels import GetFullChannelRequest
+from telethon.tl.functions.messages import GetFullChatRequest
+from telethon.tl.types import InputPeerChannel, MessageActionGroupCall
 
 from core import board, contacts, memory, outbox, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
-from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
+from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, WATCHED_GROUP_IDS, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
                          PROJECTS, PROJECTS_URL, QUIET_HOURS, SESSION, SOFT_SKILLS_REMINDER_AT, TG_API_HASH,
                          TG_API_ID)
 from core.mac import MacWorker
@@ -791,6 +793,10 @@ async def on_left(_, update: ChatUpdate):
         await finish_group()
 
 
+joined_calls: set[int] = set()     # voice chats already joined (or tried) once: no automatic rejoin
+GROUP_CALL_CHECK = 60              # seconds
+
+
 @tg.on(events.NewMessage(func=lambda e: isinstance(getattr(e.message, "action", None), MessageActionGroupCall)))
 async def on_voice_chat(event):
     """A voice chat started (no duration yet) or ended in a group the Jarvis account is in."""
@@ -798,9 +804,41 @@ async def on_voice_chat(event):
         chat_ = await event.get_chat()
         if not watched_group(event.chat_id, getattr(chat_, "title", "") or ""):
             return
+        joined_calls.add(event.message.action.call.id)
         await join_group(event.chat_id, getattr(chat_, "title", "") or str(event.chat_id))
     elif group and event.chat_id == group.user_id:
         await finish_group()
+
+
+async def live_call_id(chat_id: int) -> int | None:
+    """The id of the voice chat going on in that group right now, if any."""
+    peer = await tg.get_input_entity(chat_id)
+    if isinstance(peer, InputPeerChannel):
+        full = await tg(GetFullChannelRequest(peer))
+    else:
+        full = await tg(GetFullChatRequest(peer.chat_id))
+    call = getattr(full.full_chat, "call", None)
+    return call.id if call else None
+
+
+async def watch_group_calls():
+    """Join a voice chat in a watched group even when the "started" message was missed (Jarvis was
+    restarting or offline then): look at start and every minute. Each call is joined automatically
+    only once, so leaving or being removed doesn't make Jarvis rejoin over and over."""
+    while True:
+        for gid in WATCHED_GROUP_IDS:
+            if group:
+                break
+            try:
+                cid = await live_call_id(gid)
+                if cid and cid not in joined_calls:
+                    joined_calls.add(cid)
+                    title = getattr(await tg.get_entity(gid), "title", "") or str(gid)
+                    log.info("voice chat %s is live in %s, joining", cid, title)
+                    await join_group(gid, title)
+            except Exception as e:
+                log.warning("couldn't check the voice chat of %s: %r", gid, e)
+        await asyncio.sleep(GROUP_CALL_CHECK)
 
 
 runner = Runner(notify)
@@ -848,6 +886,7 @@ async def main():
     await tg.send_message(OWNER_ID, "🟢 Jarvis is online. Call me, message me, or /status.", silent=True)
     asyncio.create_task(check_mac_permissions())
     asyncio.create_task(remember_history())
+    asyncio.create_task(watch_group_calls())
     asyncio.create_task(outbox.run(tg, OWNER_ID))   # scripts send Sanjar things through us
     if "--call" in sys.argv and CALL_SANJAR:
         try:
