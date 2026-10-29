@@ -69,7 +69,8 @@ all of it, then only newer messages; already-stored ones are skipped). Passwords
 scrubbed out of everything memory stores (`memory.scrub`).
 
 Reading files: Jarvis can look things up itself (read-only: Read, Glob, Grep) anywhere under
-`~/dev`, e.g. "what port does the taxi backend use". No `.env` files, nothing outside `~/dev`
+`~/dev`, e.g. "what port does the taxi backend use", and Sanjar's global skills in `~/.claude/skills`
+(e.g. taxi-server). No `.env` files anywhere, nothing else outside `~/dev`
 (home, `~/.ssh`, `~/Documents` stay off limits); changing anything is still a ticket.
 
 Calling other people: "call Olimjon and tell him ..." (by message or on a call). Jarvis looks the
