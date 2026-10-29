@@ -18,10 +18,17 @@ Items are linked, because one chat covers many topics and a single line out of c
   transcript are one thread.
 - `prev`: the item said just before it in the same channel, so neighbours can be pulled in too.
 Recall returns whole threads in time order, not isolated messages.
+
+Secrets never go in: every text is scrubbed first (values from the .env files, API hashes, tokens,
+login links, "password X"). The whole Telegram chat with Sanjar is imported once at start
+(backfill_telegram: older history in batches, skipping what's stored already), then only newer
+messages on later starts.
 """
 import asyncio
+import functools
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -30,7 +37,7 @@ import numpy as np
 from google import genai
 from google.genai import types
 
-from .config import CALLS, GEMINI_API_KEY, STATE
+from .config import CALLS, DEV, GEMINI_API_KEY, HERE, STATE
 
 log = logging.getLogger("jarvis.memory")
 DIR = STATE / "memory"
@@ -47,6 +54,8 @@ CONTINUE_WINDOW = 10 * 60              # seconds
 SHORT_FOLLOWUP = 6                     # words: "ok do it" right after = same thread
 THREAD_ITEMS = 12                      # at most this many items of one thread in recall
 RECENT_THREADS = 30                    # thread labels shown to the topic model
+TG_STATE = DIR / "tg_backfill.json"    # {"last_id": newest Telegram message id already imported}
+BACKFILL_BATCH = 25                    # exchanges threaded in one topic-model call
 
 _gemini = genai.Client(api_key=GEMINI_API_KEY)
 _items: list[dict] | None = None       # loaded lazily
@@ -99,6 +108,72 @@ async def _embed(texts: list[str], query: bool = False) -> list[list[float]] | N
 
 
 _last: dict[str, dict] = {}            # channel -> last item added there (for threads and prev links)
+_thread_lock = asyncio.Lock()          # threads.json is read, then written after a model call
+
+
+# --- secrets -------------------------------------------------------------------------------------
+
+SECRET_KEY = re.compile(r"KEY|HASH|TOKEN|SECRET|PASS|API_ID", re.I)
+# dev defaults that are also everyday words; scrubbing them would blank out normal talk
+NOT_SECRET = {"postgres", "password", "admin", "localhost", "secret", "changeme", "root", "default",
+              "development", "production", "redis", "django", "jarvis"}
+SECRET_PATTERNS = [
+    re.compile(r"\b[0-9a-f]{32}\b"),                                   # Telegram API hash and alike
+    re.compile(r"\b(?:ntn_|secret_|AIza|sk-|ghp_|github_pat_|xox[bp]-)[\w\-]{10,}"),
+    re.compile(r"tg://login\?token=[\w\-=%]+"),
+    re.compile(r"(?i)\b(?:TG_)?API_(?:ID|HASH)\s*[=:]\s*\S+"),
+]
+# "my 2fa is X", "password: X", "parol X": only when X looks like a password (has a digit)
+PASSWORD_SAID = re.compile(r"(?i)\b(2fa|2-fa|password|passcode|parol|пароль)(\s+(?:is|:|=|-)?\s*)"
+                           r"(?=\S*\d)(?=\S*[a-zA-Z])\S{4,}")
+
+
+@functools.cache
+def _secret_values() -> tuple[str, ...]:
+    """Secret values from this project's .env and the ones under ~/dev (keys like *KEY*, *PASS*)."""
+    found = set()
+    for env in [HERE / ".env", *DEV.glob("*/.env"), *DEV.glob("*/*/.env"), *DEV.glob("*/*/*/.env")]:
+        try:
+            lines = env.read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            k, sep, v = line.partition("=")
+            v = v.strip().strip("'\"")
+            if sep and SECRET_KEY.search(k) and len(v) >= 6 and v.lower() not in NOT_SECRET:
+                found.add(v)
+    return tuple(sorted(found, key=len, reverse=True))
+
+
+def scrub(text: str) -> str:
+    for v in _secret_values():
+        text = text.replace(v, "[secret]")
+    for p in SECRET_PATTERNS:
+        text = p.sub("[secret]", text)
+    return PASSWORD_SAID.sub(lambda m: m.group(1) + m.group(2) + "[secret]", text)
+
+
+def scrub_existing() -> int:
+    """Scrub items stored before scrubbing existed; rewrites items.jsonl. Returns how many changed."""
+    if not ITEMS.exists():
+        return 0
+    lines, changed = [], 0
+    for line in ITEMS.read_text().splitlines():
+        try:
+            it = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if "text" in it and (clean := scrub(it["text"])) != it["text"]:
+            it["text"], changed = clean, changed + 1
+        lines.append(json.dumps(it, ensure_ascii=False))
+    if changed:
+        tmp = ITEMS.with_suffix(".tmp")
+        tmp.write_text("\n".join(lines) + "\n")
+        os.replace(tmp, ITEMS)
+        global _items
+        _items = None                      # reload with the clean texts
+        log.info("scrubbed secrets out of %d memory items", changed)
+    return changed
 
 
 def _threads() -> dict[str, dict]:
@@ -149,6 +224,11 @@ async def _ask_claude_json(prompt: str) -> dict:
 
 async def _pick_thread(text: str, channel: str, said: str, now: float) -> tuple[str, list[str]]:
     """(thread id, related thread ids) for a new item — see the module docstring."""
+    async with _thread_lock:
+        return await _pick_thread_locked(text, channel, said, now)
+
+
+async def _pick_thread_locked(text: str, channel: str, said: str, now: float) -> tuple[str, list[str]]:
     threads = _threads()
     last = _last.get(channel)
     last_thread = last["thread"] if last and now - last["ts"] < CONTINUE_WINDOW else ""
@@ -183,10 +263,20 @@ async def _pick_thread(text: str, channel: str, said: str, now: float) -> tuple[
     return tid, related
 
 
+def _link(threads: dict, tid: str, related: list[str]) -> None:
+    for rid in related:   # links go both ways
+        t = threads[tid].setdefault("related", [])
+        if rid not in t:
+            t.append(rid)
+        other = threads[rid].setdefault("related", [])
+        if tid not in other:
+            other.append(tid)
+
+
 async def add(text: str, kind: str, source: str = "", thread: str = "", said: str = "") -> str:
     """Store one memory item, linked into a thread, and return its id. `said`: Sanjar's own words
     (used to spot short follow-ups); `thread`: force a thread (e.g. one per call transcript)."""
-    text = text.strip()[:4000]
+    text = scrub(text.strip())[:4000]
     if not text:
         return ""
     vec = await _embed([text])
@@ -365,4 +455,153 @@ async def backfill_calls() -> int:
             added += await index_file(f)
     if added:
         log.info("indexed %d chunks of old call transcripts into memory", added)
+    return added
+
+
+# --- importing the Telegram chat history ---------------------------------------------------------
+
+BATCH_TOPIC_PROMPT = """You file a run of past exchanges between Sanjar and his assistant Jarvis into conversation threads.
+Existing threads (id: label), most recent first:
+{threads}
+
+Exchanges, oldest first:
+{items}
+
+Answer with JSON only: {{"items": [{{"n": <exchange number>, "thread": "<an existing id, or new:<word>>", "label": "<for a new thread: 3-8 word topic label, in English>", "related": ["<existing ids it clearly connects to>"]}}]}}
+One entry for every exchange. Exchanges of this run on the same new topic share the same "new:<word>".
+Continue an existing thread when the topic continues (also short follow-ups like "ok", "?" or "do it"
+belong to the exchange before them). Start a new thread only for a genuinely different topic."""
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _exchanges(messages: list[dict]) -> list[dict]:
+    """Sanjar's message(s) and Jarvis's answer(s) after them become one exchange; Jarvis's own
+    notices (ticket done, needs me) with nothing from Sanjar before them become one too."""
+    out, cur = [], None
+    for m in messages:
+        text = (m.get("text") or "").strip()
+        if not text:
+            continue
+        if cur is None or (not m["out"] and cur["jarvis"]):   # Sanjar speaks after an answer: next one
+            cur = {"first_id": m["id"], "ts": m["ts"], "sanjar": [], "jarvis": []}
+            out.append(cur)
+        (cur["jarvis"] if m["out"] else cur["sanjar"]).append(text)
+    for x in out:
+        said, reply = "\n".join(x["sanjar"]), "\n".join(x["jarvis"])
+        x["said"] = said
+        x["text"] = scrub(((f"Sanjar: {said[:1800]}\n" if said else "") + (f"Jarvis: {reply[:1800]}" if reply else "")).strip())
+        x["key"] = _norm(scrub(reply))[:100] if len(reply) >= 15 else _norm(scrub(said))[:100]
+    return out
+
+
+def _known(x: dict, stored: list[str], sources: set[str]) -> bool:
+    if f"tg:{x['first_id']}" in sources:
+        return True
+    return len(x["key"]) >= 15 and any(x["key"] in t for t in stored)
+
+
+async def _thread_batch(batch: list[dict]) -> list[tuple[str, list[str]]]:
+    """Thread ids for a run of old exchanges, in one topic-model call (time-only if it fails)."""
+    async with _thread_lock:
+        threads = _threads()
+        recent = sorted(threads.items(), key=lambda kv: -kv[1].get("last", 0))[:RECENT_THREADS]
+        listing = "\n".join(f"{tid}: {t.get('label', '')}" for tid, t in recent) or "(none yet)"
+        items = "\n\n".join(f"#{i + 1} ({time.strftime('%Y-%m-%d %H:%M', time.localtime(x['ts']))})\n{x['text'][:700]}"
+                             for i, x in enumerate(batch))
+        picks: dict[int, dict] = {}
+        try:
+            ans = await _ask_claude_json(BATCH_TOPIC_PROMPT.format(threads=listing, items=items))
+            picks = {int(p["n"]): p for p in ans.get("items", []) if str(p.get("n", "")).isdigit()}
+        except Exception as e:
+            log.warning("topic model failed on a backfill batch (%r); threading by time only", e)
+        new_ids: dict[str, str] = {}
+        result, prev = [], None
+        for i, x in enumerate(batch):
+            p = picks.get(i + 1)
+            tid = str(p.get("thread", "")).strip() if p else ""
+            related = [r for r in (p.get("related", []) if p else []) if r in threads]
+            if tid.startswith("new") or (p and tid not in threads):
+                tid = new_ids.setdefault(tid or f"new{i}", uuid.uuid4().hex[:8])
+                threads.setdefault(tid, {"label": str(p.get("label") or x["text"][:60]).strip()[:80],
+                                         "count": 0, "related": []})
+            elif not p:                  # no answer: a quick follow-up stays in the previous thread
+                if prev and x["ts"] - prev[1] < CONTINUE_WINDOW and len(x["said"].split()) <= SHORT_FOLLOWUP:
+                    tid = prev[0]
+                else:
+                    tid = uuid.uuid4().hex[:8]
+                    threads[tid] = {"label": (x["said"] or x["text"])[:60].replace("\n", " "), "count": 0, "related": []}
+            t = threads[tid]
+            t["last"], t["count"] = max(t.get("last", 0), x["ts"]), t.get("count", 0) + 1
+            related = [r for r in related if r != tid]
+            _link(threads, tid, related)
+            result.append((tid, related))
+            prev = (tid, x["ts"])
+        _save_threads(threads)
+        return result
+
+
+async def _embed_batch(texts: list[str]) -> list | None:
+    """Embeddings for many texts; waits and retries when Gemini's rate limit hits."""
+    for attempt in range(4):
+        vecs = await _embed(texts)
+        if vecs:
+            return vecs
+        await asyncio.sleep(20 * (attempt + 1))
+    return None
+
+
+async def backfill_chat(messages: list[dict]) -> int:
+    """Put old Telegram messages ({"id", "ts", "out", "text"}, oldest first) into memory as
+    threaded chat exchanges, skipping ones memory already has. Returns how many were added."""
+    items = _load()
+    stored = [_norm(it["text"]) for it in items if it["kind"] not in ("call", "fact")]
+    sources = {it.get("source", "") for it in items}
+    todo = [x for x in _exchanges(messages) if not _known(x, stored, sources)]
+    added, prev_id = 0, ""
+    for i in range(0, len(todo), BACKFILL_BATCH):
+        batch = todo[i:i + BACKFILL_BATCH]
+        threads = await _thread_batch(batch)
+        vecs = await _embed_batch([x["text"] for x in batch])
+        with ITEMS.open("a") as f:
+            for j, (x, (tid, _)) in enumerate(zip(batch, threads)):
+                it = {"id": uuid.uuid4().hex[:8], "ts": x["ts"], "kind": "chat", "source": f"tg:{x['first_id']}",
+                      "text": x["text"][:4000], "thread": tid, "prev": prev_id,
+                      "vec": [round(v, 5) for v in vecs[j]] if vecs else None}
+                prev_id = it["id"]
+                items.append(it)
+                f.write(json.dumps(it, ensure_ascii=False) + "\n")
+                added += 1
+        log.info("chat backfill: %d/%d exchanges in memory", added, len(todo))
+    return added
+
+
+def _media_label(m) -> str:
+    if getattr(m, "voice", None):
+        return "[voice message]"
+    if getattr(m, "photo", None):
+        return "[photo]"
+    if getattr(m, "file", None) is not None:
+        return f"[file {getattr(m.file, 'name', None) or ''}]".replace(" ]", "]")
+    return ""
+
+
+async def backfill_telegram(tg, owner_id: int) -> int:
+    """Import Telegram messages with Sanjar newer than the last import (all of them the first time),
+    through Jarvis's own connection."""
+    after = json.loads(TG_STATE.read_text()).get("last_id", 0) if TG_STATE.exists() else 0
+    messages = []
+    async for m in tg.iter_messages(owner_id, reverse=True, min_id=after):
+        text = m.raw_text or ""
+        label = _media_label(m)
+        messages.append({"id": m.id, "ts": m.date.timestamp(), "out": bool(m.out),
+                         "text": f"{label} {text}".strip() if label else text})
+    if not messages:
+        return 0
+    added = await backfill_chat(messages)
+    DIR.mkdir(parents=True, exist_ok=True)
+    TG_STATE.write_text(json.dumps({"last_id": messages[-1]["id"], "at": time.time()}))
+    log.info("chat backfill: %d messages read, %d new exchanges added", len(messages), added)
     return added
