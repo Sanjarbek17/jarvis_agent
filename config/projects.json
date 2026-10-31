@@ -102,5 +102,12 @@
       "side_project/projects/game"
     ],
     "board": "360a0a0ca8184bffa1cdea94fa23d836"
+  },
+  "Gas Finder": {
+    "about": "Telegram bot that finds where gas is sold during supply cuts, crowdsourced from drivers' Telegram groups (text, voice, video; Uzbek/Russian, misspelled place names) (planning)",
+    "folders": [
+      "side_project/projects/gas_finder"
+    ],
+    "board": "7a5135fff6e243d8ba7ae28bb899f08c"
   }
 }
