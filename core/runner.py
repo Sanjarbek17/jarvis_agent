@@ -121,8 +121,12 @@ Sanjar is away from the computer and won't approve anything, so work on your own
   exactly what he needs to do. (Merging into `dev` is never a reason to wait: do it yourself.)
 
 {rules_text()}
-- Finish with a short plain summary (2-4 sentences): what you changed, which files, whether
-  tests pass, anything he should know."""
+- Finish with a short plain summary: what you changed, which files, whether tests pass, anything
+  he should know. It is sent to Sanjar's Telegram, which shows no colours, so write it as one short
+  line, then bullets: "✅ ..." for done/added, "⚠️ ..." for not done, pending or a problem (with a
+  **What changed** / **Still to do** heading if there are both). No ```diff or other code blocks,
+  even if an output style asks for them; `backticks` only for short refs and file names; at most
+  one short "> " note. A NEEDS ME line still goes last."""
 
 
 def _step_text(block: dict) -> str:

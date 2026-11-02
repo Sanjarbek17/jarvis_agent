@@ -1,8 +1,9 @@
 """Telegram messages to Sanjar in HTML (parse_mode="html") so they're quick to read (Sanjar, 2026-11-02:
 "the message you type for me is hard to read ... use html style output").
 
-- md(): the light Markdown that workers and the brain write (**bold**, `code`, ``` blocks, "- " bullets,
-  [text](url), # headings) -> Telegram HTML. Everything else is escaped (&, <, >).
+- md(): the light Markdown that workers and the brain write (**bold**, `code`, "- " bullets, "> " notes,
+  [text](url), # headings) -> Telegram HTML. Everything else is escaped (&, <, >). ```diff blocks
+  become ✅ / ⚠️ bullets (Telegram shows no diff colours); other code blocks are cut short.
 - ticket(): a runner update: bold header (icon, what happened, ref), project + title, bold labelled
   sections (Question / Answer / Result ...), the link.
 - send(): sends HTML, splits at the 4096-character limit, and falls back to plain text if Telegram
@@ -50,22 +51,44 @@ def _marks(text: str) -> str:
     return re.sub(r"\x00(\d+)\x00", lambda m: links[int(m.group(1))], text)
 
 
+PRE_LINES = 6                          # longer code blocks are cut: Telegram shows them as grey walls
+
+
+def _block(lang: str, code: list[str]) -> list[str]:
+    """A fenced block. Telegram doesn't colour diffs (Sanjar: "the diff is not readable here"), so
+    +/- lines become ✅ / ⚠️ bullets under bold headings; other blocks stay <pre>, cut short."""
+    if lang == "diff" or (code and all(l[:1] in "+- " for l in code if l.strip())
+                          and any(l.startswith(("+", "-")) for l in code)):
+        done = [l[1:].strip() for l in code if l.startswith("+") and l[1:].strip()]
+        todo = [l[1:].strip() for l in code if l.startswith("-") and l[1:].strip()]
+        out = []
+        if done:
+            out += (["<b>What changed</b>"] if todo else []) + [f"✅ {_inline(l)}" for l in done]
+        if todo:
+            out += ([""] if done else []) + (["<b>Still to do / watch out</b>"] if done else []) + [f"⚠️ {_inline(l)}" for l in todo]
+        return out
+    shown = code[:PRE_LINES] + (["…"] if len(code) > PRE_LINES else [])
+    return ["<pre>" + esc("\n".join(shown)) + "</pre>"] if shown else []
+
+
 def md(text: str) -> str:
     """Markdown-ish text -> Telegram HTML."""
-    out, in_code, code = [], False, []
+    out, in_code, code, lang = [], False, [], ""
     for raw in (text or "").splitlines():
         if raw.strip().startswith("```"):
             if in_code:
-                out.append("<pre>" + esc("\n".join(code)) + "</pre>")
+                out += _block(lang, code)
                 code, in_code = [], False
             else:
-                in_code = True
+                in_code, lang = True, raw.strip()[3:].strip().lower()
             continue
         if in_code:
             code.append(raw)
             continue
         line = raw.rstrip()
-        if m := re.match(r"\s*#{1,6}\s+(.*)", line):
+        if m := re.match(r"\s*>\s?(.*)", line):          # a "> note": a quote, kept short
+            out.append(f"<blockquote>{_inline(m.group(1))}</blockquote>")
+        elif m := re.match(r"\s*#{1,6}\s+(.*)", line):
             out.append(f"<b>{_inline(m.group(1))}</b>")
         elif m := re.match(r"(\s*)[-*•]\s+(.*)", line):
             out.append(f"{'  ' * (len(m.group(1)) // 2)}• {_inline(m.group(2))}")
@@ -74,8 +97,9 @@ def md(text: str) -> str:
         else:
             out.append(_inline(line))
     if in_code:                                       # unclosed block: still show it
-        out.append("<pre>" + esc("\n".join(code)) + "</pre>")
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+        out += _block(lang, code)
+    text = "\n".join(out).replace("</blockquote>\n<blockquote>", "\n")   # one quote per run of > lines
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def plain(html_text: str) -> str:
