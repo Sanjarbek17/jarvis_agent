@@ -41,7 +41,7 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.types import InputPeerChannel, MessageActionGroupCall
 
-from core import board, contacts, memory, outbox, tools
+from core import board, contacts, memory, outbox, tgfmt, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, WATCHED_GROUP_IDS, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
@@ -341,7 +341,7 @@ async def daily_summary_text():
                              "get_status for all projects; what got done, what's still running, and "
                              "anything that needs him. A few lines.")
     if reply.strip():
-        await tg.send_message(OWNER_ID, f"🗓 {reply}", link_preview=False)
+        await tgfmt.send(tg, OWNER_ID, "🗓 <b>Today</b>\n\n" + tgfmt.md(reply), link_preview=False)
 
 
 async def daily_call():
@@ -506,10 +506,7 @@ async def send_photos(paths: list[Path], caption: str):
 
 async def notify(card: Ticket, kind: str, text: str, photos: list[Path]):
     """Runner result: tell me on the call if I'm on one, and always leave it in Telegram."""
-    head = f"{EMOJI[kind]} {card.ref} [{card.project}] {card.title}"
-    body = f"Question: {text}" if kind == "needs_me" else text
-    await tg.send_message(OWNER_ID, f"{head}\n\n{body[:3500]}\n\n{card.url}",
-                          silent=call is not None, link_preview=False)
+    await tgfmt.send(tg, OWNER_ID, tgfmt.ticket(card, kind, text), silent=call is not None, link_preview=False)
     await send_photos(photos[:10], f"{card.ref} screenshots")
     update = f"[UPDATE] ticket {card.ref} \"{card.title}\" ({card.project}) is {kind.replace('_', ' ')}: {text[:800]}"
     if call and not call.guest:
@@ -532,8 +529,10 @@ async def check_mac_permissions():
 
 async def mac_late(task: str, text: str, photos: list[Path], question: bool):
     """A Mac task that outlasted mac_task's wait: same path as a ticket result."""
-    head = f"{'❓' if question else '❌' if text.startswith('Failed') else '✅'} Mac: {task}"
-    await tg.send_message(OWNER_ID, f"{head}\n\n{text[:3500]}", silent=call is not None)
+    head = (f"{'❓' if question else '❌' if text.startswith('Failed') else '✅'} <b>Mac</b> · "
+            f"{tgfmt.esc(task)}")
+    await tgfmt.send(tg, OWNER_ID, head + "\n\n" + tgfmt.section("Question" if question else "Result", text),
+                     silent=call is not None)
     await send_photos(photos[:10], "Mac")
     update = f"[UPDATE] Mac task \"{task}\" {'needs his decision' if question else 'finished'}: {text[:800]}"
     if call and not call.guest:
@@ -625,6 +624,34 @@ async def tgjobs(*args: str, detach: bool = False) -> str:
     return (lines[-1] if lines else "(no output)")[:500]
 
 
+FORMAT_SAMPLES = HERE / "var" / "state" / "send_format_samples"   # flag: send them once at the next start
+
+
+async def send_format_samples():
+    """One sample of each message type in the HTML style (ticket 434209fd), once."""
+    if not FORMAT_SAMPLES.exists():
+        return
+    FORMAT_SAMPLES.unlink()
+    from types import SimpleNamespace as NS
+    card = NS(ref="aet-4", project="AI English Teacher", title="[04] Decide: fixed lesson plan vs generated",
+              url="https://github.com/Sanjarbek17/uzbek-english-speaking-teacher/issues/4")
+    await tgfmt.send(tg, OWNER_ID, "<b>New message style</b> (samples, nothing real happened)", silent=True)
+    for kind, text in (
+            ("auto_answered", "It asked: Should lessons follow a **fixed plan** or be generated per learner?\n\n"
+                              "I answered (docs): Fixed plan for the MVP, as `sdd/choices.json` decided.\n"
+                              "- generated lessons wait for R2\n- keep the plan in `content/plan.yaml`"),
+            ("needs_me", "The build is finished. Merge `dev` into **main**?"),
+            ("done", "**Decision written** to `docs/decisions.md`.\n```diff\n+ fixed lesson plan for the MVP\n"
+                     "- generated plans moved to R2\n```"),
+            ("failed", "Worker exited with code 1: `pytest` failed in `tests/test_calls.py`."),
+            ("stopped", "Stopped the worker (Sanjar asked to stop it). It's off the queue.")):
+        await tgfmt.send(tg, OWNER_ID, tgfmt.ticket(card, kind, text), silent=True, link_preview=False)
+    await runner.message("⏸ <b>Stuck In Progress, nobody working on them</b>\n\n• <code>aet-9</code> "
+                         "<b>AI English Teacher</b> · [09] Lesson renderer — untouched 3 h\n\nTell me to queue any of them.")
+    await tgfmt.send(tg, OWNER_ID, tgfmt.md("And my replies: **2 tickets** running, `aet-5` next.\n- calls spike: "
+                                            "**waiting on a SIM**\n- renderer: in progress"), silent=True)
+
+
 async def remember_history():
     """At start: scrub secrets out of stored memory, index old call transcripts, and import our
     Telegram chat (all of it the first time, then only newer messages) through this connection."""
@@ -658,7 +685,7 @@ async def on_message(event):
         ctx = await reply_context(event)
         async with tg.action(OWNER_ID, "typing"):
             reply = await chat.reply("\n".join(p for p in (file_note, ctx + text) if p.strip()))
-        await event.reply(reply or "Saved it, sir.")
+        await tgfmt.reply(event, tgfmt.md(reply) if reply else "Saved it, sir.")
         return
     if text.startswith("/status"):
         project = text.removeprefix("/status").strip()
@@ -726,7 +753,7 @@ async def on_message(event):
         ctx = await reply_context(event)
         async with tg.action(OWNER_ID, "typing"):
             reply = await chat.reply(ctx + text)
-        await event.reply(reply or "(no reply)")
+        await tgfmt.reply(event, tgfmt.md(reply) if reply else "(no reply)")
 
 
 @tg.on(events.NewMessage(incoming=True, func=lambda e: e.is_group and bool((e.raw_text or "").strip())))
@@ -877,7 +904,7 @@ async def main():
     tools.hooks.hang_up = hang_up
     tools.hooks.call_contact = call_contact
     tools.hooks.worker_progress = runner.progress
-    runner.message = lambda text: tg.send_message(OWNER_ID, text, link_preview=False)
+    runner.message = lambda text: tgfmt.send(tg, OWNER_ID, text, link_preview=False)   # HTML
     tools.hooks.mac = mac
     tools.hooks.runner = runner
     tools.hooks.mac_late = mac_late
@@ -890,6 +917,7 @@ async def main():
     asyncio.create_task(check_mac_permissions())
     asyncio.create_task(remember_history())
     asyncio.create_task(watch_group_calls())
+    asyncio.create_task(send_format_samples())
     asyncio.create_task(outbox.run(tg, OWNER_ID))   # scripts send Sanjar things through us
     if "--call" in sys.argv and CALL_SANJAR:
         try:
