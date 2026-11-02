@@ -341,7 +341,7 @@ async def daily_summary_text():
                              "get_status for all projects; what got done, what's still running, and "
                              "anything that needs him. A few lines.")
     if reply.strip():
-        await tgfmt.send(tg, OWNER_ID, "🗓 <b>Today</b>\n\n" + tgfmt.md(reply), link_preview=False)
+        await tgfmt.send(tg, OWNER_ID, tgfmt.daily(reply), link_preview=False)
 
 
 async def daily_call():
@@ -529,10 +529,7 @@ async def check_mac_permissions():
 
 async def mac_late(task: str, text: str, photos: list[Path], question: bool):
     """A Mac task that outlasted mac_task's wait: same path as a ticket result."""
-    head = (f"{'❓' if question else '❌' if text.startswith('Failed') else '✅'} <b>Mac</b> · "
-            f"{tgfmt.esc(task)}")
-    await tgfmt.send(tg, OWNER_ID, head + "\n\n" + tgfmt.section("Question" if question else "Result", text),
-                     silent=call is not None)
+    await tgfmt.send(tg, OWNER_ID, tgfmt.mac(task, text, question), silent=call is not None)
     await send_photos(photos[:10], "Mac")
     update = f"[UPDATE] Mac task \"{task}\" {'needs his decision' if question else 'finished'}: {text[:800]}"
     if call and not call.guest:
@@ -646,8 +643,7 @@ async def send_format_samples():
             ("failed", "Worker exited with code 1: `pytest` failed in `tests/test_calls.py`."),
             ("stopped", "Stopped the worker (Sanjar asked to stop it). It's off the queue.")):
         await tgfmt.send(tg, OWNER_ID, tgfmt.ticket(card, kind, text), silent=True, link_preview=False)
-    await runner.message("⏸ <b>Stuck In Progress, nobody working on them</b>\n\n• <code>aet-9</code> "
-                         "<b>AI English Teacher</b> · [09] Lesson renderer — untouched 3 h\n\nTell me to queue any of them.")
+    await runner.message(tgfmt.stuck([("aet-9", "AI English Teacher", "[09] Lesson renderer", 3, "")]))
     await tgfmt.send(tg, OWNER_ID, tgfmt.md("And my replies: **2 tickets** running, `aet-5` next.\n- calls spike: "
                                             "**waiting on a SIM**\n- renderer: in progress"), silent=True)
 

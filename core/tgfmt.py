@@ -4,8 +4,9 @@
 - md(): the light Markdown that workers and the brain write (**bold**, `code`, "- " bullets, "> " notes,
   [text](url), # headings) -> Telegram HTML. Everything else is escaped (&, <, >). ```diff blocks
   become ✅ / ⚠️ bullets (Telegram shows no diff colours); other code blocks are cut short.
-- ticket(): a runner update: bold header (icon, what happened, ref), project + title, bold labelled
-  sections (Question / Answer / Result ...), the link.
+- Style 2 (Sanjar picked it from real samples, 2026-11-02, ticket 29bac419) for every update: a header
+  line (icon, what happened, title), ref + project, the short summary in a quote, then "Details" in an
+  expandable quote (folded until tapped), then the link. ticket() / mac() / stuck() / daily() build it.
 - send(): sends HTML, splits at the 4096-character limit, and falls back to plain text if Telegram
   rejects the HTML.
 """
@@ -54,7 +55,7 @@ def _marks(text: str) -> str:
 PRE_LINES = 6                          # longer code blocks are cut: Telegram shows them as grey walls
 
 
-def _block(lang: str, code: list[str]) -> list[str]:
+def _block(lang: str, code: list[str], flat: bool = False) -> list[str]:
     """A fenced block. Telegram doesn't colour diffs (Sanjar: "the diff is not readable here"), so
     +/- lines become ✅ / ⚠️ bullets under bold headings; other blocks stay <pre>, cut short."""
     if lang == "diff" or (code and all(l[:1] in "+- " for l in code if l.strip())
@@ -68,16 +69,19 @@ def _block(lang: str, code: list[str]) -> list[str]:
             out += ([""] if done else []) + (["<b>Still to do / watch out</b>"] if done else []) + [f"⚠️ {_inline(l)}" for l in todo]
         return out
     shown = code[:PRE_LINES] + (["…"] if len(code) > PRE_LINES else [])
+    if flat:                                          # inside a quote: plain lines, no grey block
+        return [esc(l) for l in shown if l.strip()]
     return ["<pre>" + esc("\n".join(shown)) + "</pre>"] if shown else []
 
 
-def md(text: str) -> str:
-    """Markdown-ish text -> Telegram HTML."""
+def md(text: str, flat: bool = False) -> str:
+    """Markdown-ish text -> Telegram HTML. flat: for inside a quote (no nested quotes, no <pre>,
+    no blank lines)."""
     out, in_code, code, lang = [], False, [], ""
     for raw in (text or "").splitlines():
         if raw.strip().startswith("```"):
             if in_code:
-                out += _block(lang, code)
+                out += _block(lang, code, flat)
                 code, in_code = [], False
             else:
                 in_code, lang = True, raw.strip()[3:].strip().lower()
@@ -87,7 +91,7 @@ def md(text: str) -> str:
             continue
         line = raw.rstrip()
         if m := re.match(r"\s*>\s?(.*)", line):          # a "> note": a quote, kept short
-            out.append(f"<blockquote>{_inline(m.group(1))}</blockquote>")
+            out.append(f"<i>{_inline(m.group(1))}</i>" if flat else f"<blockquote>{_inline(m.group(1))}</blockquote>")
         elif m := re.match(r"\s*#{1,6}\s+(.*)", line):
             out.append(f"<b>{_inline(m.group(1))}</b>")
         elif m := re.match(r"(\s*)[-*•]\s+(.*)", line):
@@ -97,9 +101,9 @@ def md(text: str) -> str:
         else:
             out.append(_inline(line))
     if in_code:                                       # unclosed block: still show it
-        out += _block(lang, code)
+        out += _block(lang, code, flat)
     text = "\n".join(out).replace("</blockquote>\n<blockquote>", "\n")   # one quote per run of > lines
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
+    return re.sub(r"\n{2,}" if flat else r"\n{3,}", "\n" if flat else "\n\n", text).strip()
 
 
 def plain(html_text: str) -> str:
@@ -112,27 +116,92 @@ def _cut(text: str, n: int = BODY_LIMIT) -> str:
     return text if len(text) <= n else text[:n].rsplit("\n", 1)[0] + "\n…"
 
 
-def section(label: str, body: str) -> str:
-    return f"<b>{esc(label)}</b>\n{md(_cut(body))}" if body.strip() else ""
+SUMMARY_MAX = 300                      # the always-visible quote stays short
+
+
+def split_summary(text: str) -> tuple[str, str]:
+    """(summary, details): the first paragraph (or its first sentence if long) and the rest."""
+    text = (text or "").strip()
+    if not text or text.startswith("```"):
+        return "", text
+    first, _, rest = text.partition("\n\n")
+    lines = first.splitlines()
+    if len(lines) > 1 and re.match(r"\s*([-*•]|\d+\.)\s", lines[1]):   # "Result:\n- a\n- b": keep the list
+        first, rest = lines[0], "\n".join(lines[1:]) + ("\n\n" + rest if rest else "")
+    first = re.sub(r"^\s*#{1,6}\s+", "", first).strip()
+    if len(first) > SUMMARY_MAX:
+        m = re.match(r"(.{20,%d}?[.!?])\s+(.*)" % SUMMARY_MAX, first, re.S)
+        if m:
+            first, rest = m.group(1), m.group(2) + ("\n\n" + rest if rest else "")
+        else:
+            first, rest = first[:SUMMARY_MAX].rsplit(" ", 1)[0] + "…", first + ("\n\n" + rest if rest else "")
+    return first, rest.strip()
+
+
+def style2(icon: str, label: str, title: str, sub: str = "", summary: str = "", details: str = "",
+           link: str = "", summary_html: str = "") -> str:
+    """Header, optional sub line, summary quote, folded Details quote, link. summary/details are
+    Markdown-ish text; summary_html is used as is."""
+    head = f"{icon} <b>{esc(label)}:</b> {esc(title)}".rstrip(": ") if title else f"{icon} <b>{esc(label)}</b>"
+    quote = summary_html or (md(_cut(summary, SUMMARY_MAX * 2), flat=True) if summary.strip() else "")
+    body = md(_cut(details), flat=True) if details.strip() else ""
+    parts = [head, sub,
+             f"<blockquote>{quote}</blockquote>" if quote else "",
+             f"<b>Details</b>\n<blockquote expandable>{body}</blockquote>" if body else "",
+             link]
+    return "\n".join(p for p in parts if p)
+
+
+def _link(url: str, text: str = "Open the ticket") -> str:
+    return f'<a href="{html.escape(url, quote=True)}">{esc(text)}</a>' if url else ""
 
 
 def ticket(card, kind: str, text: str) -> str:
-    """A runner update about one ticket."""
-    head = (f"{ICON.get(kind, '•')} <b>{WHAT.get(kind, kind.replace('_', ' ').title())}</b> · "
-            f"<code>{esc(card.ref)}</code>\n<b>{esc(card.project)}</b> · {esc(card.title)}")
-    if kind == "needs_me":
-        parts = [section("Question", text)]
-    elif kind == "auto_answered":
+    """A runner update about one ticket, in Style 2."""
+    icon, label = ICON.get(kind, "•"), WHAT.get(kind, kind.replace("_", " ").title())
+    sub = f"<code>{esc(card.ref)}</code> · {esc(card.project)}"
+    link = _link(getattr(card, "url", ""))
+    if kind == "auto_answered":
         m = re.match(r"(?s)It asked:\s*(.*?)\n\s*\nI answered(?: \(([^)]*)\))?:\s*(.*)", text)
-        parts = ([section("Question", m.group(1)),
-                  section(f"Answer ({m.group(2)})" if m.group(2) else "Answer", m.group(3))] if m
-                 else [section("Answer", text)])
-    elif kind == "stopped":
-        parts = [section("Why", text)]
-    else:
-        parts = [section("Result", text)]
-    link = f'<a href="{html.escape(card.url, quote=True)}">Open the ticket</a>' if card.url else ""
-    return "\n\n".join(p for p in (head, *parts, link) if p)
+        if m:
+            q, basis, a = m.group(1).strip(), m.group(2), m.group(3).strip()
+            a_short, a_rest = split_summary(a)
+            if m2 := re.match(r"(.{10,}?[.!?])\s+(\S.*)", a_short, re.S):   # only the first sentence shows
+                a_short, a_rest = m2.group(1), m2.group(2) + ("\n\n" + a_rest if a_rest else "")
+            quote = (f"<b>Q:</b> {md(_cut(q, SUMMARY_MAX), flat=True)}\n"
+                     f"<b>A{' (' + esc(basis) + ')' if basis else ''}:</b> {md(a_short, flat=True)}")
+            return style2(icon, label, card.title, sub, details=a_rest, link=link, summary_html=quote)
+    if kind == "needs_me":                            # the question is the point: show it, not fold it
+        short, rest = (text, "") if len(text) <= SUMMARY_MAX * 2 else split_summary(text)
+        return style2(icon, label, card.title, sub, summary=short, details=rest, link=link)
+    short, rest = split_summary(text)
+    return style2(icon, label, card.title, sub, summary=short, details=rest, link=link)
+
+
+def mac(task: str, text: str, question: bool) -> str:
+    """A Mac task's result or question, in Style 2."""
+    icon = "❓" if question else "❌" if text.startswith("Failed") else "✅"
+    short, rest = split_summary(text)
+    return style2(icon, "Mac needs you" if question else "Mac", task, summary=short, details=rest)
+
+
+def stuck(rows: list[tuple]) -> str:
+    """The stuck-ticket list: rows of (ref, project, title, hours, jarvis)."""
+    lines = "\n".join(f"• <code>{esc(r)}</code> {esc(p)} · {esc(t)} — untouched {h:.0f} h"
+                      + (f", Jarvis {esc(j)}" if j else "") for r, p, t, h, j in rows)
+    quote = (f"{len(rows)} ticket{'s' if len(rows) != 1 else ''} In Progress with nobody working on "
+             f"{'them' if len(rows) != 1 else 'it'}. Say \"queue <code>{esc(rows[0][0])}</code>\" to restart one.")
+    return (f"⏸ <b>Stuck</b>\n<blockquote>{quote}</blockquote>\n"
+            f"<b>Details</b>\n<blockquote expandable>{lines}</blockquote>")
+
+
+def daily(text: str) -> str:
+    short, rest = split_summary(text)
+    return style2("🗓", "Today", "", summary=short, details=rest)
+
+
+def section(label: str, body: str) -> str:
+    return f"<b>{esc(label)}</b>\n{md(_cut(body))}" if body.strip() else ""
 
 
 def chunks(html_text: str, limit: int = LIMIT) -> list[str]:

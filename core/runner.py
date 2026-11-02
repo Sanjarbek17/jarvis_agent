@@ -121,12 +121,12 @@ Sanjar is away from the computer and won't approve anything, so work on your own
   exactly what he needs to do. (Merging into `dev` is never a reason to wait: do it yourself.)
 
 {rules_text()}
-- Finish with a short plain summary: what you changed, which files, whether tests pass, anything
-  he should know. It is sent to Sanjar's Telegram, which shows no colours, so write it as one short
-  line, then bullets: "✅ ..." for done/added, "⚠️ ..." for not done, pending or a problem (with a
-  **What changed** / **Still to do** heading if there are both). No ```diff or other code blocks,
-  even if an output style asks for them; `backticks` only for short refs and file names; at most
-  one short "> " note. A NEEDS ME line still goes last."""
+- Finish with a short plain summary for Sanjar's Telegram (it shows no colours or code blocks well):
+  first ONE short sentence with the result (shown as the summary), then a blank line, then the
+  details as short "- " lines: "✅ ..." for done/added, "⚠️ ..." for not done, pending or a problem
+  (they are folded under "Details"). Which files, whether tests pass, anything he should know.
+  No ```diff or other code blocks, even if an output style asks for them; `backticks` only for
+  short refs and file names. A NEEDS ME line still goes last."""
 
 
 def _step_text(block: dict) -> str:
@@ -258,12 +258,7 @@ class Runner:
                 told[t.ref] = now
         if stuck:
             STUCK_TOLD.write_text(json.dumps(told))
-            lines = [f"• <code>{tgfmt.esc(t.ref)}</code> <b>{tgfmt.esc(t.project)}</b> · {tgfmt.esc(t.title)}"
-                     f" — untouched {h:.0f} h" + (f", Jarvis {tgfmt.esc(t.jarvis)}" if t.jarvis else "")
-                     for t, h in stuck[:15]]
-            await self.message("⏸ <b>Stuck In Progress, nobody working on them</b>\n\n" + "\n".join(lines)
-                               + f"\n\nTell me to queue any of them (e.g. \"queue <code>{tgfmt.esc(stuck[0][0].ref)}</code>\")"
-                               " and a worker will pick it up.")
+            await self.message(tgfmt.stuck([(t.ref, t.project, t.title, h, t.jarvis) for t, h in stuck[:15]]))
 
     async def _recover(self):
         """Tickets left Working by a crash/restart can't be resumed mid-step: mark them Failed."""
