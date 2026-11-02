@@ -109,5 +109,17 @@
       "side_project/projects/gas_finder"
     ],
     "board": "7a5135fff6e243d8ba7ae28bb899f08c"
+  },
+  "AI English Teacher": {
+    "about": "AI agent that teaches Uzbek speakers to speak English over Telegram (calls, lessons); planning, SRS/SDD done. Tickets are GitHub Issues on GitHub Project #4 (ref aet-<issue number>), Notion only mirrors them",
+    "folders": [
+      "agi/projects/ai_english_teacher"
+    ],
+    "github": {
+      "repo": "Sanjarbek17/uzbek-english-speaking-teacher",
+      "owner": "Sanjarbek17",
+      "project": 4,
+      "prefix": "aet"
+    }
   }
 }
