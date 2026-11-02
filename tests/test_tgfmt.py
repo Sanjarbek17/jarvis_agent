@@ -22,34 +22,85 @@ def test_code_is_not_formatted_inside():
 
 
 def test_bullets_headings_and_blocks():
-    out = tgfmt.md("# Title\n- one\n* two\n```diff\n+ added <x>\n- gone\n```")
+    out = tgfmt.md("# Title\n- one\n* two\n```diff\n+ added <x>\n- gone\n```\n```\nls -la\n```")
     assert out.startswith("<b>Title</b>")
     assert "• one" in out and "• two" in out
-    assert "<pre>+ added &lt;x&gt;\n- gone</pre>" in out
+    assert "✅ added &lt;x&gt;" in out and "⚠️ gone" in out     # Telegram shows no diff colours
+    assert "<pre>ls -la</pre>" in out
 
 
 def test_unclosed_code_block_still_shown():
     assert tgfmt.md("```\nx < y").endswith("<pre>x &lt; y</pre>")
 
 
-def test_ticket_needs_me():
-    out = tgfmt.ticket(CARD, "needs_me", "Which **option**?")
-    assert out.startswith("❓ <b>Needs you</b> · <code>aet-4</code>")
-    assert "lesson plan &lt;fixed&gt; &amp; generated" in out
-    assert "<b>Question</b>\nWhich <b>option</b>?" in out
-    assert 'href="https://github.com/x/y/issues/4?a=1&amp;b=2"' in out
+def test_flat_md_for_quotes():
+    out = tgfmt.md("a\n\n> note\n```\ncode\n```", flat=True)
+    assert out == "a\n<i>note</i>\ncode"
 
 
-def test_ticket_auto_answered_sections():
-    out = tgfmt.ticket(CARD, "auto_answered", "It asked: Fixed or generated?\n\nI answered (docs): Fixed plan, per SDD.")
-    assert "<b>Question</b>\nFixed or generated?" in out
-    assert "<b>Answer (docs)</b>\nFixed plan, per SDD." in out
+def parsed(html_text):
+    from telethon.extensions import html as th
+    return th.parse(html_text)
 
 
-def test_ticket_done_and_long_result_is_cut():
-    out = tgfmt.ticket(CARD, "done", "line\n" * 2000)
-    assert out.startswith("✅ <b>Done</b>") and "<b>Result</b>" in out and "…" in out
-    assert len(out) < tgfmt.LIMIT
+def test_ticket_done_is_style2():
+    out = tgfmt.ticket(CARD, "done", "Added **HTML** styling to updates.\n\n- ✅ new `core/tgfmt.py`\n- ⚠️ live after restart")
+    lines = out.split("\n")
+    assert lines[0] == "✅ <b>Done:</b> Decide: lesson plan &lt;fixed&gt; &amp; generated"
+    assert lines[1] == "<code>aet-4</code> · AI English Teacher"
+    assert lines[2] == "<blockquote>Added <b>HTML</b> styling to updates.</blockquote>"
+    assert "<b>Details</b>\n<blockquote expandable>• ✅ new <code>core/tgfmt.py</code>\n• ⚠️ live after restart</blockquote>" in out
+    assert out.endswith('<a href="https://github.com/x/y/issues/4?a=1&amp;b=2">Open the ticket</a>')
+    text, ents = parsed(out)
+    kinds = {type(e).__name__ for e in ents}
+    assert "MessageEntityBlockquote" in kinds
+    assert any(getattr(e, "collapsed", False) for e in ents)          # the details are folded
+
+
+def test_diff_block_becomes_bullets_not_code():
+    out = tgfmt.ticket(CARD, "done", "Done.\n\n```diff\n+ added x\n- y still broken\n```")
+    assert "<pre>" not in out and "```" not in out
+    assert "✅ added x" in out and "⚠️ y still broken" in out
+
+
+def test_code_block_inside_details_is_plain_lines():
+    out = tgfmt.ticket(CARD, "failed", "Tests failed.\n\n```\nE assert 1 == 2\n```")
+    assert "<pre>" not in out and "E assert 1 == 2" in out
+    assert out.startswith("❌ <b>Failed:</b>")
+
+
+def test_needs_me_shows_question_in_quote():
+    out = tgfmt.ticket(CARD, "needs_me", "Which **option**: fixed or generated?")
+    assert out.startswith("❓ <b>Needs you:</b>")
+    assert "<blockquote>Which <b>option</b>: fixed or generated?</blockquote>" in out
+    assert "Details" not in out
+
+
+def test_auto_answered_q_and_a():
+    out = tgfmt.ticket(CARD, "auto_answered",
+                       "It asked: Fixed or generated?\n\nI answered (docs): Fixed plan, per SDD. Generated plans wait for R2.")
+    assert "<blockquote><b>Q:</b> Fixed or generated?\n<b>A (docs):</b> Fixed plan, per SDD.</blockquote>" in out
+    assert "<blockquote expandable>Generated plans wait for R2.</blockquote>" in out
+
+
+def test_long_summary_is_cut_to_first_sentence():
+    short, rest = tgfmt.split_summary("First sentence is here. " + "more words " * 60 + "\n\nNext para.")
+    assert short == "First sentence is here." and rest.endswith("Next para.")
+
+
+def test_mac_stuck_daily():
+    assert tgfmt.mac("open Spotify", "Opened it.", False).startswith("✅ <b>Mac:</b> open Spotify")
+    st = tgfmt.stuck([("aet-9", "AI English Teacher", "[09] Renderer", 3, "")])
+    assert st.startswith("⏸ <b>Stuck</b>\n<blockquote>1 ticket In Progress") and "expandable" in st
+    d = tgfmt.daily("2 tickets done.\n\n- aet-1 done\n- aet-2 done")
+    assert d.startswith("🗓 <b>Today</b>\n<blockquote>2 tickets done.</blockquote>")
+    for html_text in (st, d):
+        parsed(html_text)
+
+
+def test_ticket_long_result_stays_under_limit():
+    out = tgfmt.ticket(CARD, "done", "Summary.\n\n" + "line\n" * 2000)
+    assert len(out) < tgfmt.LIMIT and "…" in out
 
 
 def test_chunks_respect_limit():
