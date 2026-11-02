@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from . import autoanswer, board, grants
+from . import autoanswer, board, grants, tgfmt
 from .brain import BRAIN_MODEL   # workers run on the same model as the Jarvis brain (Opus)
 from .board import Ticket
 from .config import (rules_text, GIT_FLOW, HERE, LOGS, MAX_WORKERS, NEVER_DO, NEVER_DO_MAIN_OK, POLL_SECONDS,
@@ -254,10 +254,12 @@ class Runner:
                 told[t.ref] = now
         if stuck:
             STUCK_TOLD.write_text(json.dumps(told))
-            lines = [f"- {t.ref} [{t.project}] {t.title} — untouched {h:.0f} h" + (f", Jarvis {t.jarvis}" if t.jarvis else "")
+            lines = [f"• <code>{tgfmt.esc(t.ref)}</code> <b>{tgfmt.esc(t.project)}</b> · {tgfmt.esc(t.title)}"
+                     f" — untouched {h:.0f} h" + (f", Jarvis {tgfmt.esc(t.jarvis)}" if t.jarvis else "")
                      for t, h in stuck[:15]]
-            await self.message("⏸ Stuck In Progress with nobody working on them:\n" + "\n".join(lines)
-                               + "\n\nTell me to queue any of them (e.g. \"queue " + stuck[0][0].ref + "\") and a worker will pick it up.")
+            await self.message("⏸ <b>Stuck In Progress, nobody working on them</b>\n\n" + "\n".join(lines)
+                               + f"\n\nTell me to queue any of them (e.g. \"queue <code>{tgfmt.esc(stuck[0][0].ref)}</code>\")"
+                               " and a worker will pick it up.")
 
     async def _recover(self):
         """Tickets left Working by a crash/restart can't be resumed mid-step: mark them Failed."""
