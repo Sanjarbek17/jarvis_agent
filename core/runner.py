@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from . import board, grants
+from . import autoanswer, board, grants
 from .brain import BRAIN_MODEL   # workers run on the same model as the Jarvis brain (Opus)
 from .board import Ticket
 from .config import (rules_text, GIT_FLOW, HERE, LOGS, MAX_WORKERS, NEVER_DO, NEVER_DO_MAIN_OK, POLL_SECONDS,
@@ -27,6 +27,7 @@ NEEDS_ME = "NEEDS ME:"
 MAX_CONTINUES = 3            # resume a worker this many times if its background work was cut off
 SWEEP_EVERY = 30 * 60        # how often to look for tickets stuck In Progress
 STUCK_AFTER = 2 * 3600       # In Progress this long with no live worker = stuck
+AUTO_ANSWERS = STATE / "auto_answers.json"   # ticket ref -> how many questions Jarvis answered itself
 STUCK_TOLD = STATE / "stuck_told.json"   # ticket ref -> when Sanjar was last told it's stuck
 # a "done" result whose ending says it is waiting on Sanjar (a merge, approval, decision...)
 _BLOCKED = re.compile(
@@ -283,7 +284,7 @@ class Runner:
 
     def progress(self, project: str, ticket: str = "") -> str:
         """For the worker_progress tool: the live log of a project's worker (or a past ticket's)."""
-        name = next((p for p in {*self.current, *(l.stem.rsplit("-", 1)[0] for l in LOGS.glob("*-*.jsonl"))}
+        name = next((p for p in {*self.current, *board.boards(), *(l.stem.rsplit("-", 1)[0] for l in LOGS.glob("*-*.jsonl"))}
                      if p.lower() == project.strip().lower()), project)
         current = self.current.get(name)
         path = worker_log(name, ticket or (current.ref if current else ""))
@@ -427,6 +428,8 @@ class Runner:
         elif not is_error:
             question = blocked_question(result)   # safety net: it waits on Sanjar but didn't say so
         status, kind = ("Needs me", "needs_me") if question else ("Failed", "failed") if is_error else ("Done", "done")
+        if question and await self._auto_answer(card, question, result):
+            return
         if status == "Done":
             grants.revoke(card.ref)          # a permission covers one ticket's work, not later ones
         await board.update(card, jarvis=status, note=question or result[-1900:],
@@ -435,6 +438,28 @@ class Runner:
         self.finished[card.ref] = time.monotonic()   # don't re-pick it while the board catches up
         log.info("%s %s", card.ref, status)
         await self.notify(card, kind, question or result, photos)
+
+    async def _auto_answer(self, card: Ticket, question: str, result: str) -> bool:
+        """Projects where Sanjar said "answer its questions yourself": Jarvis answers and re-queues
+        the ticket instead of asking him (core/autoanswer.py). False = ask Sanjar as usual."""
+        if not autoanswer.enabled(card.project):
+            return False
+        counts = json.loads(AUTO_ANSWERS.read_text()) if AUTO_ANSWERS.exists() else {}
+        if counts.get(card.ref, 0) >= autoanswer.MAX_PER_TICKET:
+            return False
+        got = await autoanswer.answer(card, question, result)
+        if not got:
+            return False
+        reply, basis = got
+        counts[card.ref] = counts.get(card.ref, 0) + 1
+        AUTO_ANSWERS.write_text(json.dumps(counts))
+        await board.append_log(card.page_id, [f"Jarvis Needs me: {result[-1500:]}",
+                                              f"Sanjar answered (Jarvis, on his behalf; basis: {basis}): {reply}"])
+        await board.update(card, jarvis="Queued", note=f"answered by Jarvis: {reply}"[:1900])
+        # no self.finished mark: it should be picked again next, before later tickets in the queue
+        log.info("%s: answered its question myself (%s), re-queued", card.ref, basis)
+        await self.notify(card, "auto_answered", f"It asked: {question}\n\nI answered ({basis}): {reply}", [])
+        return True
 
     async def _push_steps(self, card: Ticket, steps: list[str]):
         try:
