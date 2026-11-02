@@ -90,6 +90,12 @@ Workers never touch main unless you allow it for one ticket ("you may push ticke
 Jarvis stores that in `var/state/grants.json` (not in Notion, so a worker can't grant itself); it
 ends when the ticket is Done, or after 7 days.
 
+A project can keep its tickets as **GitHub Issues** instead (AI English Teacher): `"github": {repo, owner,
+project, prefix}` in projects.json instead of `"board"`. Refs look like `aet-12` (issue #12). Queue an issue
+by adding the label `jarvis:queued` (or ask Jarvis); the Jarvis column is the `jarvis:*` labels, the
+board Status is the GitHub Project's Status field (Done also closes the issue, Dropped closes it as not
+planned), and results / answers are issue comments (`core/ghboard.py`, needs `gh` with the project scope).
+
 Every project board under Notion "Projects" has two extra columns:
 - **Jarvis**: Queued → Working → Needs me / Done / Failed. Set a ticket to *Queued* (in the app,
   by call or by message) and a worker picks it up. Empty = Jarvis leaves it alone.

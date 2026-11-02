@@ -73,7 +73,20 @@ def _save_session(project: str, session_id: str) -> None:
     SESSIONS.write_text(json.dumps(sessions, indent=2))
 
 
-def _worker_prompt(t: Ticket, shots: Path) -> str:
+def _ticket_intro(t: Ticket) -> str:
+    if t.page_id.startswith("gh:"):          # a GitHub Issues project (core/ghboard.py)
+        repo, num = t.page_id.removeprefix("gh:").rsplit("#", 1)
+        return f"""Ticket {t.ref} for project {t.project}: GitHub issue #{num} in {repo}: {t.title}
+Issue: {t.url}
+{f"Latest note on it: {t.note}" if t.note else ""}
+
+First read the whole issue with its comments: `gh issue view {num} -R {repo} --comments`
+(scope, acceptance criteria, and any earlier result or answer from Sanjar in the comments). Don't
+change its Status field on the GitHub Project, its jarvis:* labels or its open/closed state;
+Jarvis does that. Tick acceptance-criteria checkboxes in the issue body only if you verified them.
+If this project has its own skill or notes for its board (CLAUDE.md, a <project>-board skill),
+follow them, except for the Status/labels part above.
+"""
     return f"""Ticket {t.ref} for project {t.project}, from Sanjar's Notion board: {t.title}
 Ticket page: {t.url}
 {f"Latest note on it: {t.note}" if t.note else ""}
@@ -82,7 +95,11 @@ First read the whole ticket page with your Notion tools (description, acceptance
 sub-tasks, and any earlier log or answer from Sanjar at the bottom). Don't change the ticket's
 Status or Jarvis columns in Notion; Jarvis does that. If this project has its own skill or
 notes for working on board tickets (CLAUDE.md, a <project>-board skill), follow them.
+"""
 
+
+def _worker_prompt(t: Ticket, shots: Path) -> str:
+    return f"""{_ticket_intro(t)}
 Sanjar is away from the computer and won't approve anything, so work on your own until it's done.
 {NEVER_DO_MAIN_OK if grants.allowed(t.ref, grants.PUSH_MAIN) else NEVER_DO}
 {GIT_FLOW}
