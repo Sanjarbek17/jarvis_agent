@@ -96,6 +96,11 @@ by adding the label `jarvis:queued` (or ask Jarvis); the Jarvis column is the `j
 board Status is the GitHub Project's Status field (Done also closes the issue, Dropped closes it as not
 planned), and results / answers are issue comments (`core/ghboard.py`, needs `gh` with the project scope).
 
+`"auto_answer": true` on a project (AI English Teacher): when its worker asks "Needs me", Jarvis answers it
+himself (memory of Sanjar's chats, the project's docs, the rules; `core/autoanswer.py`), posts the answer on
+the ticket, re-queues it and tells Sanjar with 🤖. Real-world steps only he can do become a checklist on the
+ticket; "merge dev into main?" still goes to him; after 4 answers on one ticket it goes to him too.
+
 Every project board under Notion "Projects" has two extra columns:
 - **Jarvis**: Queued → Working → Needs me / Done / Failed. Set a ticket to *Queued* (in the app,
   by call or by message) and a worker picks it up. Empty = Jarvis leaves it alone.

@@ -92,7 +92,7 @@ def _ticket(project: str, item: dict, notes: dict):
 
 
 async def tickets(project: str, fresh: bool = False) -> list:
-    """Every issue on the project's GitHub board (cached a few seconds), lowest number first."""
+    """Every issue on the project's GitHub board (cached a few seconds), in the board's Order."""
     hit = _cache.get(project)
     if hit and not fresh and time.monotonic() - hit[0] < CACHE_SECONDS:
         return hit[1]
@@ -100,9 +100,11 @@ async def tickets(project: str, fresh: bool = False) -> list:
     data = json.loads(await _gh("project", "item-list", str(g["project"]), "--owner", g["owner"],
                                 "--format", "json", "--limit", "500"))
     notes = _notes()
-    out = [_ticket(project, it, notes) for it in data.get("items", [])
-           if (it.get("content") or {}).get("type") == "Issue"]
-    out.sort(key=lambda t: int(t.page_id.rsplit("#", 1)[1]))
+    items = [it for it in data.get("items", []) if (it.get("content") or {}).get("type") == "Issue"]
+    # the board's Order field is the build sequence (dependencies first); issue number breaks ties
+    items.sort(key=lambda it: (it.get("order") if isinstance(it.get("order"), (int, float)) else 1e9,
+                               it["content"]["number"]))
+    out = [_ticket(project, it, notes) for it in items]
     _cache[project] = (time.monotonic(), out)
     return out
 
