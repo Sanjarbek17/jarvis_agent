@@ -59,6 +59,11 @@ time, it remembers earlier Mac jobs; a job longer than a minute reports back in 
 Needs Accessibility + Screen Recording for Jarvis once (System Settings > Privacy & Security);
 Jarvis checks at start and messages you if they're missing.
 
+Phone app: the Jarvis App (`~/dev/side_project/projects/jarvis_app`, a ~200 KB APK for Android 5+) talks to
+`core/appserver.py` (port 8790, home Wi-Fi, `APP_TOKEN` in .env): projects, chats per project (each its own
+Claude conversation that knows the project, kept in `var/state/app_chats/`), voice messages (transcribed like
+Telegram voice notes) and live calls over a WebSocket (same ears / brain / voice as Telegram calls).
+
 Memory: Jarvis keeps long-term memory in `var/state/memory/` (facts it was told to `remember`, plus
 every chat and call turn, and old call transcripts). Relevant bits are pulled in front of each
 message by meaning (Gemini embeddings, Uzbek/Russian/English), so it doesn't guess after a restart,

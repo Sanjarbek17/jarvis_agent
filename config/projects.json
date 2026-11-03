@@ -122,5 +122,12 @@
       "prefix": "aet"
     },
     "auto_answer": true
+  },
+  "Jarvis App": {
+    "about": "light Android app (APK, old phone) to talk to Jarvis: projects, chats per project, voice messages, live calls; talks to jarvis/core/appserver.py on the home Wi-Fi (0.1 built)",
+    "folders": [
+      "side_project/projects/jarvis_app"
+    ],
+    "board": "cb7eb4938ce04c2e8a2882168785a771"
   }
 }
