@@ -102,7 +102,7 @@ TOOLS_PORT = 8775
 
 # runner
 POLL_SECONDS = 10
-MAX_WORKERS = 3                   # different projects at the same time
+MAX_WORKERS = 2                   # different projects at the same time (8 GB Mac; core/ramguard.py may hold the 2nd)
 NEVER_DO = """Never: delete files outside this project, run `rm -rf` on broad paths, force-push or
 rewrite git history on shared branches, push to main/master, deploy to production servers,
 touch anything involving money or payments, or change system settings."""

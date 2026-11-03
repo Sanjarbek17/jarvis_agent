@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from . import autoanswer, board, grants, tgfmt
+from . import autoanswer, board, grants, ramguard, tgfmt
 from .brain import BRAIN_MODEL   # workers run on the same model as the Jarvis brain (Opus)
 from .board import Ticket
 from .config import (rules_text, GIT_FLOW, HERE, LOGS, MAX_WORKERS, NEVER_DO, NEVER_DO_MAIN_OK, POLL_SECONDS,
@@ -106,6 +106,10 @@ def _worker_prompt(t: Ticket, shots: Path) -> str:
 Sanjar is away from the computer and won't approve anything, so work on your own until it's done.
 {NEVER_DO_MAIN_OK if grants.allowed(t.ref, grants.PUSH_MAIN) else NEVER_DO}
 {GIT_FLOW}
+- The Mac has only 8 GB of RAM and other workers may be running. Wrap heavy commands (Gradle /
+  Flutter / Xcode builds, emulators, Docker builds, video renders, big local models) in
+  {HERE / "scripts/heavy.py"} <command> so only one runs at a time, and stop what you started
+  afterwards (`./gradlew --stop`, close emulators). Don't start sub-agents that each build.
 - If you change something visible in a web app, start it (or use the running one) and save a
   screenshot of the result as a PNG in {shots}/ (e.g. with headless Chrome or Playwright).
 - Never touch ~/Documents, ~/Desktop or ~/Downloads (not even `ls`): macOS asks for permission
@@ -221,6 +225,7 @@ class Runner:
         self.finished: dict[str, float] = {}            # ticket ref -> when it finished (monotonic)
         self.message: Callable[[str], Awaitable] | None = None   # plain Telegram text to Sanjar
         self.last_sweep = 0.0
+        self.held_logged = 0.0                          # last "held for RAM" log line (monotonic)
 
     async def run_forever(self):
         await self._recover()
@@ -281,6 +286,12 @@ class Runner:
                 # just finished (the board may still read as Queued for a moment); don't re-run it
                 log.info("skipping %s: finished %.0fs ago", t.ref, time.monotonic() - self.finished[t.ref])
                 continue
+            ok, why = ramguard.can_start(len(self.running))
+            if not ok:                       # 8 GB Mac: the ticket waits in the queue until RAM frees up
+                if time.monotonic() - self.held_logged > 300:
+                    log.info("holding %s: %s (%d worker(s) running)", t.ref, why, len(self.running))
+                    self.held_logged = time.monotonic()
+                return
             task = asyncio.create_task(self._work(t), name=f"worker:{t.project}")
             self.running[t.project] = task
             task.add_done_callback(lambda _t, p=t.project: self.running.pop(p, None))
