@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import fcntl
 import functools
+import json
 import logging
 import os
 import re
@@ -29,6 +30,8 @@ import sys
 import time
 from collections import deque
 from pathlib import Path
+
+import numpy as np
 
 from pytgcalls import PyTgCalls, filters
 from pytgcalls.exceptions import NotInCallError
@@ -41,7 +44,7 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.types import InputPeerChannel, MessageActionGroupCall
 
-from core import board, contacts, memory, outbox, tgfmt, tools
+from core import appserver, board, contacts, memory, outbox, tgfmt, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, WATCHED_GROUP_IDS, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
@@ -413,8 +416,12 @@ async def hang_up():
     if call is None or call.ended:
         return
     await call.mouth.wait_done(timeout=6)
-    with contextlib.suppress(NotInCallError):
-        await calls.leave_call(call.user_id)
+    if isinstance(call, AppCall):
+        with contextlib.suppress(Exception):
+            await call.ws.close()
+    else:
+        with contextlib.suppress(NotInCallError):
+            await calls.leave_call(call.user_id)
     await finish_call()
 
 
@@ -439,6 +446,67 @@ async def finish_call():
         await tg.send_message(OWNER_ID, f"📞 Call with {done.guest}\n\n{text[-3800:]}")
     if waiting_calls:
         asyncio.create_task(call_someone(*waiting_calls.pop(0)))
+
+
+class AppCall(Call):
+    """A call from the Jarvis Android app: the same ears, brain and mouth as a phone call, with the
+    audio over a WebSocket. In: 48 kHz mono s16 from the phone's mic. Out: 24 kHz mono s16 in 20 ms
+    frames (Jarvis's 48 kHz stereo voice, every 4th sample). Transcript lines go out as text."""
+
+    def __init__(self, ws, chat: dict):
+        super().__init__(0)
+        self.ws, self.chat = ws, chat
+
+    async def start(self, reason: str = ""):
+        self.tasks = [asyncio.create_task(self.brain.start()), asyncio.create_task(self._think()),
+                      asyncio.create_task(self._play())]
+        self.ears.start()
+        if self.chat.get("project", appserver.GENERAL) != appserver.GENERAL:
+            self.brain.notes.append(appserver.context_line(self.chat["project"]) + " (a call from the app)")
+        self.mouth.say("Hi Sanjar, Jarvis here.")
+        log.info("on an app call (%s)", self.chat.get("project"))
+
+    async def _play(self):
+        frame, next_at = CHUNK * 2, time.monotonic()          # 20 ms of 48 kHz stereo
+        while not self.ended:
+            out = self.mouth.out
+            if len(out) >= frame:
+                chunk = bytes(out[:frame])
+                del out[:frame]
+                with contextlib.suppress(Exception):
+                    await self.ws.send_bytes(np.frombuffer(chunk, dtype=np.int16)[::4].tobytes())
+            next_at += 0.02
+            await asyncio.sleep(max(0.0, next_at - time.monotonic()))
+
+    def _note(self, who: str, text: str):
+        super()._note(who, text)
+        line = json.dumps({"who": who, "text": " ".join(text.split())}, ensure_ascii=False)
+        asyncio.create_task(self._send_text(line))
+
+    async def _send_text(self, line: str):
+        with contextlib.suppress(Exception):
+            await self.ws.send_text(line)
+
+
+async def app_call(ws, chat: dict):
+    """The app server hands a call WebSocket over: run it until either side hangs up."""
+    global call
+    if call is not None:
+        await ws.send_text(json.dumps({"who": "Jarvis", "text": "I'm already on another call."}))
+        await ws.close(code=4409)
+        return
+    call = this = AppCall(ws, chat)
+    await this.start()
+    try:
+        while not this.ended:
+            msg = await ws.receive()
+            if msg.get("type") == "websocket.disconnect":
+                break
+            if msg.get("bytes"):
+                this.ears.hear(msg["bytes"])
+    finally:
+        if call is this:
+            await finish_call()
 
 
 async def join_group(chat_id: int, title: str):
@@ -913,6 +981,8 @@ async def main():
     asyncio.create_task(check_mac_permissions())
     asyncio.create_task(remember_history())
     asyncio.create_task(watch_group_calls())
+    appserver.start_call = app_call
+    asyncio.create_task(appserver.serve())
     asyncio.create_task(send_format_samples())
     asyncio.create_task(outbox.run(tg, OWNER_ID))   # scripts send Sanjar things through us
     if "--call" in sys.argv and CALL_SANJAR:
