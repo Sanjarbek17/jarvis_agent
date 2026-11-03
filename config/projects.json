@@ -129,5 +129,13 @@
       "side_project/projects/jarvis_app"
     ],
     "board": "cb7eb4938ce04c2e8a2882168785a771"
+  },
+  "Haydovchi darslari": {
+    "about": "Uzbek driving-rules animated reels for Instagram @haydovchi.darslari (scene engine + TTS + render to vertical MP4); first reels built in code_explainer/animations/haydovchi-darslari (ticket 407d4a51), moving here after",
+    "folders": [
+      "side_project/projects/haydovchi_darslari",
+      "side_project/projects/code_explainer/animations/haydovchi-darslari"
+    ],
+    "board": "ed155c9a9c544c11a177f3dcd2303cd1"
   }
 }
