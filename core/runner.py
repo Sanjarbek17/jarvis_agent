@@ -40,12 +40,14 @@ _BLOCKED = re.compile(
 def blocked_question(result: str) -> str:
     """If a finished worker's last lines say it's waiting on Sanjar but it didn't use NEEDS ME,
     return a question for him built from those lines; empty string if it isn't blocked."""
-    tail = result.strip()[-700:]
+    # quoted words ("... when you're ready") and sentences about this check itself ("the runner read
+    # that as waiting on you") are reports, not a wait: they bounced ticket 8bea031c back twice
+    tail = re.sub(r'"[^"\n]{0,200}"|“[^”\n]{0,200}”', '""', result.strip()[-700:])
     if not _BLOCKED.search(tail):
         return ""
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", tail) if s.strip()]
     # merging into dev is the worker's own job, never something to wait on Sanjar for
-    hits = [s for s in sentences if _BLOCKED.search(s) and not re.search(r"\bdev\b", s, re.I)]
+    hits = [s for s in sentences if _BLOCKED.search(s) and not re.search(r"\bdev\b|\brunner\b|by mistake", s, re.I)]
     if not hits:
         return ""
     return ("Blocked, waiting on you: " + " ".join(hits[-2:]))[:600]
