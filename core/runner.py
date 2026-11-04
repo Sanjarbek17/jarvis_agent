@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime
@@ -28,7 +29,15 @@ MAX_CONTINUES = 3            # resume a worker this many times if its background
 SWEEP_EVERY = 30 * 60        # how often to look for tickets stuck In Progress
 STUCK_AFTER = 2 * 3600       # In Progress this long with no live worker = stuck
 START_GAP = 30                # seconds between starting workers: let the last one grow before measuring
-RUNNER_STATUS = STATE / "runner_status.json"  # why tickets wait (for Jarvis to show)
+RUNNER_STATUS = STATE / "runner_status.json"
+# Workers push to GitHub over HTTPS with gh's login: after a restart the launchd-started Jarvis has no
+# ssh key in its agent, so `git push` to git@github.com failed (2026-11-04). Only workers get this, via
+# the environment; Sanjar's own git config is untouched.
+GIT_ENV = {"GIT_CONFIG_COUNT": "3",
+           "GIT_CONFIG_KEY_0": "url.https://github.com/.insteadOf", "GIT_CONFIG_VALUE_0": "git@github.com:",
+           "GIT_CONFIG_KEY_1": "credential.https://github.com.helper", "GIT_CONFIG_VALUE_1": "",
+           "GIT_CONFIG_KEY_2": "credential.https://github.com.helper",
+           "GIT_CONFIG_VALUE_2": "!/opt/homebrew/bin/gh auth git-credential"}  # why tickets wait (for Jarvis to show)
 HEARTBEAT = STATE / "runner_heartbeat"        # touched every runner loop; scripts/watchdog.sh watches it
 RESTART_PENDING = HERE / "var" / "restart_pending"   # restart_when_idle.sh is waiting: start no new workers
 REQUEUE_AFTER = STATE / "requeue_after.json"   # {"ref": [refs]}: queue those again once "ref" has started
@@ -418,7 +427,7 @@ class Runner:
                 cut: dict[str, str] = {}       # ...and ones killed before finishing
                 stopped_on_purpose: set[str] = set()
                 proc = await asyncio.create_subprocess_exec(
-                    *make_cmd(prompt), cwd=dirs[0], stdin=asyncio.subprocess.DEVNULL,
+                    *make_cmd(prompt), cwd=dirs[0], stdin=asyncio.subprocess.DEVNULL, env={**os.environ, **GIT_ENV},
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, limit=50_000_000)
                 self.procs[card.project] = proc
                 while line := await proc.stdout.readline():
