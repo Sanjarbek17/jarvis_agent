@@ -1,0 +1,191 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Jarvis demo (Upwork)</title>
+<!-- Jarvis demo for an Upwork proposal (ticket fa10741e). Every frame is a pure function of time:
+     window.seek(t) draws the scene at t seconds; render.mjs records it with Chrome + ffmpeg.
+     The chat and board are recreated with sample data (no private chats, names or numbers). -->
+<script src="timeline.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #000; font-family: -apple-system, "SF Pro Text", "Helvetica Neue", Arial, sans-serif; }
+  #stage { position: relative; width: 1920px; height: 1080px; overflow: hidden; color: #e8eaed;
+           background: radial-gradient(1200px 800px at 75% 30%, #1b2a3f 0%, #0d1117 60%, #07090c 100%); }
+  /* Telegram-like chat */
+  #tg { position: absolute; left: 70px; top: 48px; width: 760px; height: 900px; border-radius: 22px;
+        background: #0f1621; box-shadow: 0 30px 80px rgba(0,0,0,.55); overflow: hidden; border: 1px solid #1f2a38; }
+  #tghead { height: 76px; background: #17212b; display: flex; align-items: center; gap: 16px; padding: 0 22px;
+            border-bottom: 1px solid #0b1118; }
+  .avatar { width: 46px; height: 46px; border-radius: 50%; background: radial-gradient(circle, #e8eaed 22%, #4fa3f7 24%, #4fa3f7 60%, #0f1621 62%);
+            box-shadow: 0 0 0 2px #4fa3f7 inset; }
+  #tghead b { font-size: 22px; display: block; } #tghead span { font-size: 16px; color: #7f91a4; }
+  #msgs { position: absolute; left: 0; right: 0; top: 76px; bottom: 74px; padding: 18px 22px;
+          display: flex; flex-direction: column; justify-content: flex-end; gap: 12px; overflow: hidden;
+          background: linear-gradient(#0e1621, #0f1923); }
+  .msg { max-width: 82%; padding: 12px 16px; border-radius: 16px; font-size: 20px; line-height: 1.38; white-space: pre-wrap; }
+  .me { align-self: flex-end; background: #2b5278; border-bottom-right-radius: 4px; }
+  .jv { align-self: flex-start; background: #182533; border-bottom-left-radius: 4px; }
+  .msg code { font-family: "SF Mono", Menlo, monospace; font-size: 17px; background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 4px; }
+  .msg blockquote { border-left: 3px solid #4fa3f7; padding: 2px 10px; margin: 6px 0; color: #cfd8e3; }
+  .msg a { color: #6ab7ff; text-decoration: none; }
+  .file { display: flex; gap: 14px; align-items: center; }
+  .file i { width: 48px; height: 48px; border-radius: 50%; background: #4fa3f7; display: grid; place-items: center; font-style: normal; font-size: 22px; }
+  .typing { align-self: flex-start; color: #7f91a4; font-size: 18px; padding: 4px 8px; }
+  .btns { display: flex; gap: 10px; margin-top: 10px; } .btns span { flex: 1; text-align: center; padding: 8px; border-radius: 10px; background: #233446; color: #6ab7ff; font-size: 18px; }
+  #tginput { position: absolute; bottom: 0; left: 0; right: 0; height: 74px; background: #17212b; display: flex; align-items: center;
+             padding: 0 22px; color: #5f7183; font-size: 20px; border-top: 1px solid #0b1118; }
+  /* right side */
+  #title { position: absolute; left: 920px; top: 70px; width: 930px; }
+  #title .k { font-size: 26px; color: #4fa3f7; letter-spacing: .14em; text-transform: uppercase; font-weight: 600; }
+  #title .t { font-size: 64px; font-weight: 800; line-height: 1.08; margin-top: 10px; }
+  #panel { position: absolute; left: 920px; top: 300px; width: 930px; height: 560px; }
+  .card { background: #121a24; border: 1px solid #223042; border-radius: 18px; padding: 24px 28px; box-shadow: 0 20px 50px rgba(0,0,0,.35); }
+  .cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; height: 100%; }
+  .col { background: #0f151d; border: 1px solid #1d2836; border-radius: 16px; padding: 16px; }
+  .col h4 { font-size: 20px; color: #9aa0a6; margin-bottom: 14px; display: flex; gap: 8px; align-items: center; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+  .tk { background: #1a2532; border: 1px solid #2a3a4e; border-radius: 12px; padding: 14px; font-size: 18px; margin-bottom: 12px; }
+  .tk small { display: block; color: #8aa0b6; font-size: 15px; margin-top: 6px; }
+  .tk.live { border-color: #4fa3f7; box-shadow: 0 0 0 2px rgba(79,163,247,.35); }
+  .steps div { font-size: 24px; padding: 12px 0; border-bottom: 1px solid #1d2836; display: flex; gap: 14px; align-items: center; }
+  .steps .ok { color: #3ddc84; } .steps code { font-family: "SF Mono", Menlo, monospace; color: #9cd2ff; font-size: 21px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 16px; } .chips span { font-size: 26px; padding: 14px 22px; border-radius: 999px; background: #17283b; border: 1px solid #2c4865; }
+  #captions { position: absolute; left: 70px; right: 70px; bottom: 30px; min-height: 74px; display: block; line-height: 1.3;
+              font-size: 30px; font-weight: 600; text-align: center; color: #fff; text-shadow: 0 2px 8px rgba(0,0,0,.8); }
+  #captions .w { opacity: .45; } #captions .w.on { opacity: 1; }
+  #note { position: absolute; right: 70px; top: 22px; font-size: 16px; color: #6f7f90; }
+  .fade { transition: none; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="tg">
+    <div id="tghead"><div class="avatar"></div><div><b>Jarvis</b><span id="tgstate">online</span></div></div>
+    <div id="msgs"></div>
+    <div id="tginput">Message</div>
+  </div>
+  <div id="title"><div class="k"></div><div class="t"></div></div>
+  <div id="panel"></div>
+  <div id="captions"></div>
+  <div id="note">Recreated UI · sample projects and names, for privacy</div>
+</div>
+<script>
+const TL = window.TIMELINE;
+const B = Object.fromEntries(TL.beats.map((b) => [b.id, b]));
+window.DURATION = TL.total;
+const at = (id, s) => B[id].start + s;          // seconds into a beat
+
+// chat script: [time, side, html]; "typing" shows Jarvis typing until the next Jarvis message
+const CHAT = [
+  [at("intro", 1.2), "jv", "Good morning, sir. 2 tickets finished overnight, nothing needs you."],
+  [at("ticket", 0.3), "me", "Add a dark mode switch to the Client Portal settings page."],
+  [at("ticket", 1.4), "typing"],
+  [at("ticket", 2.6), "jv", "Filed it on the <b>Client Portal</b> board as <code>a41c</code> and queued it. A worker will pick it up."],
+  [at("status", 0.2), "me", "How's the portal ticket?"],
+  [at("status", 1.0), "typing"],
+  [at("status", 1.9), "jv", "<code>a41c</code> is almost done: <b>tests passed</b>, merging into dev now."],
+  [at("done", 0.3), "jv", "✅ <b>Done:</b> Dark mode switch on the settings page\n<code>a41c</code> · Client Portal\n<blockquote>The switch is live on dev and remembers each user's choice.</blockquote><a>Open the ticket</a>"],
+  [at("memory", 0.3), "me", "What did we decide about invoice reminders last week?"],
+  [at("memory", 1.3), "typing"],
+  [at("memory", 2.6), "jv", "On <b>Oct 28</b> you said: remind clients <b>3 days before</b> the due date, <b>by email only</b>, no SMS."],
+  [at("draft", 0.2), "me", "Tell Anna the demo moves to Thursday, 3 pm."],
+  [at("draft", 1.0), "typing"],
+  [at("draft", 1.8), "jv", "Draft to <b>Anna</b>:\n<blockquote>Hi Anna, the demo moves to Thursday at 3 pm. Does that still work for you?</blockquote>Send it?<div class=\"btns\"><span>Send</span><span>Edit</span></div>"],
+  [at("draft", 4.2), "me", "Send"],
+  [at("draft", 4.9), "jv", "Sent ✓"],
+  [at("mac", 0.2), "me", "Find yesterday's signed contract PDF and send it to me."],
+  [at("mac", 1.0), "typing"],
+  [at("mac", 4.6), "jv", "<div class=\"file\"><i>📄</i><div><b>contract_signed.pdf</b><br><span style=\"color:#8aa0b6\">240 KB · found in ~/Work/Contracts</span></div></div>"],
+];
+
+function chatAt(t) {
+  const shown = CHAT.filter((m) => m[0] <= t);
+  let html = "";
+  shown.forEach((m, i) => {
+    if (m[1] === "typing") {
+      const next = CHAT.slice(CHAT.indexOf(m) + 1).find((x) => x[1] === "jv");
+      if (!next || next[0] > t) html += `<div class="typing">Jarvis is typing<span>${".".repeat(1 + Math.floor(t * 3) % 3)}</span></div>`;
+      return;
+    }
+    const age = t - m[0], pop = Math.min(1, age / 0.25);
+    html += `<div class="msg ${m[1]}" style="opacity:${pop};transform:translateY(${(1 - pop) * 14}px)">${m[2]}</div>`;
+  });
+  document.getElementById("msgs").innerHTML = html;
+  const typing = shown.length && shown[shown.length - 1][1] === "typing";
+  document.getElementById("tgstate").textContent = typing ? "typing…" : "online";
+}
+
+// right-hand panels
+function board(t, h = "100%") {
+  const stage = t < at("ticket", 3.0) ? null : t < at("worker", 0.6) ? 0 : t < at("done", 0.3) ? 1 : 2;
+  const card = (live) => `<div class="tk ${live ? "live" : ""}">Dark mode switch on the settings page<small>a41c · Client Portal</small></div>`;
+  const other = [`<div class="tk">Invoice reminders by email<small>9b07 · Client Portal</small></div>`,
+                 `<div class="tk">Export report as PDF<small>51e2 · Client Portal</small></div>`];
+  const col = (name, color, inner) => `<div class="col"><h4><span class="dot" style="background:${color}"></span>${name}</h4>${inner}</div>`;
+  return `<div class="cols" style="height:${h}">${col("Queued", "#4fa3f7", stage === 0 ? card(true) : "")}${col("Working", "#fbca04",
+          stage === 1 ? card(true) : "")}${col("Done", "#3ddc84", (stage === 2 ? card(false) : "") + other.join(""))}</div>`;
+}
+
+function steps(t, list) {
+  return `<div class="card steps">${list.filter((s) => s[0] <= t).map((s) =>
+    `<div><span class="ok">${s[2] ? "✓" : "•"}</span>${s[1]}</div>`).join("")}</div>`;
+}
+
+function panel(t) {
+  const id = current(t).id;
+  if (id === "intro") return `<div class="card" style="font-size:30px;line-height:1.6">
+      Python service on my Mac<br>Claude for thinking and coding<br>Telegram for talking<br>Notion boards for the work</div>`;
+  if (id === "ticket" || id === "done") return board(t);
+  if (id === "worker") return board(t, "250px") + `<div style="position:absolute;top:275px;left:0;right:0">${steps(t, [
+      [at("worker", 0.8), "reads the ticket", 1], [at("worker", 1.9), "branch <code>dark-mode-switch</code>", 1],
+      [at("worker", 3.2), "edits <code>settings.tsx</code>, <code>theme.ts</code>", 1], [at("worker", 4.8), "tests: <b>42 passed</b>", 1],
+      [at("worker", 6.2), "merged into <code>dev</code>", 1]])}</div>`;
+  if (id === "status") return steps(t, [[at("status", 0), "read ticket", 1], [at("status", 0), "branch + edits", 1],
+      [at("status", 0), "tests: 42 passed", 1], [at("status", 0.4), "merging into dev…", 0]]);
+  if (id === "memory") return `<div class="card"><div style="color:#4fa3f7;font-size:22px;font-weight:600">MEMORY · thread "Invoice reminders"</div>
+      <div style="font-size:24px;line-height:1.6;margin-top:14px;opacity:${t > at("memory", 1.6) ? 1 : .25}">
+      <span style="color:#8aa0b6">Oct 28 · chat</span><br>"Remind them 3 days before it's due. Email only, no SMS."</div>
+      <div style="font-size:20px;color:#8aa0b6;margin-top:18px">Every chat and call is kept, linked by topic, and found by meaning.</div></div>`;
+  if (id === "draft") return `<div class="card" style="font-size:26px;line-height:1.6">
+      <div style="color:#fbca04;font-weight:600">Waiting for approval</div><div style="margin-top:12px">To: Anna · Telegram</div>
+      <div style="color:#cfd8e3">"Hi Anna, the demo moves to Thursday at 3 pm…"</div>
+      <div style="margin-top:16px;color:${t > at("draft", 4.4) ? "#3ddc84" : "#8aa0b6"}">${t > at("draft", 4.4) ? "✓ Approved and sent" : "Nothing goes out without my OK"}</div></div>`;
+  if (id === "mac") {
+    const found = t > at("mac", 2.6);
+    return `<div class="card" style="font-size:24px"><div style="color:#8aa0b6">Mac · Spotlight</div>
+      <div style="margin:14px 0;padding:14px 18px;border-radius:12px;background:#0f151d;border:1px solid #2a3a4e">🔍 ${"signed contract pdf".slice(0, Math.max(0, Math.floor((t - at("mac", 1.0)) * 12)))}</div>
+      <div style="padding:12px 18px;border-radius:12px;background:${found ? "#1f3b5c" : "transparent"};opacity:${found ? 1 : .3}">📄 contract_signed.pdf <span style="color:#8aa0b6">· yesterday · 240 KB</span></div>
+      <div style="padding:12px 18px;opacity:.3">📄 contract_draft_v2.pdf</div></div>`;
+  }
+  return `<div class="chips">${["Outlook mail", "Calendar", "Research", "Microsoft Graph", "Drafts for approval", "Private: your own server"]
+      .map((c, i) => `<span style="opacity:${t > at("outro", 0.4 + i * 0.6) ? 1 : 0}">${c}</span>`).join("")}</div>
+      <div style="margin-top:46px;font-size:26px;color:#9aa0a6;opacity:${t > at("outro", 5) ? 1 : 0}">Python · Claude · Telegram · Notion · built and used daily by Sanjar</div>`;
+}
+
+function current(t) {
+  let b = TL.beats[0];
+  for (const x of TL.beats) if (t >= x.start - 0.3) b = x;
+  return b;
+}
+
+window.seek = (t) => {
+  const b = current(t);
+  document.querySelector("#title .k").textContent = b.title[0];
+  document.querySelector("#title .t").textContent = b.title[1];
+  const fade = Math.min(1, Math.max(0, (t - (b.start - 0.3)) / 0.35));
+  document.getElementById("title").style.opacity = fade;
+  document.getElementById("panel").innerHTML = panel(t);
+  document.getElementById("panel").style.opacity = fade;
+  chatAt(t);
+  const say = t >= b.start - 0.1 && t <= b.end ? b.words.map((w) => `<span class="w ${t >= w.t0 ? "on" : ""}">${w.w}</span>`).join(" ") : "";
+  document.getElementById("captions").innerHTML = say;
+};
+if (!location.search.includes("render")) {           // preview in a browser: play in real time
+  const t0 = performance.now();
+  const tick = () => { window.seek(((performance.now() - t0) / 1000) % TL.total); requestAnimationFrame(tick); };
+  tick();
+} else window.seek(0);
+</script>
+</body>
+</html>
