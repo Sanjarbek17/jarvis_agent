@@ -63,6 +63,9 @@ Phone app: the Jarvis App (`~/dev/side_project/projects/jarvis_app`, a ~200 KB A
 `core/appserver.py` (port 8790, home Wi-Fi, `APP_TOKEN` in .env): projects, chats per project (each its own
 Claude conversation that knows the project, kept in `var/state/app_chats/`), voice messages (transcribed like
 Telegram voice notes) and live calls over a WebSocket (same ears / brain / voice as Telegram calls).
+Away from home the app reaches it over Tailscale: LaunchAgent `com.sanjar.jarvis-tailscale` runs `tailscaled` in
+userspace mode (no root, no system network changes; state in `~/.local/share/jarvis-tailscale`), device name
+`jarvis-mac`. CLI: `scripts/ts.sh status`.
 
 Memory: Jarvis keeps long-term memory in `var/state/memory/` (facts it was told to `remember`, plus
 every chat and call turn, and old call transcripts). Relevant bits are pulled in front of each
