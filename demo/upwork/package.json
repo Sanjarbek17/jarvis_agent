@@ -1,0 +1,7 @@
+{
+  "name": "restoran-ai-uz-reel",
+  "private": true,
+  "type": "module",
+  "scripts": { "render": "node render.mjs", "frames": "node render.mjs --frames" },
+  "dependencies": { "playwright-core": "^1.50.0" }
+}

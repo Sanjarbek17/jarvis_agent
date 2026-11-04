@@ -1,0 +1,16 @@
+{
+ "title": "Jarvis: my personal AI assistant (Upwork demo)",
+ "voice": "Charon",
+ "note": "Recreated UI with sample projects and names, for privacy. Every flow shown is a real Jarvis feature.",
+ "beats": [
+  {"id": "intro", "title": ["Jarvis", "my personal AI assistant"], "say": "This is Jarvis, the personal AI assistant I built and use every day. I talk to it on Telegram, by text, by voice, or on a call.", "hold": 0.5},
+  {"id": "ticket", "title": ["A request", "becomes a ticket"], "say": "When I ask for something, Jarvis turns it into a ticket on the right project's board, and queues it.", "hold": 0.4},
+  {"id": "worker", "title": ["A worker", "does the job"], "say": "A Claude Code worker picks it up, makes the change on its own branch, runs the tests, and merges it when they pass.", "hold": 0.4},
+  {"id": "status", "title": ["Status", "any time"], "say": "I can ask how it is going at any moment, and get the live progress.", "hold": 0.4},
+  {"id": "done", "title": ["Done", "with the result"], "say": "When it's finished, I get a short update with the result and a link.", "hold": 0.5},
+  {"id": "memory", "title": ["Long-term", "memory"], "say": "It remembers our past conversations, so I never have to repeat myself. Decisions from last week are one question away.", "hold": 0.5},
+  {"id": "draft", "title": ["Drafts first,", "sends on my OK"], "say": "Anything that goes out in my name, it drafts first, and sends only after I approve it.", "hold": 0.5},
+  {"id": "mac", "title": ["Works on", "my Mac"], "say": "It can also work on my Mac: find a file, open an app, or take a screenshot, and send me the result.", "hold": 0.5},
+  {"id": "outro", "title": ["For your portal", "Outlook + Graph"], "say": "For your portal, the same approach connects to Outlook through Microsoft Graph: email, calendar and research, private to you.", "hold": 1.2}
+ ]
+}
