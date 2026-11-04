@@ -129,6 +129,10 @@ the ticket and re-queues it without messaging Sanjar. Only if it truly needs him
 what to do and why (not the worker's wording). Real-world steps only he can do become a checklist on the
 ticket; "merge dev into main?" still goes to him; after 4 answers on one ticket it goes to him too.
 
+Worker and runner messages (Done, Failed, Needs me, the stuck list, Mac task results) never go to Sanjar
+directly (2026-11-04): they go to Jarvis's chat brain as a [WORKER REPORT] (`relay` in jarvis.py). Jarvis acts
+where he can and sends Sanjar 1-2 plain lines only when it matters to him; reports aren't saved to memory.
+
 Every project board under Notion "Projects" has two extra columns:
 - **Jarvis**: Queued → Working → Needs me / Done / Failed. Set a ticket to *Queued* (in the app,
   by call or by message) and a worker picks it up. Empty = Jarvis leaves it alone.

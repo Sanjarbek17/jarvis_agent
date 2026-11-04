@@ -572,15 +572,42 @@ async def send_photos(paths: list[Path], caption: str):
         await tg.send_file(OWNER_ID, chunk, caption=caption[:1000] if i == 0 else "")
 
 
+REPORT_PROMPT = """[WORKER REPORT — from the runner, not from Sanjar; he does NOT see it]
+{report}
+
+Sanjar asked that worker and runner messages never go to him directly (2026-11-04): you read them and
+tell him only what really matters to him or needs him. Handle what you can first: answer_task for a
+question you can answer yourself, queue_ticket for a failure with a passing cause (a restart, a usage or
+rate limit, the network). Then, only if he should know (a result he asked for and is waiting on,
+something only he can do, a failure that blocks him), reply with 1-2 plain lines in your own words: no
+ticket ids, no worker text, no lists. Otherwise reply exactly NO_REPLY."""
+
+
+async def relay(report: str, photos: list[Path] = (), label: str = ""):
+    """A worker/runner message goes to Jarvis's brain, never straight to Sanjar; he gets 1-2 plain lines
+    only when it matters to him (and the screenshots with them)."""
+    try:
+        reply = (await chat.reply(REPORT_PROMPT.format(report=report[:4000]))).strip()
+    except Exception:
+        log.exception("relaying a worker report failed")
+        return
+    if reply and not is_silent(reply):
+        await tgfmt.send(tg, OWNER_ID, tgfmt.md(reply), link_preview=False)
+        if photos:
+            await send_photos(list(photos)[:10], label)
+    else:
+        log.info("worker report kept from Sanjar: %s", report.splitlines()[0][:120])
+
+
 async def notify(card: Ticket, kind: str, text: str, photos: list[Path]):
-    """Runner result: tell me on the call if I'm on one, and always leave it in Telegram."""
-    await tgfmt.send(tg, OWNER_ID, tgfmt.ticket(card, kind, text), silent=call is not None, link_preview=False)
-    await send_photos(photos[:10], f"{card.ref} screenshots")
+    """Runner result: to Jarvis on the call if I'm on one, otherwise to Jarvis's chat brain, which tells
+    me only what matters (Sanjar, 2026-11-04: workers never message me directly)."""
     update = f"[UPDATE] ticket {card.ref} \"{card.title}\" ({card.project}) is {kind.replace('_', ' ')}: {text[:800]}"
     if call and not call.guest:
         call.tell(update)
-    elif not call and kind in CALL_ON:
-        asyncio.create_task(auto_call(update))
+        return
+    asyncio.create_task(relay(f"Ticket {card.ref} [{card.project}] \"{card.title}\" is {kind.replace('_', ' ')}.\n"
+                              f"{text}", photos, f"{card.title[:60]}"))
 
 
 async def check_mac_permissions():
@@ -597,13 +624,12 @@ async def check_mac_permissions():
 
 async def mac_late(task: str, text: str, photos: list[Path], question: bool):
     """A Mac task that outlasted mac_task's wait: same path as a ticket result."""
-    await tgfmt.send(tg, OWNER_ID, tgfmt.mac(task, text, question), silent=call is not None)
-    await send_photos(photos[:10], "Mac")
     update = f"[UPDATE] Mac task \"{task}\" {'needs his decision' if question else 'finished'}: {text[:800]}"
     if call and not call.guest:
         call.tell(update)
-    elif not call and question:
-        asyncio.create_task(auto_call(update))
+        return
+    asyncio.create_task(relay(f"Mac task \"{task}\" {'needs a decision' if question else 'finished'}.\n{text}",
+                              photos, "Mac"))
 
 
 # --- Telegram ------------------------------------------------------------------------------
@@ -968,7 +994,7 @@ async def main():
     tools.hooks.hang_up = hang_up
     tools.hooks.call_contact = call_contact
     tools.hooks.worker_progress = runner.progress
-    runner.message = lambda text: tgfmt.send(tg, OWNER_ID, text, link_preview=False)   # HTML
+    runner.message = lambda text: relay(tgfmt.plain(text))   # e.g. the stuck list: Jarvis decides, not me
     tools.hooks.mac = mac
     tools.hooks.runner = runner
     tools.hooks.mac_late = mac_late
