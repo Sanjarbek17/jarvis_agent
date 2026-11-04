@@ -119,9 +119,10 @@ stopping the whole queue; the GitHub board is read at most every 2 min and its l
 The runner touches `var/state/runner_heartbeat` every loop; LaunchAgent `com.sanjar.jarvis-watchdog` runs
 `scripts/watchdog.sh` every 5 min and queues a safe restart if the heartbeat is 20+ min old.
 
-RAM (8 GB Mac): no fixed worker count. Another worker starts whenever the memory that's really available (free +
-inactive + purgeable, from vm_stat) minus a 1 GB reserve fits one more worker of the measured size (~300-500 MB);
-the reserve doubles under "warning" pressure or nearly full swap and grows while a heavy job runs; "critical" holds
+RAM (8 GB Mac): no fixed worker count. Another worker starts whenever the memory that's really available (the larger of
+free + inactive + purgeable from vm_stat and macOS's own free percentage) minus a 1 GB reserve fits one more worker
+of the measured size (~300-500 MB); the reserve doubles under real pressure (the kernel's "warning" while under 25%
+is free, or nearly full swap) and grows while a heavy job runs; "critical" holds
 new starts; one worker may always run; one new start per 30 s (`core/ramguard.py`). Why a ticket waits is logged,
 saved in `var/state/runner_status.json` and shown by `get_status`. Fair turns: one worker per project, tickets with a
 "Due" date first, then the project whose last worker started longest ago. Heavy commands go through `scripts/heavy.py`:
