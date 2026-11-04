@@ -38,6 +38,10 @@ GIT_ENV = {"GIT_CONFIG_COUNT": "3",
            "GIT_CONFIG_KEY_1": "credential.https://github.com.helper", "GIT_CONFIG_VALUE_1": "",
            "GIT_CONFIG_KEY_2": "credential.https://github.com.helper",
            "GIT_CONFIG_VALUE_2": "!/opt/homebrew/bin/gh auth git-credential"}  # why tickets wait (for Jarvis to show)
+PENDING = STATE / "pending_results.json"      # board writes that failed (e.g. GitHub rate limit); retried
+REQUEUED = STATE / "requeued_after_restart.json"   # ref -> times put back in the queue after a restart
+WRITE_TRIES = (0, 10, 30)                     # seconds to wait before each try of a board write
+MAX_REQUEUES = 2
 HEARTBEAT = STATE / "runner_heartbeat"        # touched every runner loop; scripts/watchdog.sh watches it
 RESTART_PENDING = HERE / "var" / "restart_pending"   # restart_when_idle.sh is waiting: start no new workers
 REQUEUE_AFTER = STATE / "requeue_after.json"   # {"ref": [refs]}: queue those again once "ref" has started
@@ -243,11 +247,14 @@ class Runner:
         self.last_start: dict[str, float] = {}          # project -> when its last worker started (fair turns)
         self.wait_reason = ""                           # why the next queued ticket isn't starting
 
-    async def run_forever(self):
-        try:
-            await self._recover()
-        except Exception:                    # a failed recovery used to kill the runner for good
-            log.exception("recovering interrupted tickets failed")
+    async def run_forever(self, recover: bool = True):
+        """recover: at Jarvis's start (workers of the old process are gone). False when the self-check
+        restarts a dead runner task inside a running Jarvis: its workers may still be alive."""
+        if recover:
+            try:
+                await self._recover()
+            except Exception:                # a failed recovery used to kill the runner for good
+                log.exception("recovering interrupted tickets failed")
         while True:
             try:
                 await self._tick()
@@ -289,16 +296,73 @@ class Runner:
             await self.message(tgfmt.stuck([(t.ref, t.project, t.title, h, t.jarvis) for t, h in stuck[:15]]))
 
     async def _recover(self):
-        """Tickets left Working by a crash/restart can't be resumed mid-step: mark them Failed."""
+        """Tickets left Working when Jarvis starts: their worker is gone. A result that couldn't be
+        written is applied from PENDING; otherwise the ticket goes back in the queue (it starts over),
+        up to MAX_REQUEUES times, then Failed."""
+        pending, counts = _load_json(PENDING), _load_json(REQUEUED)
         for t in await board.with_jarvis("Working"):
-            await board.update(t, jarvis="Failed",
-                               note="Interrupted: Jarvis restarted while this was running. Set Jarvis to Queued to retry.")
-            await self.notify(t, "failed", "Interrupted by a Jarvis restart.", [])
+            if t.ref in pending:
+                continue                      # its result is saved; _flush_pending writes it
+            n = counts.get(t.ref, 0) + 1
+            if n <= MAX_REQUEUES:
+                counts[t.ref] = n
+                await self._write(t, jarvis="Queued", note="queued again: its worker stopped when Jarvis restarted",
+                                  log_lines=[f"Queued again: the worker stopped when Jarvis restarted ({n}/{MAX_REQUEUES})"])
+                log.info("%s: re-queued after a restart (%d/%d)", t.ref, n, MAX_REQUEUES)
+            else:
+                await self._write(t, jarvis="Failed", note="stopped by Jarvis restarts too often; queue it again to retry")
+                await self.notify(t, "failed", "Its worker was cut off by Jarvis restarts several times.", [])
+        REQUEUED.write_text(json.dumps(counts))
+
+    async def _write(self, card: Ticket, *, jarvis: str | None = None, note: str | None = None,
+                     stage: str | None = None, log_lines: list[str] | None = None, keep: bool = True) -> bool:
+        """Write a ticket's state and log to its board, retrying; if the board stays unreachable (GitHub
+        rate limit...), keep it in PENDING to write later, also across restarts, so a finished
+        worker's result is never lost (aet-11, 2026-11-04). False = not written yet."""
+        for wait in WRITE_TRIES:
+            await asyncio.sleep(wait)
+            try:
+                await board.update(card, jarvis=jarvis, note=note, stage=stage)
+                if log_lines:
+                    await board.append_log(card.page_id, log_lines)
+                return True
+            except Exception as e:
+                err = e
+        log.warning("%s: board write failed (%s), %s", card.ref, str(err)[:150], "kept for later" if keep else "dropped")
+        if keep:
+            pending = _load_json(PENDING)
+            old = pending.get(card.ref, {})
+            pending[card.ref] = {"project": card.project, "page_id": card.page_id, "ref": card.ref,
+                                 "title": card.title, "url": card.url,
+                                 "jarvis": jarvis or old.get("jarvis"), "note": note if note is not None else old.get("note"),
+                                 "stage": stage or old.get("stage"), "log": old.get("log", []) + (log_lines or [])}
+            PENDING.write_text(json.dumps(pending, ensure_ascii=False))
+        return False
+
+    async def _flush_pending(self):
+        """Write saved results whose board write failed before."""
+        if not PENDING.exists() or time.monotonic() - getattr(self, "_flushed", 0) < 60:
+            return
+        self._flushed = time.monotonic()
+        pending = _load_json(PENDING)
+        for ref, p in list(pending.items()):
+            card = Ticket(page_id=p["page_id"], ref=ref, project=p["project"], title=p.get("title", ""),
+                          status="", jarvis="", note="", sprint="", url=p.get("url", ""))
+            try:
+                await board.update(card, jarvis=p.get("jarvis"), note=p.get("note"), stage=p.get("stage"))
+                if p.get("log"):
+                    await board.append_log(card.page_id, p["log"])
+            except Exception:
+                continue
+            pending.pop(ref)
+            log.info("%s: saved result written to the board", ref)
+        PENDING.write_text(json.dumps(pending, ensure_ascii=False))
 
     async def _tick(self):
         cutoff = time.monotonic() - 120
         self.finished = {ref: ts for ref, ts in self.finished.items() if ts > cutoff}
         await self._requeue_after()
+        await self._flush_pending()
         if RESTART_PENDING.exists():         # let the waiting restart happen; the queue resumes right after
             if time.monotonic() - self.held_logged > 300:
                 log.info("restart pending: not starting new workers")
@@ -402,8 +466,10 @@ class Runner:
         shots = SHOTS / card.ref
         shots.mkdir(exist_ok=True)
         log.info("start %s in %s", card.line(), dirs[0])
+        if not await self._write(card, jarvis="Working", note="starting", stage="doing", keep=False):
+            self.finished[card.ref] = time.monotonic()   # board unreachable: leave it Queued, retry later
+            return
         self.current[card.project] = card
-        await board.update(card, jarvis="Working", note="starting", stage="doing")
 
         def make_cmd(prompt: str) -> list[str]:
             cmd = ["claude", "-p", prompt, "--model", BRAIN_MODEL,
@@ -518,10 +584,12 @@ class Runner:
             return
         if status == "Done":
             grants.revoke(card.ref)          # a permission covers one ticket's work, not later ones
-        await board.update(card, jarvis=status, note=question or result[-1900:],
-                           stage="done" if status == "Done" else None)
-        await board.append_log(card.page_id, [f"Jarvis {status}: {result[-1800:]}"])
+        await self._write(card, jarvis=status, note=question or result[-1900:],
+                          stage="done" if status == "Done" else None, log_lines=[f"Jarvis {status}: {result[-1800:]}"])
         self.finished[card.ref] = time.monotonic()   # don't re-pick it while the board catches up
+        counts = _load_json(REQUEUED)
+        if counts.pop(card.ref, None) is not None:   # it finished: earlier restarts don't count any more
+            REQUEUED.write_text(json.dumps(counts))
         log.info("%s %s", card.ref, status)
         await self.notify(card, kind, question or result, photos)
 
@@ -539,9 +607,8 @@ class Runner:
             return False
         if got["needs_sanjar"]:            # truly his: Jarvis's plain words, not the worker's question
             ask = got["ask_sanjar"]
-            await board.update(card, jarvis="Needs me", note=ask[:1900])
-            await board.append_log(card.page_id, [f"Jarvis Needs me: {result[-1500:]}",
-                                                  f"Jarvis checked it first; this needs Sanjar: {ask}"])
+            await self._write(card, jarvis="Needs me", note=ask[:1900],
+                              log_lines=[f"Jarvis Needs me: {result[-1500:]}", f"Jarvis checked it first; this needs Sanjar: {ask}"])
             self.finished[card.ref] = time.monotonic()
             log.info("%s: needs Sanjar after Jarvis looked: %s", card.ref, ask[:120])
             await self.notify(card, "needs_me", ask, [])
@@ -549,9 +616,9 @@ class Runner:
         reply, basis = got["answer"], got["basis"]
         counts[card.ref] = counts.get(card.ref, 0) + 1
         AUTO_ANSWERS.write_text(json.dumps(counts))
-        await board.append_log(card.page_id, [f"Jarvis Needs me: {result[-1500:]}",
-                                              f"Sanjar answered (Jarvis, on his behalf; basis: {basis}): {reply}"])
-        await board.update(card, jarvis="Queued", note=f"answered by Jarvis: {reply}"[:1900])
+        await self._write(card, jarvis="Queued", note=f"answered by Jarvis: {reply}"[:1900],
+                          log_lines=[f"Jarvis Needs me: {result[-1500:]}",
+                                     f"Sanjar answered (Jarvis, on his behalf; basis: {basis}): {reply}"])
         # no self.finished mark: it should be picked again next, before later tickets in the queue
         # and no message to Sanjar: he asked to hear only what needs him (2026-11-04)
         log.info("%s: answered its question myself (%s), re-queued", card.ref, basis)

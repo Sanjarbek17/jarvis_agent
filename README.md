@@ -97,6 +97,12 @@ no live worker, and Due tickets that haven't started. Only new findings wake the
 message: it acts with its tools (answers Needs me itself unless it truly needs Sanjar, re-queues what failed for a
 passing reason or lost its worker) and sends a short 🔎 note of what changed, or nothing. Repeats wait 12 h.
 
+Results are never lost (ticket 80987838): board writes are retried, and if a board stays unreachable (e.g. GitHub's
+rate limit) the result is kept in `var/state/pending_results.json` and written later, also after a restart. At start,
+tickets left Working go back in the queue (twice at most, then Failed) instead of being marked Failed; the
+self-check's in-place runner restart doesn't touch them. Every restart path (restart_when_idle.sh, the watchdog)
+waits until no worker runs.
+
 Runner safety (ticket 7493382f): a board that can't be read (Notion/GitHub error, rate limit) is skipped instead of
 stopping the whole queue; the GitHub board is read at most every 2 min and its last copy is used when GitHub refuses.
 The runner touches `var/state/runner_heartbeat` every loop; LaunchAgent `com.sanjar.jarvis-watchdog` runs
