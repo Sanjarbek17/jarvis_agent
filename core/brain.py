@@ -258,6 +258,7 @@ class Brain:
         self.version = 0          # projects_version() the running process was started with
         self.core_version = 0     # coremem.version() it was started with
         self.notes: list[str] = []  # things that happened elsewhere, sent along with the next message
+        self.origin = ""          # "app:<chat id>" for app chats: tool calls say where he asked (core/origin.py)
 
     def _system(self) -> str:
         if self.guest_prompt:
@@ -276,6 +277,8 @@ class Brain:
         resume = ["--resume", self.session_id] if self.session_id else []
         sandboxed = self.mode in ("guest", "group")
         mcp = {"mcpServers": {"jarvis": {"type": "http", "url": f"http://127.0.0.1:{PORTS[self.mode]}/mcp"}}}
+        if self.origin:
+            mcp["mcpServers"]["jarvis"]["headers"] = {"X-Jarvis-Origin": self.origin}
         self.proc = await asyncio.create_subprocess_exec(
             "claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
             "--verbose", "--include-partial-messages",

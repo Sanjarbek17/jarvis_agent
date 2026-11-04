@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 import uvicorn
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 
-from . import board, coremem, grants, memory
+from . import board, coremem, grants, memory, origin
 from .config import DEV, PROJECTS, SHOTS, TOOLS_PORT, reload_projects
 from .mac import MacWorker, run_quick
 
@@ -141,17 +141,19 @@ def make_server(source: str) -> MCPServer:
         return "Forgotten." if memory.forget(item_id.strip()) else f"No memory item {item_id}."
 
     @server.tool()
-    async def add_task(project: str, task: str, my_words: str) -> str:
+    async def add_task(project: str, task: str, my_words: str, ctx: Context = None) -> str:
         """Put a NEW ticket on the project's own Notion board, queued for Jarvis; a Claude Code
         worker will do it. project: a known project name. task: short title. my_words: what
         Sanjar actually said. For a ticket that already exists on the board, use queue_ticket."""
         if project not in board.boards():
             return f"Unknown project {project!r}. Known: {', '.join(board.boards())}"
-        t = await board.add_ticket(project, task, my_words, source)
+        o = origin.from_ctx(ctx)
+        t = await board.add_ticket(project, task, my_words, origin.label(o, source))
+        origin.set(t.ref, o)              # its result goes back where he asked (the app chat or Telegram)
         return f"Added ticket {t.ref} to the {project} board and queued it: {task}"
 
     @server.tool()
-    async def queue_ticket(project: str, ticket: str) -> str:
+    async def queue_ticket(project: str, ticket: str, ctx: Context = None) -> str:
         """Hand an EXISTING ticket on the project's board to Jarvis (sets its Jarvis column to Queued).
         ticket: words from its title, or its ref. Returns the matches if it's ambiguous."""
         if project not in board.boards():
@@ -163,7 +165,9 @@ def make_server(source: str) -> MCPServer:
         t = found[0]
         if t.jarvis in ("Queued", "Working"):
             return f"{t.ref} is already {t.jarvis}: {t.title}"
-        await board.update(t, jarvis="Queued", note=f"queued from {source}")
+        o = origin.from_ctx(ctx)
+        await board.update(t, jarvis="Queued", note=f"queued from {origin.label(o, source)}")
+        origin.set(t.ref, o)
         return f"Queued {t.ref}: {t.title}"
 
     @server.tool()
@@ -283,13 +287,14 @@ def make_server(source: str) -> MCPServer:
                 else f"{ticket_ref} had no permission to push to main.")
 
     @server.tool()
-    async def answer_task(ticket_ref: str, answer: str) -> str:
+    async def answer_task(ticket_ref: str, answer: str, ctx: Context = None) -> str:
         """Give Sanjar's answer to a ticket waiting in "Needs me"; it's queued again and the worker continues."""
         t = await board.find(ticket_ref)
         if not t:
             return f"No ticket {ticket_ref}"
         await board.append_log(t.page_id, [f"Sanjar answered: {answer}"])
         await board.update(t, jarvis="Queued", note=f"Sanjar's answer: {answer}")
+        origin.set(t.ref, origin.from_ctx(ctx))
         return f"{t.ref} is queued again with the answer"
 
     @server.tool()

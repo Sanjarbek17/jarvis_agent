@@ -44,7 +44,7 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.types import InputPeerChannel, MessageActionGroupCall
 
-from core import appserver, board, contacts, coremem, memory, outbox, selfcheck, tgfmt, tools
+from core import appserver, board, contacts, coremem, memory, origin, outbox, selfcheck, tgfmt, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, WATCHED_GROUP_IDS, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
@@ -584,10 +584,11 @@ something only he can do, a failure that blocks him), reply with 1-2 plain lines
 ticket ids, no worker text, no lists. Otherwise reply exactly NO_REPLY."""
 
 
-def app_push(text: str):
-    """What Jarvis tells Sanjar on its own also goes to the phone app (its notifications, ticket e028892d)."""
+def app_push(text: str, chat_id: str = ""):
+    """What Jarvis tells Sanjar on its own also goes to the phone app (its notifications, ticket e028892d);
+    chat_id: into that app chat too."""
     try:
-        appserver.push(text)
+        appserver.push(text, chat_id)
     except Exception:
         log.exception("app push failed")
 
@@ -599,10 +600,14 @@ now: 1-2 plain lines with what happened, why, and the fix or what you are doing 
 thing he has to do). NO_REPLY is not allowed here."""
 
 
-async def relay(report: str, photos: list[Path] = (), label: str = "", must: bool = False):
+async def relay(report: str, photos: list[Path] = (), label: str = "", must: bool = False, app_chat: str = ""):
     """A worker/runner message goes to Jarvis's brain, never straight to Sanjar; he gets 1-2 plain lines
     only when it matters to him (and the screenshots with them). must=True: something he's waiting on
-    failed or needs him: he is told, enforced here in code even if the brain says NO_REPLY (ticket 35ec396e)."""
+    failed or needs him: he is told, enforced here in code even if the brain says NO_REPLY (ticket 35ec396e).
+    app_chat: he asked for it in that Jarvis app chat, so the answer goes there, not to Telegram (ticket
+    799dda33); screenshots still go to Telegram, the app can't show them."""
+    if app_chat and not appserver.load_chat(app_chat):
+        app_chat = ""                          # that chat is gone: Telegram as before
     fallback = report.splitlines()[0][:200] + "\n" + "\n".join(report.splitlines()[1:3])[:300]
     try:
         reply = (await chat.reply(REPORT_PROMPT.format(report=report[:4000]) + (MUST_TELL if must else ""))).strip()
@@ -612,7 +617,11 @@ async def relay(report: str, photos: list[Path] = (), label: str = "", must: boo
     if must and (not reply or is_silent(reply)):
         log.warning("brain stayed silent on a report Sanjar is waiting on; sending it anyway")
         reply = fallback
-    if reply and not is_silent(reply):
+    if reply and not is_silent(reply) and app_chat:
+        app_push(reply + (f"\n\n({len(photos)} screenshot(s) sent on Telegram)" if photos else ""), app_chat)
+        if photos:
+            await send_photos(list(photos)[:10], label)
+    elif reply and not is_silent(reply):
         await tgfmt.send(tg, OWNER_ID, tgfmt.md(reply), link_preview=False)
         app_push(reply)
         if photos:
@@ -632,7 +641,8 @@ async def notify(card: Ticket, kind: str, text: str, photos: list[Path]):
     # it), and a failure of something he asked for himself is never kept from him
     must = kind == "needs_me" or (kind == "failed" and runner.from_sanjar(card.ref))
     asyncio.create_task(relay(f"Ticket {card.ref} [{card.project}] \"{card.title}\" is {kind.replace('_', ' ')}.\n"
-                              f"{text}", photos, f"{card.title[:60]}", must=must))
+                              f"{text}", photos, f"{card.title[:60]}", must=must,
+                              app_chat=origin.get(card.ref).get("chat", "")))
 
 
 async def check_mac_permissions():

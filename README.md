@@ -66,6 +66,10 @@ Telegram voice notes) and live calls over a WebSocket (same ears / brain / voice
 Away from home the app reaches it over Tailscale: LaunchAgent `com.sanjar.jarvis-tailscale` runs `tailscaled` in
 userspace mode (no root, no system network changes; state in `~/.local/share/jarvis-tailscale`), device name
 `jarvis-mac`. CLI: `scripts/ts.sh status`.
+Answers go back where Sanjar asked (ticket 799dda33, `core/origin.py`): each app chat's brain sends
+`X-Jarvis-Origin: app:<chat id>` on its tool calls; add_task / queue_ticket / answer_task remember it per ticket
+(`var/state/ticket_origin.json`, note "added from the app"), and that ticket's result is written into the same
+app chat (plus the app's notification feed) instead of Telegram. Screenshots still go to Telegram for now.
 
 Memory: Jarvis keeps long-term memory in `var/state/memory/` (facts it was told to `remember`, plus
 every chat and call turn, and old call transcripts). Relevant bits are pulled in front of each

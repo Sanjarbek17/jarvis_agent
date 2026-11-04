@@ -255,6 +255,7 @@ def _brain(chat: dict) -> Brain:
     else:
         brain = Brain("chat")
         brain.session_id = chat.get("session", "")
+        brain.origin = f"app:{chat['id']}"     # tickets asked here report back here (ticket 799dda33)
     _brains[chat["id"]] = (brain, time.monotonic())
     return brain
 
@@ -284,14 +285,23 @@ async def ask(chat: dict, text: str, voice: bool = False) -> dict:
     return msg
 
 
-def push(text: str) -> dict | None:
-    """Jarvis wrote to Sanjar first: keep a copy for the app (its notifications poll for these)."""
+def push(text: str, chat_id: str = "") -> dict | None:
+    """Jarvis wrote to Sanjar first: keep a copy for the app (its notifications poll for these).
+    chat_id: also put it into that app chat (the one he asked from), where its Claude conversation
+    picks it up with his next message."""
     text = (text or "").strip()
     if not text or is_silent(text):
         return None
+    target = load_chat(chat_id) if chat_id and chat_id != UPDATES else None
+    if target:
+        msg = {"role": "jarvis", "text": text[:4000], "ts": time.time(), "pushed": True}
+        target["messages"].append(msg)
+        target["updated"] = msg["ts"]
+        save_chat(target)
     chat = load_chat(UPDATES) or {"id": UPDATES, "project": GENERAL, "title": "Updates from Jarvis",
                                   "created": time.time(), "session": "", "messages": []}
-    msg = {"role": "jarvis", "text": text[:4000], "ts": time.time(), "pushed": True}
+    msg = {"role": "jarvis", "text": text[:4000], "ts": time.time(), "pushed": True,
+           **({"chat": target["id"], "chat_title": target["title"]} if target else {})}
     chat["messages"] = (chat["messages"] + [msg])[-KEEP_UPDATES:]
     chat["updated"] = msg["ts"]
     save_chat(chat)
