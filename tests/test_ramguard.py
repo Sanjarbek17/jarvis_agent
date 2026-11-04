@@ -7,7 +7,7 @@ from types import SimpleNamespace as NS
 
 from core import ramguard, runner
 
-OK = {"level": 1, "free_pct": 40, "swap_used_mb": 100.0, "swap_total_mb": 1024.0,
+OK = {"level": 1, "free_pct": 10, "swap_used_mb": 100.0, "swap_total_mb": 1024.0,
       "available_mb": 3000, "worker_mb": 400, "heavy": False}
 
 
@@ -24,6 +24,7 @@ def test_another_worker_when_memory_fits_one_more():
 
 def test_reserve_grows_under_pressure_full_swap_or_heavy_job():
     assert ramguard.need_mb({**OK, "level": 2}) == 2048 + 400
+    assert ramguard.need_mb({**OK, "level": 2, "free_pct": 45}) == 1024 + 400   # kernel "warning" at 45% free: not real
     assert ramguard.need_mb({**OK, "swap_used_mb": 950.0}) == 2048 + 400
     assert ramguard.need_mb({**OK, "heavy": True}) == 1024 + 1500 + 400
     assert ramguard.can_start(1, {**OK, "level": 4}) == (False, "memory pressure is critical")
@@ -36,8 +37,21 @@ def test_available_from_vm_stat():
 
 
 def test_missing_readings_are_careful():
-    assert ramguard.can_start(1, {**OK, "available_mb": None})[0]
-    assert not ramguard.can_start(1, {**OK, "available_mb": None, "level": 2})[0]
+    assert ramguard.can_start(1, {**OK, "available_mb": None, "free_pct": None})[0]
+    assert not ramguard.can_start(1, {**OK, "available_mb": None, "free_pct": None, "level": 2})[0]
+
+
+def test_aet2_case_starts_at_half_memory_free(monkeypatch):
+    """Ticket c84fea43: 1814 MB in vm_stat pages, 52% free per macOS, kernel 'warning', 2 running -> start."""
+    monkeypatch.setattr(ramguard, "TOTAL_MB", 8192)
+    s = {**OK, "level": 2, "free_pct": 52, "available_mb": 1814, "worker_mb": 300, "swap_used_mb": 2042.0,
+         "swap_total_mb": 3072.0}
+    assert ramguard.have_mb(s) == 52 * 8192 // 100
+    assert ramguard.can_start(2, s) == (True, "")
+    tight = {**s, "free_pct": 12, "available_mb": 900}           # really low: held, reserve doubled
+    ok, why = ramguard.can_start(2, tight)
+    assert not ok and "needs 2348 MB" in why
+    assert not ramguard.can_start(2, {**s, "level": 4})[0]      # critical still holds everything
 
 
 def test_real_snapshot_reads_this_mac():

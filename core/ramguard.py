@@ -1,9 +1,12 @@
 """RAM guard for the runner: how many workers run is decided by free memory only, no fixed count
 (Sanjar, 2026-11-04: "Limit should be according to the ram not hard limit workers"; the Mac has 8 GB).
 
-Another worker starts when the memory that's really available (free + inactive + speculative +
-purgeable pages, from vm_stat) minus a reserve for macOS, Jarvis and the brain still fits one more
-worker. A worker's size is measured: the average memory of the running workers' process trees (a
+Another worker starts when the memory that's really available minus a reserve for macOS, Jarvis and
+the brain still fits one more worker. "Available" is the larger of free + inactive + speculative +
+purgeable pages (vm_stat) and macOS's own "memory free percentage" (memory_pressure, the number
+Activity Monitor's pressure is based on): the page count alone ignores what macOS can compress and
+held aet-2 at 52% free (ticket c84fea43). The kernel's "warning" level stays on for long stretches on
+this 8 GB Mac even at 40%+ free, so it only counts as pressure while free memory is really low. A worker's size is measured: the average memory of the running workers' process trees (a
 Claude worker is ~300-500 MB). The reserve doubles under "warning" pressure or nearly full swap and
 grows while a heavy job (build, render, emulator: scripts/heavy.py) runs; "critical" holds every new
 start. One worker may always run, so the queue can't stall, and running workers are never stopped.
@@ -20,6 +23,8 @@ WORKER_MB = 450            # a worker's size when none runs to measure (Claude w
 MIN_WORKER_MB = 300
 HEAVY_MB = 1500            # extra headroom while a heavy job holds var/heavy.lock
 SWAP_FULL = 0.9            # swap this full counts like "warning"
+LOW_FREE_PCT = 25          # "warning" from the kernel only counts when macOS's free percentage is below this
+TOTAL_MB = int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") // (1024 * 1024))
 HEAVY_LOCK = Path(__file__).resolve().parent.parent / "var" / "heavy.lock"
 
 
@@ -93,11 +98,25 @@ def snapshot(worker_pids: list[int] | None = None) -> dict:
             "heavy": heavy_running()}
 
 
+def under_pressure(s: dict) -> bool:
+    """Real memory pressure: nearly full swap, or the kernel's "warning" while free memory is low."""
+    swap_full = bool(s.get("swap_total_mb")) and s["swap_used_mb"] / s["swap_total_mb"] >= SWAP_FULL
+    pct = s.get("free_pct")
+    return swap_full or (s.get("level") == 2 and (pct is None or pct < LOW_FREE_PCT))
+
+
+def have_mb(s: dict) -> int | None:
+    """Memory a new worker can get: vm_stat's reclaimable pages or macOS's free percentage, the larger."""
+    pages, pct = s.get("available_mb"), s.get("free_pct")
+    by_pct = pct * TOTAL_MB // 100 if pct is not None else None
+    vals = [v for v in (pages, by_pct) if v is not None]
+    return max(vals) if vals else None
+
+
 def need_mb(s: dict) -> int:
     """Memory that must be available to start one more worker now."""
     reserve = RESERVE_MB
-    swap_full = bool(s.get("swap_total_mb")) and s["swap_used_mb"] / s["swap_total_mb"] >= SWAP_FULL
-    if s.get("level") == 2 or swap_full:
+    if under_pressure(s):
         reserve *= 2
     if s.get("heavy"):
         reserve += HEAVY_MB
@@ -111,7 +130,7 @@ def can_start(running: int, snap: dict | None = None, worker_pids: list[int] | N
     s = snap or snapshot(worker_pids)
     if s.get("level") == 4:
         return False, "memory pressure is critical"
-    have = s.get("available_mb")
+    have = have_mb(s)
     if have is None:                     # can't measure: be careful, one more only at normal pressure
         return (s.get("level") in (None, NORMAL), "can't read memory")
     need = need_mb(s)
@@ -125,5 +144,6 @@ def describe(s: dict | None = None) -> str:
     s = s or snapshot()
     swap = (f", swap {s['swap_used_mb'] / 1024:.1f}/{s['swap_total_mb'] / 1024:.1f} GB"
             if s.get("swap_used_mb") is not None and s.get("swap_total_mb") else "")
-    return (f"pressure {LEVELS.get(s.get('level'), s.get('level'))}, {s.get('available_mb')} MB available"
+    return (f"pressure {LEVELS.get(s.get('level'), s.get('level'))}{' (real)' if under_pressure(s) else ''}, "
+            f"{have_mb(s)} MB available"
             f", {s.get('free_pct')}% free{swap}")
