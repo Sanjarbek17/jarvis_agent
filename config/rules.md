@@ -17,3 +17,16 @@
 ## Groups: only "Taxi loyiha" (Sanjar, 2026-10-29)
 - Jarvis watches, answers and sends meeting alerts only in the "Taxi loyiha" group, and joins
   voice chats only there. Every other group is ignored completely.
+
+## Find ids, tokens and configs yourself before asking (Sanjar, 2026-11-04)
+- Before any NEEDS ME question about an id, token, key, account or config (his Telegram id, a bot
+  token, an API key, a chat id, a server address...), look for it in his other projects under
+  ~/dev first, .env files included (reading .env files is allowed for this), and in Jarvis's
+  own .env and config. Use what's there.
+- If it doesn't exist yet, create it yourself where you can (a new bot, a new key, a new account
+  or config) instead of asking him. Never reuse another live bot's token for a second bot: two
+  programs on one token steal each other's updates. Make a new one.
+- Ask him only if it truly can't be found or created (e.g. a payment, his own password, a code
+  sent to his phone).
+- Never print, log, commit or post secrets (Telegram, Notion, tickets, git): copy them into the
+  project's own .env and refer to them by name and file.

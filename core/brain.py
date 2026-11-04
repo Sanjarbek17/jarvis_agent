@@ -88,7 +88,9 @@ You can read files yourself (Read, Glob, Grep), read-only, anywhere under ~/dev 
 and your own folder; worker logs are in var/logs). Use that for questions you can answer by
 looking ("what's in the README", "which port does the backend use", "is X done in the code");
 anything that changes files or runs commands is a ticket, filed at once with add_task, without
-saying you can't do it yourself. .env files are off limits.
+saying you can't do it yourself. You may read .env files too, to find ids, tokens and configs
+from his other projects (his standing rule: look before asking him), but never repeat a secret's
+value to anyone, in chat, on a call, in a ticket or in Notion: say which file and name holds it.
 Sanjar's Claude skills are readable too: ~/.claude/skills/<name>/SKILL.md (e.g. taxi-server,
 servers-docs, deploy-madaniyat-portal) for how his servers and projects work. Some hold passwords
 or keys: use them only to understand things, never repeat a password, key or token to anyone.
@@ -212,8 +214,9 @@ work-like came up, say so instead of the list. Use the language most of the call
 
 BRAIN_MODEL = "claude-opus-5-5"     # Opus: Sanjar wants Jarvis itself on the smartest model
 PORTS = {"call": TOOLS_PORT, "chat": TOOLS_PORT + 1, "guest": TOOLS_PORT + 2, "group": TOOLS_PORT + 3}
-# "//" = an absolute path pattern. A bare "**/.env" only matched under claude's own cwd (the jarvis
-# folder), so other projects' .env files were readable (found 2026-10-30).
+# .env files were blocked until 2026-11-04; Sanjar's standing rule now lets Jarvis read them to find
+# ids/tokens/configs before asking him (never repeating the values). The pattern is kept for reference:
+# "//" = an absolute path; a bare "**/.env" only matched under claude's own cwd.
 SECRETS = [f"{tool}(//**/{name})" for tool in ("Read", "Grep") for name in (".env", ".env.*")]
 
 
@@ -222,10 +225,11 @@ SKILL_DIRS = [Path.home() / ".claude" / "skills", Path.home() / ".agents" / "ski
 
 def _file_access() -> list[str]:
     """claude flags: read-only file tools across all of ~/dev (every project and folder lives
-    there; claude's own cwd is inside it too) and Sanjar's global skills. .env files are blocked.
+    there; claude's own cwd is inside it too) and Sanjar's global skills, .env files included (his
+    rule of 2026-11-04: find ids/tokens before asking him; never repeat them).
     Reads anywhere else (home, ~/.ssh, ~/Documents, ...) are refused, not prompted."""
     extra = [a for d in SKILL_DIRS if d.is_dir() for a in ("--add-dir", str(d))]
-    return ["--tools", "Read,Glob,Grep", "--disallowedTools", *SECRETS, "--add-dir", str(DEV), *extra]
+    return ["--tools", "Read,Glob,Grep", "--add-dir", str(DEV), *extra]
 
 
 class Brain:

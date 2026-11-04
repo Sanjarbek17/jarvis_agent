@@ -40,8 +40,10 @@ New things to handle:
 
 Act on them yourself with your tools, following Sanjar's standing rule: never ask him, find a workaround.
 - Needs me: decide the answer yourself (memory, his rules, the project's docs) and give it with answer_task.
-  Leave it for him only if it truly needs him: money, a password / SIM / account login, publishing in
-  his name, or merging to main.
+  For ids, tokens, keys and configs, look in his other projects under ~/dev first (.env files too) or
+  have the worker create a new one; never repeat a secret's value. Leave it for him only if it truly
+  can't be found or created: money, his own password, a code sent to his phone, publishing in his
+  name, or merging to main.
 - Failed: look with worker_progress. If the cause was passing (a restart, a usage or rate limit, the
   network), queue it again with queue_ticket; otherwise leave it and say why in one line.
 - Working with no live worker: its worker is gone; queue it again with queue_ticket.
