@@ -78,7 +78,7 @@ scrubbed out of everything memory stores (`memory.scrub`).
 
 Reading files: Jarvis can look things up itself (read-only: Read, Glob, Grep) anywhere under
 `~/dev`, e.g. "what port does the taxi backend use", and Sanjar's global skills in `~/.claude/skills`
-(e.g. taxi-server). No `.env` files anywhere, nothing else outside `~/dev`
+(e.g. taxi-server). `.env` files too (since 2026-11-04, to find ids/tokens before asking Sanjar; values are never repeated); nothing else outside `~/dev`
 (home, `~/.ssh`, `~/Documents` stay off limits); changing anything is still a ticket.
 
 Calling other people: "call Olimjon and tell him ..." (by message or on a call). Jarvis looks the
