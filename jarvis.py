@@ -1026,6 +1026,7 @@ async def main():
     asyncio.create_task(remember_history())
     asyncio.create_task(watch_group_calls())
     appserver.start_call = app_call
+    appserver.worker_status = runner.snapshot
     asyncio.create_task(appserver.serve())
     asyncio.create_task(send_format_samples())
     asyncio.create_task(outbox.run(tg, OWNER_ID))   # scripts send Sanjar things through us

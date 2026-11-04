@@ -189,6 +189,34 @@ def worker_log(project: str, ref: str = "") -> Path | None:
     return logs[-1] if logs else None
 
 
+def last_step(path: Path, tail: int = 200_000) -> tuple[str, float]:
+    """The worker's latest step as a short line ("editing Api.kt"), and when its log last changed.
+    Reads only the end of the log: they grow to megabytes."""
+    try:
+        size, mtime = path.stat().st_size, path.stat().st_mtime
+        with path.open("rb") as f:
+            f.seek(max(0, size - tail))
+            lines = f.read().decode(errors="replace").splitlines()
+    except OSError:
+        return "", 0.0
+    for line in reversed(lines):
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(e, dict):
+            continue
+        if e.get("type") == "result":
+            return "finishing up", mtime
+        if e.get("type") == "assistant":
+            for b in reversed(e.get("message", {}).get("content", [])):
+                if b.get("type") == "tool_use":
+                    return " ".join(_step_text(b).split()), mtime
+                if b.get("type") == "text" and b.get("text", "").strip():
+                    return "writing: " + " ".join(b["text"].split())[:80], mtime
+    return "starting", mtime
+
+
 def progress_text(path: Path, running: bool, steps: int = 12) -> str:
     """What a worker did and is doing, from its stream-json log: start, last steps, the command
     still running (and its latest output), and the result if it's finished."""
@@ -246,6 +274,7 @@ class Runner:
         self.held_logged = 0.0                          # last "held for RAM" log line (monotonic)
         self.last_start: dict[str, float] = {}          # project -> when its last worker started (fair turns)
         self.wait_reason = ""                           # why the next queued ticket isn't starting
+        self.started: dict[str, float] = {}             # project -> when its current ticket started (epoch)
 
     async def run_forever(self, recover: bool = True):
         """recover: at Jarvis's start (workers of the old process are gone). False when the self-check
@@ -432,6 +461,16 @@ class Runner:
                                                        self.last_start.get(it[1].project, 0.0), it[0]))
         return [t for _, t in order]
 
+    def snapshot(self) -> dict:
+        """For the phone app (ticket 0815c76f): how many workers run and what each is doing right now."""
+        workers = []
+        for project, card in sorted(self.current.items(), key=lambda it: self.started.get(it[0], 0)):
+            path = worker_log(project, card.ref)
+            step, active = last_step(path) if path else ("starting", 0.0)
+            workers.append({"project": project, "ref": card.ref, "title": card.title, "url": card.url,
+                            "started": self.started.get(project, 0.0), "step": step, "active": active})
+        return {"count": len(workers), "workers": workers, "waiting": self.wait_reason, "at": time.time()}
+
     def progress(self, project: str, ticket: str = "") -> str:
         """For the worker_progress tool: the live log of a project's worker (or a past ticket's)."""
         name = next((p for p in {*self.current, *board.boards(), *(l.stem.rsplit("-", 1)[0] for l in LOGS.glob("*-*.jsonl"))}
@@ -470,6 +509,7 @@ class Runner:
             self.finished[card.ref] = time.monotonic()   # board unreachable: leave it Queued, retry later
             return
         self.current[card.project] = card
+        self.started[card.project] = time.time()
 
         def make_cmd(prompt: str) -> list[str]:
             cmd = ["claude", "-p", prompt, "--model", BRAIN_MODEL,
