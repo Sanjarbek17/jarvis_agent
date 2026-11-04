@@ -12,6 +12,8 @@ Every request needs the app token (APP_TOKEN in .env): header "Authorization: Be
     POST /api/chats/{id}/voice  (audio body) {heard, reply}: transcribed like a Telegram voice note
     GET  /api/notifications?after=<ts>       {chat, items}: what Jarvis wrote first (ticket news, "needs
                                              you", the daily summary) since ts; the phone polls this
+    GET  /api/workers                        {count, workers: [{project, ref, title, url, started, step,
+                                             active}], waiting}: the ticket workers running right now
     WS   /api/call?token=&chat=              a live call: phone sends 48 kHz mono s16 PCM, gets
                                              24 kHz mono s16 PCM back; text frames are transcript
                                              lines {"who", "text"}
@@ -53,6 +55,7 @@ KEEP_UPDATES = 300
 
 _brains: dict[str, tuple[Brain, float]] = {}   # chat id -> (brain, last used)
 start_call: Callable[[WebSocket, dict], Awaitable[None]] | None = None   # set by jarvis.py
+worker_status: Callable[[], dict] | None = None                          # set by jarvis.py (runner.snapshot)
 
 
 def token() -> str:
@@ -279,6 +282,14 @@ async def notifications(req: Request):
     return JSONResponse({"chat": UPDATES, "title": "Updates from Jarvis", "items": updates_since(after)})
 
 
+async def workers(req: Request):
+    if not _authorized(req):
+        return _deny()
+    if worker_status is None:
+        return JSONResponse({"count": 0, "workers": [], "waiting": "", "error": "the ticket runner isn't up"})
+    return JSONResponse(worker_status())
+
+
 async def health(req: Request):
     return JSONResponse({"ok": True, "authorized": _authorized(req)})
 
@@ -290,6 +301,7 @@ app = Starlette(routes=[
     Route("/api/chats/{chat}/messages", messages, methods=["GET", "POST"]),
     Route("/api/chats/{chat}/voice", voice, methods=["POST"]),
     Route("/api/notifications", notifications),
+    Route("/api/workers", workers),
     WebSocketRoute("/api/call", call),
 ])
 
