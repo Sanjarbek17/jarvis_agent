@@ -133,15 +133,16 @@ def test_relay_answers_where_he_asked(tmp_path, monkeypatch):
         return "Done: the runner fix is merged."
 
     relay = _relay(chat=NS(reply=reply), tg=None, OWNER_ID=1, is_silent=is_silent, appserver=appserver,
-                   tgfmt=NS(send=send, md=lambda t: t), app_push=lambda t, c="": app.append((t, c)),
+                   tgfmt=NS(send=send, md=lambda t: t), app_push=lambda t, c="", ph=(): app.append((t, c, len(ph))),
                    send_photos=send_photos, log=logging.getLogger(), Path=Path)
     asyncio.run(relay("Ticket j-1 is done.", app_chat=chat["id"]))
-    assert telegram == [] and app == [("Done: the runner fix is merged.", chat["id"])]
+    assert telegram == [] and app == [("Done: the runner fix is merged.", chat["id"], 0)]
     asyncio.run(relay("Ticket j-1 is done.", [Path("a.png")], app_chat=chat["id"]))
-    assert telegram == [] and "screenshot(s) sent on Telegram" in app[-1][0] and photos_sent == [1]
+    assert telegram == [] and app[-1] == ("Done: the runner fix is merged.", chat["id"], 1) and photos_sent == []
     app.clear()
-    asyncio.run(relay("Ticket j-2 is done."))                               # asked on Telegram
-    assert telegram == ["Done: the runner fix is merged."] and app == [("Done: the runner fix is merged.", "")]
+    asyncio.run(relay("Ticket j-2 is done.", [Path("a.png")]))              # asked on Telegram
+    assert telegram == ["Done: the runner fix is merged."] and photos_sent == [1]
+    assert app == [("Done: the runner fix is merged.", "", 1)]             # the app's Updates chat shows them too
     telegram.clear()
     asyncio.run(relay("Ticket j-3 is done.", app_chat="deleted-chat"))     # chat gone: Telegram
     assert telegram == ["Done: the runner fix is merged."]

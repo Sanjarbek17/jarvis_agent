@@ -89,6 +89,20 @@ async def open_in_editor(project: str, path: str = "") -> str:
     return f"Opened in Antigravity on the Mac: {shown}"
 
 
+async def show_photos(photos: list[Path], label: str, ctx=None) -> str:
+    """Images for Sanjar go where he asked (ticket 546d965e): into the app chat if the call came from the
+    Jarvis app, else to Telegram. Returns where they went, for the tool's answer."""
+    o = origin.from_ctx(ctx)
+    if not photos:
+        return ""
+    if o.get("channel") == "app":
+        from . import appserver
+        if appserver.add_images(o["chat"], photos, label):
+            return "shown in this app chat"
+    await hooks.send_photos(photos, label)
+    return "sent to Telegram"
+
+
 def make_server(source: str) -> MCPServer:
     server = MCPServer("jarvis")
 
@@ -312,15 +326,15 @@ def make_server(source: str) -> MCPServer:
         return await open_in_editor(project, path)
 
     @server.tool()
-    async def screenshot(url: str = "") -> str:
-        """Send Sanjar a screenshot on Telegram: of a web page if url is given, else of the Mac screen."""
+    async def screenshot(url: str = "", ctx: Context = None) -> str:
+        """Show Sanjar a screenshot (in the chat he's talking in: the Jarvis app or Telegram): of a web
+        page if url is given, else of the Mac screen."""
         try:
             path = await take_screenshot(url)
         except Exception as e:
             log.warning("screenshot failed: %s", e)
             return f"Screenshot failed: {e}"
-        await hooks.send_photo(path, url or "Mac screen")
-        return "Sent to Telegram"
+        return "Screenshot " + await show_photos([path], url or "Mac screen", ctx)
 
     @server.tool()
     async def call_contact(contact: str, message: str) -> str:
@@ -339,23 +353,24 @@ def make_server(source: str) -> MCPServer:
         return await run_quick(script, language)
 
     @server.tool()
-    async def mac_task(task: str, sanjar_words: str) -> str:
+    async def mac_task(task: str, sanjar_words: str, ctx: Context = None) -> str:
         """Have the Mac worker do something on the Mac itself: use any app, change settings, find or
         move files, fill something in, click and type on the screen. It remembers earlier Mac
         tasks ("now close it"). task: what to do, clearly. sanjar_words: what he actually said.
         Waits a little for the result; a longer task finishes in the background and its
-        result comes to Sanjar in Telegram (and to you as an [UPDATE])."""
+        result comes to Sanjar where he asked (the app chat or Telegram), and to you as an [UPDATE]."""
         busy = hooks.mac.current
         job = asyncio.create_task(hooks.mac.run(task, sanjar_words))
         done, _ = await asyncio.wait({job}, timeout=MAC_WAIT[source])
         if job not in done:
-            job.add_done_callback(lambda j: asyncio.create_task(hooks.mac_late(task, *j.result())))
+            app_chat = origin.from_ctx(ctx).get("chat", "")
+            job.add_done_callback(lambda j: asyncio.create_task(hooks.mac_late(task, *j.result(), app_chat=app_chat)))
             return ("Still working on it" + (f" (after the task before it: {busy})" if busy else "")
-                    + "; the result goes to Sanjar in Telegram when it's done.")
+                    + "; the result goes to Sanjar when it's done, where he asked.")
         text, photos, question = job.result()
-        await hooks.send_photos(photos[:10], "Mac")
+        where = await show_photos(photos[:10], "Mac", ctx)
         return (f"The Mac worker needs Sanjar's decision: {text}" if question else text) + \
-               (f" ({len(photos)} screenshot(s) sent to Telegram)" if photos else "")
+               (f" ({len(photos)} screenshot(s) {where})" if photos else "")
 
     @server.tool()
     async def mac_progress() -> str:

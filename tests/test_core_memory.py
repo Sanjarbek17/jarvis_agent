@@ -100,7 +100,7 @@ def test_must_tell_is_enforced_even_if_the_brain_stays_silent():
             return reply
 
         g = _jarvis_funcs("relay", chat=NS(reply=chat_reply), tg=None, OWNER_ID=1, is_silent=is_silent,
-                          tgfmt=NS(send=send, md=lambda t: t), app_push=lambda t: None, send_photos=None,
+                          tgfmt=NS(send=send, md=lambda t: t), app_push=lambda *a: None, send_photos=None,
                           log=logging.getLogger(), Path=__import__("pathlib").Path)
         asyncio.run(g["relay"]("Ticket t1 [Teacher] \"Test call\" is failed.\nThe call didn't connect: no account.", must=True))
         assert len(sent) == 1 and "Test call" in sent[0]

@@ -69,7 +69,11 @@ userspace mode (no root, no system network changes; state in `~/.local/share/jar
 Answers go back where Sanjar asked (ticket 799dda33, `core/origin.py`): each app chat's brain sends
 `X-Jarvis-Origin: app:<chat id>` on its tool calls; add_task / queue_ticket / answer_task remember it per ticket
 (`var/state/ticket_origin.json`, note "added from the app"), and that ticket's result is written into the same
-app chat (plus the app's notification feed) instead of Telegram. Screenshots still go to Telegram for now.
+app chat (plus the app's notification feed) instead of Telegram.
+Images in the app (ticket 546d965e): screenshots from mac_task / screenshot asked in an app chat are shown in that
+chat (not Telegram); ticket and Mac results carry their screenshots into the app too (the Updates chat gets them even
+when the answer went to Telegram). Images are kept shrunk to 1280 px JPEG in `var/state/app_images/` and served at
+`GET /api/images/{name}` with the app login. Needs app 0.7+.
 
 Memory: Jarvis keeps long-term memory in `var/state/memory/` (facts it was told to `remember`, plus
 every chat and call turn, and old call transcripts). Relevant bits are pulled in front of each
