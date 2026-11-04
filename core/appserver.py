@@ -1,8 +1,18 @@
 """The Jarvis Android app's server (ticket 27099a8a): projects, chats per project, text and voice
 messages, and live calls, for Sanjar's phone on the home Wi-Fi.
 
-Every request needs the app token (APP_TOKEN in .env): header "Authorization: Bearer <token>", or
-?token=<token> on the call WebSocket.
+Every request needs a token: header "Authorization: Bearer <token>", or ?token=<token> on the call
+WebSocket. Two kinds (ticket 31ed52a7):
+- APP_TOKEN from .env, built into the APK: home Wi-Fi / Tailscale only. Requests that come in through
+  the public Cloudflare tunnel (they carry Cf-Connecting-IP) are refused with it, so a leaked APK alone
+  can't reach Jarvis from the internet.
+- a login session: the app asks for a code (POST /api/login/start), Jarvis sends a 6-digit code to
+  Sanjar's Telegram, the app trades it for a long-lived session key (POST /api/login). Only its
+  SHA-256 is stored (var/state/app_sessions.json). Works everywhere; POST /api/logout ends it.
+
+    POST /api/login/start {device?}          sends a code to Sanjar's Telegram (rate-limited)
+    POST /api/login {code, device?}          {token}: the session key; 5 wrong tries kill the code
+    POST /api/logout                         ends the session in the Authorization header
 
     GET  /api/projects                       [{name, about}] ("General" first)
     GET  /api/chats?project=X                that project's chats, newest first
@@ -26,6 +36,7 @@ e028892d); the app polls /api/notifications and shows a phone notification, no G
 """
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -48,6 +59,11 @@ from .voice import transcribe_audio
 log = logging.getLogger("jarvis.app")
 PORT = 8790
 CHATS = STATE / "app_chats"
+SESSIONS = STATE / "app_sessions.json"
+CODE_TTL = 5 * 60                      # a login code works this long
+CODE_TRIES = 5                         # wrong guesses before the code is dropped
+CODE_GAP = 60                          # at most one code a minute...
+CODES_PER_HOUR = 5                     # ...and this many an hour
 IDLE_STOP = 15 * 60                    # stop a chat's Claude process after this long unused
 GENERAL = "General"
 UPDATES = "updates"                    # chat id of "Updates from Jarvis"
@@ -56,20 +72,127 @@ KEEP_UPDATES = 300
 _brains: dict[str, tuple[Brain, float]] = {}   # chat id -> (brain, last used)
 start_call: Callable[[WebSocket, dict], Awaitable[None]] | None = None   # set by jarvis.py
 worker_status: Callable[[], dict] | None = None                          # set by jarvis.py (runner.snapshot)
+send_code: Callable[[str], Awaitable] | None = None                      # set by jarvis.py: text to Sanjar's Telegram
+
+_code: dict = {}                       # the one pending login code: {hash, until, tries}
+_code_times: list[float] = []          # when codes were sent (rate limit)
 
 
 def token() -> str:
     return os.environ.get("APP_TOKEN", "")
 
 
+def _hash(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def public(req) -> bool:
+    """Came in through the Cloudflare tunnel (Cloudflare always sets this header; LAN requests don't have it)."""
+    return bool(req.headers.get("cf-connecting-ip"))
+
+
+def _client(req) -> str:
+    return req.headers.get("cf-connecting-ip") or (req.client.host if req.client else "?")
+
+
+def load_sessions() -> dict:
+    try:
+        return json.loads(SESSIONS.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_sessions(sessions: dict) -> None:
+    SESSIONS.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SESSIONS.with_suffix(".tmp")
+    tmp.write_text(json.dumps(sessions))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, SESSIONS)
+
+
+def _bearer(req) -> str:
+    return req.headers.get("authorization", "").removeprefix("Bearer ").strip() or req.query_params.get("token", "")
+
+
 def _authorized(req) -> bool:
+    got = _bearer(req)
+    if not got:
+        return False
+    sessions = load_sessions()
+    hit = sessions.get(_hash(got))
+    if hit:
+        if time.time() - hit.get("used", 0) > 3600:    # note "last used", at most hourly
+            hit["used"] = time.time()
+            _save_sessions(sessions)
+        return True
     want = token()
-    got = req.headers.get("authorization", "").removeprefix("Bearer ").strip() or req.query_params.get("token", "")
-    return bool(want) and secrets.compare_digest(got, want)
+    return bool(want) and not public(req) and secrets.compare_digest(got, want)
 
 
 def _deny():
-    return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse({"error": "unauthorized", "login": True}, status_code=401)
+
+
+# --- login: a code to Sanjar's Telegram, traded for a session key -------------------------------
+
+async def login_start(req: Request):
+    now = time.time()
+    _code_times[:] = [t for t in _code_times if now - t < 3600]
+    if send_code is None:
+        return JSONResponse({"error": "Jarvis can't send Telegram messages right now"}, status_code=503)
+    if _code_times and now - _code_times[-1] < CODE_GAP:
+        return JSONResponse({"error": "A code was just sent. Wait a minute and try again."}, status_code=429)
+    if len(_code_times) >= CODES_PER_HOUR:
+        return JSONResponse({"error": "Too many codes this hour. Try again later."}, status_code=429)
+    device = str((await _json(req)).get("device") or "phone")[:60]
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    _code.clear()
+    _code.update({"hash": _hash(code), "until": now + CODE_TTL, "tries": 0})
+    _code_times.append(now)
+    where = "over the internet" if public(req) else "on the home network"
+    log.info("app login code requested from %s (%s)", _client(req), where)
+    await send_code(f"🔐 Jarvis app login code: {code}\n\nAsked for {where} by \"{device}\". It works for 5 minutes. "
+                    "If that wasn't you, ignore this message.")
+    return JSONResponse({"ok": True, "ttl": CODE_TTL})
+
+
+async def login(req: Request):
+    body = await _json(req)
+    code = str(body.get("code") or "").strip()
+    if not _code or time.time() > _code["until"]:
+        _code.clear()
+        return JSONResponse({"error": "No valid code. Ask for a new one."}, status_code=400)
+    if not secrets.compare_digest(_hash(code), _code["hash"]):
+        _code["tries"] += 1
+        log.warning("wrong app login code from %s (%d)", _client(req), _code["tries"])
+        if _code["tries"] >= CODE_TRIES:
+            _code.clear()
+            return JSONResponse({"error": "Too many wrong tries. Ask for a new code."}, status_code=400)
+        return JSONResponse({"error": "Wrong code."}, status_code=400)
+    _code.clear()
+    session = secrets.token_urlsafe(32)
+    sessions = load_sessions()
+    sessions[_hash(session)] = {"device": str(body.get("device") or "phone")[:60], "created": time.time(),
+                                "used": time.time(), "from": _client(req)}
+    _save_sessions(sessions)
+    log.info("app logged in from %s", _client(req))
+    return JSONResponse({"token": session})
+
+
+async def logout(req: Request):
+    sessions = load_sessions()
+    if sessions.pop(_hash(_bearer(req)), None) is None:
+        return _deny()
+    _save_sessions(sessions)
+    return JSONResponse({"ok": True})
+
+
+async def _json(req: Request) -> dict:
+    with contextlib.suppress(Exception):
+        body = await req.json()
+        if isinstance(body, dict):
+            return body
+    return {}
 
 
 # --- chats on disk ---------------------------------------------------------------------------
@@ -291,11 +414,14 @@ async def workers(req: Request):
 
 
 async def health(req: Request):
-    return JSONResponse({"ok": True, "authorized": _authorized(req)})
+    return JSONResponse({"ok": True, "authorized": _authorized(req), "login": True, "public": public(req)})
 
 
 app = Starlette(routes=[
     Route("/api/health", health),
+    Route("/api/login/start", login_start, methods=["POST"]),
+    Route("/api/login", login, methods=["POST"]),
+    Route("/api/logout", logout, methods=["POST"]),
     Route("/api/projects", projects),
     Route("/api/chats", chats, methods=["GET", "POST"]),
     Route("/api/chats/{chat}/messages", messages, methods=["GET", "POST"]),
