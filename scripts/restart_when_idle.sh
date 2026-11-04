@@ -23,6 +23,11 @@ busy() {   # a worker (claude -p Ticket ... / Mac task ...), a call brain ("live
   ps -axww -o ppid=,args= | awk -v p="$JPID" -v c="$CALLS" '$1 == p && (($2 == "claude" && $3 == "-p" && ($4 == "Ticket" || ($4 == "Mac" && $5 == "task"))) || (c == "yes" && (/live phone call/ || /You joined the group voice chat/))) { f = 1 } END { exit !f }'
 }
 echo "$(date) waiting for workers$([ $CALLS = yes ] && echo ' and calls') of $JPID to finish" >> "$LOG"
+# while this waits, the runner starts no new workers (core/runner.py RESTART_PENDING), or a busy queue
+# would keep the restart from ever happening
+FLAG="$(dirname "$0")/../var/restart_pending"
+touch "$FLAG"
+trap 'rm -f "$FLAG"' EXIT
 while [ "$(date +%s)" -lt "$end" ]; do
   kill -0 "$JPID" 2>/dev/null || { echo "$(date) Jarvis $JPID already gone, nothing to do" >> "$LOG"; exit 0; }
   if ! busy; then
