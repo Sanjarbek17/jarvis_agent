@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from typing import AsyncIterator
 
-from . import memory
+from . import coremem, memory
 from .config import CALLS, DEV, HERE, PROJECTS, TOOLS_PORT, projects_text, projects_version, rules_text
 
 log = logging.getLogger("jarvis.brain")
@@ -40,8 +40,10 @@ Status always comes from your tools, never from memory.
 Memory: you have long-term memory that outlives this session (restarts, /clear, new calls).
 Relevant bits come in front of his messages as [MEMORY — ...]. Never guess about the past —
 what he said, decided or asked earlier: use those notes, call recall, or say you don't know.
-When he tells you a lasting preference, decision, plan or fact, save it with remember (one clear
-sentence); fix wrong ones with forget_memory. Chats and calls are saved automatically.
+When he tells you a lasting preference, decision, plan or fact, save it with remember right away
+(kind decision / preference / fact / open, and reuse a key to replace an old line); remove lines that
+are wrong or done with forget_core. CORE MEMORY below is always true unless he changes it. Chats and
+calls are saved automatically and folded into core memory every night and before /clear.
 
 What needs him (his permanent rules, 2026-11-04, after mistakes he had to correct):
 1. ONE item at a time. When he asks what needs him, give exactly one thing: no list of the rest,
@@ -254,17 +256,23 @@ class Brain:
         self.lock = asyncio.Lock()
         self.session_id = ""      # to resume the conversation when restarted
         self.version = 0          # projects_version() the running process was started with
+        self.core_version = 0     # coremem.version() it was started with
         self.notes: list[str] = []  # things that happened elsewhere, sent along with the next message
 
     def _system(self) -> str:
         if self.guest_prompt:
             return self.guest_prompt
+        core = coremem.text()
+        core = ("\n\nCORE MEMORY: Sanjar's lasting decisions, rules, facts and his open requests. These hold "
+                "unless he changes them; act on them without being reminded. Save new ones with remember.\n"
+                + core) if core else ""
         if self.mode == "call":
-            return base_prompt() + "\n\n" + CALL_STYLE + "\n\n" + past_calls()
-        return base_prompt() + "\n\n" + CHAT_STYLE
+            return base_prompt() + core + "\n\n" + CALL_STYLE + "\n\n" + past_calls()
+        return base_prompt() + core + "\n\n" + CHAT_STYLE
 
     async def start(self):
         self.version = projects_version()
+        self.core_version = coremem.version()
         resume = ["--resume", self.session_id] if self.session_id else []
         sandboxed = self.mode in ("guest", "group")
         mcp = {"mcpServers": {"jarvis": {"type": "http", "url": f"http://127.0.0.1:{PORTS[self.mode]}/mcp"}}}
@@ -309,6 +317,12 @@ class Brain:
                 self.proc = None
                 text = ("[PROJECTS UPDATED] Sanjar's project list changed; this is the current list "
                         f"(it replaces any earlier one):\n{projects_text()}\n\n{text}")
+            elif self.mode == "chat" and self.proc and self.core_version != coremem.version():
+                # core memory changed: the new decisions go into the system prompt, same conversation
+                log.info("core memory changed, restarting the %s brain", self.mode)
+                await self.stop()
+                await self.proc.wait()
+                self.proc = None
             if self.proc is None or self.proc.returncode is not None:
                 await self.start()
             msg = {"type": "user", "message": {"role": "user", "content": text}}

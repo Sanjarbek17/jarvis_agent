@@ -201,14 +201,14 @@ Pick an existing thread when the exchange continues that topic (also short follo
 that continue the previous exchange). Use "new" only for a genuinely different topic."""
 
 
-async def _ask_claude_json(prompt: str) -> dict:
+async def _ask_claude_json(prompt: str, model: str = TOPIC_MODEL, timeout: float = TOPIC_TIMEOUT) -> dict:
     """One quick, tool-less Claude call through the CLI; returns the JSON object it answers with."""
     proc = await asyncio.create_subprocess_exec(
-        "claude", "-p", prompt, "--model", TOPIC_MODEL, "--output-format", "json", "--tools", "",
+        "claude", "-p", prompt, "--model", model, "--output-format", "json", "--tools", "",
         "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence",
         stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), TOPIC_TIMEOUT)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
     except asyncio.TimeoutError:
         proc.kill()
         raise
