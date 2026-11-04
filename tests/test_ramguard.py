@@ -136,9 +136,8 @@ def test_three_light_workers_when_memory_allows(monkeypatch):
 
 
 def test_no_new_workers_while_a_restart_waits(monkeypatch, tmp_path):
-    flag = tmp_path / "restart_pending"
+    flag = runner.RESTART_PENDING
     flag.touch()
-    monkeypatch.setattr(runner, "RESTART_PENDING", flag)
 
     async def queued():
         return [T("a1", "A")]
@@ -164,9 +163,8 @@ def test_no_new_workers_while_a_restart_waits(monkeypatch, tmp_path):
 
 
 def test_requeue_after_the_urgent_one_started(monkeypatch, tmp_path):
-    f = tmp_path / "requeue_after.json"
+    f = runner.REQUEUE_AFTER
     f.write_text('{"urg1": ["big1"]}')
-    monkeypatch.setattr(runner, "REQUEUE_AFTER", f)
     state = {"urg1": "Queued", "big1": ""}
     updates = []
 

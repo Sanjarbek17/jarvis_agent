@@ -15,11 +15,13 @@ Uses the `gh` CLI (logged in as Sanjar, with the `project` scope).
 """
 import asyncio
 import json
+import logging
 import shutil
 import time
 
 from .config import PROJECTS, STATE, reload_projects
 
+log = logging.getLogger("jarvis.ghboard")
 GH = shutil.which("gh") or "/opt/homebrew/bin/gh"
 LABELS = {"Queued": "jarvis:queued", "Working": "jarvis:working", "Needs me": "jarvis:needs-me",
           "Done": "jarvis:done", "Failed": "jarvis:failed"}
@@ -27,11 +29,15 @@ STATE_OF = {v: k for k, v in LABELS.items()}
 COLORS = {"Queued": "1d76db", "Working": "fbca04", "Needs me": "d93f0b", "Done": "0e8a16", "Failed": "b60205"}
 STAGES = {"todo": "Todo", "doing": "In Progress", "done": "Done"}
 NOTES = STATE / "gh_notes.json"     # page_id -> {"note", "jarvis", "at"}
-CACHE_SECONDS = 8                   # the runner polls every 10 s; status/board calls come in bursts
+CACHE_SECONDS = 120                 # one board read per 2 min: polling every 10 s used up GitHub's GraphQL
+                                    # limit (5000/h) and every read then failed, which stalled the runner
+BACKOFF = 300                       # after a failed read (e.g. rate limit): serve the last copy this long
+ITEM_LIMIT = "200"
 
 _cache: dict[str, tuple[float, list]] = {}
 _fields: dict[str, dict] = {}       # project -> {"project_id", "status_field", "options": {name: id}}
 _labels_ready: set[str] = set()
+_backoff: dict[str, float] = {}     # project -> monotonic time until which we don't ask GitHub again
 
 
 def projects() -> dict[str, dict]:
@@ -96,9 +102,18 @@ async def tickets(project: str, fresh: bool = False) -> list:
     hit = _cache.get(project)
     if hit and not fresh and time.monotonic() - hit[0] < CACHE_SECONDS:
         return hit[1]
+    if hit and time.monotonic() < _backoff.get(project, 0):
+        return hit[1]                     # GitHub refused recently: the last good copy, don't hammer it
     g = projects()[project]
-    data = json.loads(await _gh("project", "item-list", str(g["project"]), "--owner", g["owner"],
-                                "--format", "json", "--limit", "500"))
+    try:
+        data = json.loads(await _gh("project", "item-list", str(g["project"]), "--owner", g["owner"],
+                                    "--format", "json", "--limit", ITEM_LIMIT))
+    except Exception:
+        _backoff[project] = time.monotonic() + BACKOFF
+        if hit:
+            log.warning("GitHub board %s unreadable; using the copy from %.0f s ago", project, time.monotonic() - hit[0])
+            return hit[1]
+        raise
     notes = _notes()
     items = [it for it in data.get("items", []) if (it.get("content") or {}).get("type") == "Issue"]
     # the board's Order field is the build sequence (dependencies first); issue number breaks ties
@@ -138,7 +153,7 @@ async def _item_id(project: str, number: int, url: str = "") -> str:
     """The issue's item on the Project board (added to it if missing)."""
     g = projects()[project]
     data = json.loads(await _gh("project", "item-list", str(g["project"]), "--owner", g["owner"],
-                                "--format", "json", "--limit", "500"))
+                                "--format", "json", "--limit", ITEM_LIMIT))
     for it in data.get("items", []):
         if (it.get("content") or {}).get("number") == number:
             return it["id"]

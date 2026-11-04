@@ -6,6 +6,8 @@ last step or the result. The board's own Status column is moved to in-progress /
 Projects with "github" instead of "board" in projects.json keep their tickets as GitHub Issues
 (core/ghboard.py); the functions here hand those over, so callers don't need to care.
 """
+import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -26,6 +28,7 @@ STAGE_NAMES = {
     "done": ("done",),
 }
 
+log = logging.getLogger("jarvis.board")
 _http = httpx.AsyncClient(base_url=API, headers=HEADERS, timeout=30)
 _schemas: dict[str, dict] = {}       # db id -> {"title": prop name, "status": (type, [options])}
 
@@ -149,20 +152,30 @@ async def in_progress(project: str) -> list[Ticket]:
     return [t for t in await _query(project) if (t.status or "").lower() in STAGE_NAMES["doing"]]
 
 
-async def queued() -> list[Ticket]:
-    """Tickets waiting for a worker, oldest first, across all boards."""
+_unreadable: dict[str, float] = {}    # project -> last time its board failed (for quiet logging)
+
+
+async def _each_board(filter_: dict, sorts=None) -> list[Ticket]:
+    """Across all boards; a board that can't be read (Notion/GitHub error, rate limit) is skipped,
+    so one bad board never stops the others (it stalled the whole runner on 2026-11-02..04)."""
     out = []
     for project in boards():
-        out += await _query(project, _jarvis_is("Queued"),
-                            sorts=[{"timestamp": "created_time", "direction": "ascending"}])
+        try:
+            out += await _query(project, filter_, sorts=sorts)
+        except Exception as e:
+            if time.monotonic() - _unreadable.get(project, 0) > 600:
+                log.warning("board %s unreadable, skipped: %s", project, str(e)[:200])
+                _unreadable[project] = time.monotonic()
     return out
+
+
+async def queued() -> list[Ticket]:
+    """Tickets waiting for a worker, oldest first, across all boards."""
+    return await _each_board(_jarvis_is("Queued"), sorts=[{"timestamp": "created_time", "direction": "ascending"}])
 
 
 async def with_jarvis(state: str) -> list[Ticket]:
-    out = []
-    for project in boards():
-        out += await _query(project, _jarvis_is(state))
-    return out
+    return await _each_board(_jarvis_is(state))
 
 
 async def add_ticket(project: str, title: str, my_words: str, source: str) -> Ticket:
