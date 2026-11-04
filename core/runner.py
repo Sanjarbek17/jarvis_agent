@@ -526,8 +526,9 @@ class Runner:
         await self.notify(card, kind, question or result, photos)
 
     async def _auto_answer(self, card: Ticket, question: str, result: str) -> bool:
-        """Projects where Sanjar said "answer its questions yourself": Jarvis answers and re-queues
-        the ticket instead of asking him (core/autoanswer.py). False = ask Sanjar as usual."""
+        """A worker's question goes to Jarvis first (core/autoanswer.py): he answers it and re-queues the
+        ticket (nothing sent to Sanjar), or, if it truly needs Sanjar, tells him in plain words.
+        False = Jarvis couldn't handle it: send the worker's question to Sanjar as before."""
         if not autoanswer.enabled(card.project):
             return False
         counts = json.loads(AUTO_ANSWERS.read_text()) if AUTO_ANSWERS.exists() else {}
@@ -536,15 +537,24 @@ class Runner:
         got = await autoanswer.answer(card, question, result)
         if not got:
             return False
-        reply, basis = got
+        if got["needs_sanjar"]:            # truly his: Jarvis's plain words, not the worker's question
+            ask = got["ask_sanjar"]
+            await board.update(card, jarvis="Needs me", note=ask[:1900])
+            await board.append_log(card.page_id, [f"Jarvis Needs me: {result[-1500:]}",
+                                                  f"Jarvis checked it first; this needs Sanjar: {ask}"])
+            self.finished[card.ref] = time.monotonic()
+            log.info("%s: needs Sanjar after Jarvis looked: %s", card.ref, ask[:120])
+            await self.notify(card, "needs_me", ask, [])
+            return True
+        reply, basis = got["answer"], got["basis"]
         counts[card.ref] = counts.get(card.ref, 0) + 1
         AUTO_ANSWERS.write_text(json.dumps(counts))
         await board.append_log(card.page_id, [f"Jarvis Needs me: {result[-1500:]}",
                                               f"Sanjar answered (Jarvis, on his behalf; basis: {basis}): {reply}"])
         await board.update(card, jarvis="Queued", note=f"answered by Jarvis: {reply}"[:1900])
         # no self.finished mark: it should be picked again next, before later tickets in the queue
+        # and no message to Sanjar: he asked to hear only what needs him (2026-11-04)
         log.info("%s: answered its question myself (%s), re-queued", card.ref, basis)
-        await self.notify(card, "auto_answered", f"It asked: {question}\n\nI answered ({basis}): {reply}", [])
         return True
 
     async def _push_steps(self, card: Ticket, steps: list[str]):
