@@ -91,8 +91,10 @@ you the transcript. Asked during a call with you, it calls them after you hang u
 New project: add it to `config/projects.json` (folders + board id). Jarvis notices the change
 by itself, no restart; the brain restarts its own process with the new list and keeps the chat.
 
-RAM (8 GB Mac): at most 2 workers at once, and a second one only starts while macOS memory pressure is normal and
-20%+ RAM is free (`core/ramguard.py`; otherwise its ticket waits in the queue). Workers run heavy commands (builds,
+RAM (8 GB Mac): 1 to 3 workers at once, following free RAM (`core/ramguard.py` slots: normal pressure and 30%+
+free -> 3, 20%+ (or 25%+ under "warning") -> 2, else 1; one always may run). Fair turns: one worker per project,
+a free slot goes to tickets with a "Due" date first (soonest first), then to the project whose last worker started
+longest ago, so no project's long queue starves the others. Workers run heavy commands (builds,
 emulators, renders) through `scripts/heavy.py`, so only one heavy job runs at a time.
 
 Branches: a worker merges its finished, tested work into the project's `dev` branch itself (no

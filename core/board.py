@@ -42,6 +42,7 @@ class Ticket:
     sprint: str
     url: str
     edited: str = ""    # last edited time (ISO), for spotting tickets stuck In Progress
+    due: str = ""       # the board's "Due" date (ISO), if set: such tickets go ahead in the queue
 
     def line(self) -> str:
         jarvis = f"Jarvis {self.jarvis}" if self.jarvis else "not for Jarvis"
@@ -119,6 +120,7 @@ def _ticket(project: str, page) -> Ticket:
         status=_choice(p.get("Status")), jarvis=_choice(p.get("Jarvis")),
         note=_text(p["Jarvis note"]) if "Jarvis note" in p else "",
         sprint=_choice(p.get("Sprint")), url=page["url"], edited=page.get("last_edited_time", ""),
+        due=((p.get("Due") or {}).get("date") or {}).get("start") or "",
     )
 
 
