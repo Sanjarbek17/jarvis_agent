@@ -584,11 +584,11 @@ something only he can do, a failure that blocks him), reply with 1-2 plain lines
 ticket ids, no worker text, no lists. Otherwise reply exactly NO_REPLY."""
 
 
-def app_push(text: str, chat_id: str = ""):
+def app_push(text: str, chat_id: str = "", photos=()):
     """What Jarvis tells Sanjar on its own also goes to the phone app (its notifications, ticket e028892d);
     chat_id: into that app chat too."""
     try:
-        appserver.push(text, chat_id)
+        appserver.push(text, chat_id, photos)
     except Exception:
         log.exception("app push failed")
 
@@ -605,7 +605,7 @@ async def relay(report: str, photos: list[Path] = (), label: str = "", must: boo
     only when it matters to him (and the screenshots with them). must=True: something he's waiting on
     failed or needs him: he is told, enforced here in code even if the brain says NO_REPLY (ticket 35ec396e).
     app_chat: he asked for it in that Jarvis app chat, so the answer goes there, not to Telegram (ticket
-    799dda33); screenshots still go to Telegram, the app can't show them."""
+    799dda33), screenshots included (ticket 546d965e)."""
     if app_chat and not appserver.load_chat(app_chat):
         app_chat = ""                          # that chat is gone: Telegram as before
     fallback = report.splitlines()[0][:200] + "\n" + "\n".join(report.splitlines()[1:3])[:300]
@@ -618,12 +618,10 @@ async def relay(report: str, photos: list[Path] = (), label: str = "", must: boo
         log.warning("brain stayed silent on a report Sanjar is waiting on; sending it anyway")
         reply = fallback
     if reply and not is_silent(reply) and app_chat:
-        app_push(reply + (f"\n\n({len(photos)} screenshot(s) sent on Telegram)" if photos else ""), app_chat)
-        if photos:
-            await send_photos(list(photos)[:10], label)
+        app_push(reply, app_chat, list(photos)[:10])
     elif reply and not is_silent(reply):
         await tgfmt.send(tg, OWNER_ID, tgfmt.md(reply), link_preview=False)
-        app_push(reply)
+        app_push(reply, "", list(photos)[:10])      # the app's Updates chat shows them too
         if photos:
             await send_photos(list(photos)[:10], label)
     else:
@@ -657,15 +655,16 @@ async def check_mac_permissions():
         await tg.send_message(OWNER_ID, f"🖥 For full Mac control I still need permissions:\n\n{out}")
 
 
-async def mac_late(task: str, text: str, photos: list[Path], question: bool):
-    """A Mac task that outlasted mac_task's wait: same path as a ticket result."""
+async def mac_late(task: str, text: str, photos: list[Path], question: bool, app_chat: str = ""):
+    """A Mac task that outlasted mac_task's wait: same path as a ticket result (back to the app chat
+    it was asked from, if any)."""
     update = f"[UPDATE] Mac task \"{task}\" {'needs his decision' if question else 'finished'}: {text[:800]}"
     if call and not call.guest:
         call.tell(update)
         return
     # Mac tasks are always his own requests: a question or a failure always reaches him
     asyncio.create_task(relay(f"Mac task \"{task}\" {'needs a decision' if question else 'finished'}.\n{text}",
-                              photos, "Mac", must=question or text.startswith("Failed")))
+                              photos, "Mac", must=question or text.startswith("Failed"), app_chat=app_chat))
 
 
 # --- Telegram ------------------------------------------------------------------------------

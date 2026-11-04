@@ -20,6 +20,7 @@ WebSocket. Two kinds (ticket 31ed52a7):
     GET  /api/chats/{id}/messages            [{role: "me"|"jarvis", text, ts, voice?}]
     POST /api/chats/{id}/messages {text}     Jarvis's reply (waits for it)
     POST /api/chats/{id}/voice  (audio body) {heard, reply}: transcribed like a Telegram voice note
+    GET  /api/images/{name}                  an image named in a message's "images" list (JPEG/PNG)
     GET  /api/notifications?after=<ts>       {chat, items}: what Jarvis wrote first (ticket news, "needs
                                              you", the daily summary) since ts; the phone polls this
     GET  /api/workers                        {count, workers: [{project, ref, title, url, started, step,
@@ -40,15 +41,19 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
+import shutil
+import subprocess
 import time
 import uuid
+from pathlib import Path
 from typing import Awaitable, Callable
 
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
@@ -59,6 +64,9 @@ from .voice import transcribe_audio
 log = logging.getLogger("jarvis.app")
 PORT = 8790
 CHATS = STATE / "app_chats"
+IMAGES = STATE / "app_images"          # screenshots and photos shown in app chats (ticket 546d965e)
+IMAGE_MAX_PX = 1280                    # longest side: plenty for a phone, small over mobile data
+_IMAGE_NAME = re.compile(r"^[0-9a-f]{16}\.(jpg|png)$")
 SESSIONS = STATE / "app_sessions.json"
 CODE_TTL = 5 * 60                      # a login code works this long
 CODE_TRIES = 5                         # wrong guesses before the code is dropped
@@ -285,22 +293,58 @@ async def ask(chat: dict, text: str, voice: bool = False) -> dict:
     return msg
 
 
-def push(text: str, chat_id: str = "") -> dict | None:
+def save_images(paths) -> list[str]:
+    """Copy images into IMAGES for the app, shrunk to IMAGE_MAX_PX as JPEG (macOS `sips`); returns
+    their names for a message's "images". Missing files are skipped."""
+    IMAGES.mkdir(parents=True, exist_ok=True)
+    names = []
+    for src in paths or []:
+        src = Path(src)
+        if not src.is_file():
+            continue
+        name = uuid.uuid4().hex[:16] + ".jpg"
+        try:
+            subprocess.run(["sips", "-Z", str(IMAGE_MAX_PX), "-s", "format", "jpeg", "-s", "formatOptions", "80",
+                            str(src), "--out", str(IMAGES / name)], capture_output=True, timeout=30, check=True)
+        except Exception:
+            name = name[:-4] + ".png"             # no sips / odd file: the original as it is
+            shutil.copyfile(src, IMAGES / name)
+        names.append(name)
+    return names
+
+
+def add_images(chat_id: str, paths, caption: str = "") -> dict | None:
+    """Show images in an app chat right away (e.g. the Mac worker's screenshots while he waits for the
+    answer there). Not a push: it's part of the reply he's waiting for."""
+    chat = load_chat(chat_id)
+    names = save_images(paths)
+    if not chat or not names:
+        return None
+    msg = {"role": "jarvis", "text": caption.strip()[:500], "images": names, "ts": time.time()}
+    chat["messages"].append(msg)
+    chat["updated"] = msg["ts"]
+    save_chat(chat)
+    return msg
+
+
+def push(text: str, chat_id: str = "", photos=()) -> dict | None:
     """Jarvis wrote to Sanjar first: keep a copy for the app (its notifications poll for these).
     chat_id: also put it into that app chat (the one he asked from), where its Claude conversation
-    picks it up with his next message."""
+    picks it up with his next message. photos: images shown with it (ticket 546d965e)."""
     text = (text or "").strip()
-    if not text or is_silent(text):
+    images = save_images(photos)
+    if (not text and not images) or (text and is_silent(text)):
         return None
+    extra = {"images": images} if images else {}
     target = load_chat(chat_id) if chat_id and chat_id != UPDATES else None
     if target:
-        msg = {"role": "jarvis", "text": text[:4000], "ts": time.time(), "pushed": True}
+        msg = {"role": "jarvis", "text": text[:4000], "ts": time.time(), "pushed": True, **extra}
         target["messages"].append(msg)
         target["updated"] = msg["ts"]
         save_chat(target)
     chat = load_chat(UPDATES) or {"id": UPDATES, "project": GENERAL, "title": "Updates from Jarvis",
                                   "created": time.time(), "session": "", "messages": []}
-    msg = {"role": "jarvis", "text": text[:4000], "ts": time.time(), "pushed": True,
+    msg = {"role": "jarvis", "text": text[:4000], "ts": time.time(), "pushed": True, **extra,
            **({"chat": target["id"], "chat_title": target["title"]} if target else {})}
     chat["messages"] = (chat["messages"] + [msg])[-KEEP_UPDATES:]
     chat["updated"] = msg["ts"]
@@ -405,6 +449,18 @@ async def call(ws: WebSocket):
             await ws.close(code=1011)
 
 
+async def image(req: Request):
+    """GET /api/images/{name}: an image from a chat message (same login as everything else)."""
+    if not _authorized(req):
+        return _deny()
+    name = req.path_params["name"]
+    path = IMAGES / name
+    if not _IMAGE_NAME.match(name) or not path.is_file():
+        return JSONResponse({"error": "no such image"}, status_code=404)
+    return FileResponse(path, media_type="image/jpeg" if name.endswith(".jpg") else "image/png",
+                        headers={"Cache-Control": "private, max-age=31536000, immutable"})
+
+
 async def notifications(req: Request):
     if not _authorized(req):
         return _deny()
@@ -436,6 +492,7 @@ app = Starlette(routes=[
     Route("/api/chats", chats, methods=["GET", "POST"]),
     Route("/api/chats/{chat}/messages", messages, methods=["GET", "POST"]),
     Route("/api/chats/{chat}/voice", voice, methods=["POST"]),
+    Route("/api/images/{name}", image),
     Route("/api/notifications", notifications),
     Route("/api/workers", workers),
     WebSocketRoute("/api/call", call),
