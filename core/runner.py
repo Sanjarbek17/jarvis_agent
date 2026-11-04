@@ -28,6 +28,7 @@ MAX_CONTINUES = 3            # resume a worker this many times if its background
 SWEEP_EVERY = 30 * 60        # how often to look for tickets stuck In Progress
 STUCK_AFTER = 2 * 3600       # In Progress this long with no live worker = stuck
 RESTART_PENDING = HERE / "var" / "restart_pending"   # restart_when_idle.sh is waiting: start no new workers
+REQUEUE_AFTER = STATE / "requeue_after.json"   # {"ref": [refs]}: queue those again once "ref" has started
 AUTO_ANSWERS = STATE / "auto_answers.json"   # ticket ref -> how many questions Jarvis answered itself
 STUCK_TOLD = STATE / "stuck_told.json"   # ticket ref -> when Sanjar was last told it's stuck
 # a "done" result whose ending says it is waiting on Sanjar (a merge, approval, decision...)
@@ -279,6 +280,7 @@ class Runner:
     async def _tick(self):
         cutoff = time.monotonic() - 120
         self.finished = {ref: ts for ref, ts in self.finished.items() if ts > cutoff}
+        await self._requeue_after()
         if RESTART_PENDING.exists():         # let the waiting restart happen; the queue resumes right after
             if time.monotonic() - self.held_logged > 300:
                 log.info("restart pending: not starting new workers")
@@ -297,6 +299,24 @@ class Runner:
             self.last_start[t.project] = time.monotonic()
             self.running[t.project] = task
             task.add_done_callback(lambda _t, p=t.project: self.running.pop(p, None))
+
+    async def _requeue_after(self):
+        """Tickets set aside so an urgent one could go first go back in the queue once it has started."""
+        if not REQUEUE_AFTER.exists() or time.monotonic() - getattr(self, "_requeue_checked", 0) < 60:
+            return
+        self._requeue_checked = time.monotonic()
+        wait = _load_json(REQUEUE_AFTER)
+        for first, later in list(wait.items()):
+            t = await board.find_any(first)
+            if t and t.jarvis == "Queued":
+                continue                      # not started yet
+            for ref in later:
+                lt = await board.find_any(ref)
+                if lt and not lt.jarvis:
+                    await board.update(lt, jarvis="Queued", note=f"queued again: {first} has started")
+                    log.info("re-queued %s now that %s started", ref, first)
+            wait.pop(first)
+        REQUEUE_AFTER.write_text(json.dumps(wait))
 
     def pick(self, queued: list[Ticket]) -> list[Ticket]:
         """Which queued tickets to start, best first (Sanjar, 2026-11-04: no project starves the rest):
