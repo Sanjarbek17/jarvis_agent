@@ -44,7 +44,7 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.types import InputPeerChannel, MessageActionGroupCall
 
-from core import appserver, board, contacts, memory, outbox, tgfmt, tools
+from core import appserver, board, contacts, memory, outbox, selfcheck, tgfmt, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, WATCHED_GROUP_IDS, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
@@ -972,8 +972,16 @@ async def main():
     tools.hooks.mac = mac
     tools.hooks.runner = runner
     tools.hooks.mac_late = mac_late
-    background = [asyncio.create_task(tools.serve()), asyncio.create_task(runner.run_forever()),
-                  asyncio.create_task(daily_call()), asyncio.create_task(daily_reminder())]
+    runner_task = {"t": asyncio.create_task(runner.run_forever(), name="runner")}
+
+    def restart_runner():                 # the self-check found the runner's task dead: start it again
+        runner_task["t"] = asyncio.create_task(runner.run_forever(), name="runner")
+
+    background = [asyncio.create_task(tools.serve()), runner_task["t"],
+                  asyncio.create_task(daily_call()), asyncio.create_task(daily_reminder()),
+                  asyncio.create_task(selfcheck.run_forever(
+                      runner, lambda: not runner_task["t"].done(), restart_runner, chat.reply,
+                      lambda text: tgfmt.send(tg, OWNER_ID, "🔎 " + tgfmt.md(text), silent=True)))]
     await calls.start()
     me = await tg.get_me()
     log.info("Jarvis is up as @%s", me.username)
