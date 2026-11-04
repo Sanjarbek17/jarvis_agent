@@ -60,11 +60,18 @@ How to answer:
   anything his rules forbid.
 - Write 2-6 plain sentences addressed to the worker. No preamble.
 
-Reply with JSON only: {{"answer": "<your answer to the worker>", "basis": "<memory | docs | your call>"}}"""
+Does Sanjar really have to do something himself? Only if nothing useful can go on without his own
+action (a payment, his own password or phone code, a test on his own phone or account, a choice only
+he can make). Then set "needs_sanjar": true and write "ask_sanjar": one or two short plain sentences
+to him: exactly what to do and why, no jargon, no ticket numbers, no worker wording. Otherwise false.
+
+Reply with JSON only: {{"answer": "<your answer to the worker>", "basis": "<memory | docs | your call>",
+"needs_sanjar": false, "ask_sanjar": ""}}"""
 
 
-async def answer(card, question: str, result: str) -> tuple[str, str] | None:
-    """(answer, basis), or None if Jarvis shouldn't or couldn't answer it."""
+async def answer(card, question: str, result: str) -> dict | None:
+    """{"answer", "basis", "needs_sanjar", "ask_sanjar"}, or None if Jarvis shouldn't or couldn't
+    answer it (then the runner sends the worker's question to Sanjar as before)."""
     if FOR_SANJAR.search(question):
         return None
     reload_projects()
@@ -91,8 +98,11 @@ async def answer(card, question: str, result: str) -> tuple[str, str] | None:
         text = envelope.get("result") or ""
         m = re.search(r"\{.*\}", text, re.S)
         data = json.loads(m.group(0)) if m else {"answer": text.strip(), "basis": "your call"}
-        reply = str(data.get("answer") or "").strip()
-        return (reply, str(data.get("basis") or "")) if reply else None
+        out = {"answer": str(data.get("answer") or "").strip(), "basis": str(data.get("basis") or ""),
+               "needs_sanjar": bool(data.get("needs_sanjar")), "ask_sanjar": str(data.get("ask_sanjar") or "").strip()}
+        if out["needs_sanjar"] and not out["ask_sanjar"]:
+            out["ask_sanjar"] = question
+        return out if (out["answer"] or out["needs_sanjar"]) else None
     except Exception as e:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
@@ -101,5 +111,7 @@ async def answer(card, question: str, result: str) -> tuple[str, str] | None:
 
 
 def enabled(project: str) -> bool:
+    """Every project's worker questions go to Jarvis first (Sanjar, 2026-11-04: "only send it to you
+    not me ... then you tell me if needed"), unless a project sets "auto_answer": false."""
     reload_projects()
-    return bool(PROJECTS.get(project, {}).get("auto_answer"))
+    return PROJECTS.get(project, {}).get("auto_answer", True) is not False
