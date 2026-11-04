@@ -226,6 +226,7 @@ class Runner:
         self.message: Callable[[str], Awaitable] | None = None   # plain Telegram text to Sanjar
         self.last_sweep = 0.0
         self.held_logged = 0.0                          # last "held for RAM" log line (monotonic)
+        self.last_start: dict[str, float] = {}          # project -> when its last worker started (fair turns)
 
     async def run_forever(self):
         await self._recover()
@@ -277,15 +278,9 @@ class Runner:
     async def _tick(self):
         cutoff = time.monotonic() - 120
         self.finished = {ref: ts for ref, ts in self.finished.items() if ts > cutoff}
-        for t in await board.queued():
+        for t in self.pick(await board.queued()):
             if len(self.running) >= MAX_WORKERS:
                 return
-            if t.project in self.running:
-                continue
-            if t.ref in self.finished:
-                # just finished (the board may still read as Queued for a moment); don't re-run it
-                log.info("skipping %s: finished %.0fs ago", t.ref, time.monotonic() - self.finished[t.ref])
-                continue
             ok, why = ramguard.can_start(len(self.running))
             if not ok:                       # 8 GB Mac: the ticket waits in the queue until RAM frees up
                 if time.monotonic() - self.held_logged > 300:
@@ -293,8 +288,29 @@ class Runner:
                     self.held_logged = time.monotonic()
                 return
             task = asyncio.create_task(self._work(t), name=f"worker:{t.project}")
+            self.last_start[t.project] = time.monotonic()
             self.running[t.project] = task
             task.add_done_callback(lambda _t, p=t.project: self.running.pop(p, None))
+
+    def pick(self, queued: list[Ticket]) -> list[Ticket]:
+        """Which queued tickets to start, best first (Sanjar, 2026-11-04: no project starves the rest):
+        one per project (its own order, or its earliest deadline), tickets with a "Due" date first
+        (soonest first), then the project whose last worker started longest ago, so a project with
+        a long queue can't keep the slots from the others."""
+        heads: dict[str, tuple[int, Ticket]] = {}
+        for i, t in enumerate(queued):
+            if t.project in self.running:
+                continue
+            if t.ref in self.finished:
+                # just finished (the board may still read as Queued for a moment); don't re-run it
+                log.info("skipping %s: finished %.0fs ago", t.ref, time.monotonic() - self.finished[t.ref])
+                continue
+            have = heads.get(t.project)
+            if have is None or (t.due and (not have[1].due or t.due < have[1].due)):
+                heads[t.project] = (i, t)
+        order = sorted(heads.values(), key=lambda it: (not it[1].due, it[1].due or "",
+                                                       self.last_start.get(it[1].project, 0.0), it[0]))
+        return [t for _, t in order]
 
     def progress(self, project: str, ticket: str = "") -> str:
         """For the worker_progress tool: the live log of a project's worker (or a past ticket's)."""
