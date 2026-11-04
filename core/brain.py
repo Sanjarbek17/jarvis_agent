@@ -293,7 +293,7 @@ class Brain:
         async for chunk in self._ask(text):
             out.append(chunk)
             yield chunk
-        if remembers and not said.startswith("[DAILY SUMMARY]"):
+        if remembers and not said.startswith(("[DAILY SUMMARY]", "[WORKER REPORT", "[SELF-CHECK]")):
             asyncio.create_task(memory.log_exchange(self.mode, said, "".join(out)))
 
     async def _ask(self, text: str) -> AsyncIterator[str]:
