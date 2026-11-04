@@ -1,7 +1,7 @@
 """Runner loop: picks tickets marked "Queued" in the Jarvis column of each project's Notion
 board and runs a Claude Code worker for each.
 
-One ticket at a time per project (they'd edit the same files), up to MAX_WORKERS projects
+One ticket at a time per project (they'd edit the same files); how many projects at once is decided by free RAM (core/ramguard.py)
 at once. Each project keeps its own Claude session, so it remembers earlier tasks there.
 Steps go to the ticket live; Done / Failed / Needs me go to Sanjar via `notify`.
 """
@@ -18,7 +18,7 @@ from typing import Awaitable, Callable
 from . import autoanswer, board, grants, ramguard, tgfmt
 from .brain import BRAIN_MODEL   # workers run on the same model as the Jarvis brain (Opus)
 from .board import Ticket
-from .config import (rules_text, GIT_FLOW, HERE, LOGS, MAX_WORKERS, NEVER_DO, NEVER_DO_MAIN_OK, POLL_SECONDS,
+from .config import (rules_text, GIT_FLOW, HERE, LOGS, NEVER_DO, NEVER_DO_MAIN_OK, POLL_SECONDS,
                      SHOTS, STATE, project_dirs)
 
 log = logging.getLogger("jarvis.runner")
@@ -27,6 +27,8 @@ NEEDS_ME = "NEEDS ME:"
 MAX_CONTINUES = 3            # resume a worker this many times if its background work was cut off
 SWEEP_EVERY = 30 * 60        # how often to look for tickets stuck In Progress
 STUCK_AFTER = 2 * 3600       # In Progress this long with no live worker = stuck
+START_GAP = 30                # seconds between starting workers: let the last one grow before measuring
+RUNNER_STATUS = STATE / "runner_status.json"  # why tickets wait (for Jarvis to show)
 HEARTBEAT = STATE / "runner_heartbeat"        # touched every runner loop; scripts/watchdog.sh watches it
 RESTART_PENDING = HERE / "var" / "restart_pending"   # restart_when_idle.sh is waiting: start no new workers
 REQUEUE_AFTER = STATE / "requeue_after.json"   # {"ref": [refs]}: queue those again once "ref" has started
@@ -230,6 +232,7 @@ class Runner:
         self.last_sweep = 0.0
         self.held_logged = 0.0                          # last "held for RAM" log line (monotonic)
         self.last_start: dict[str, float] = {}          # project -> when its last worker started (fair turns)
+        self.wait_reason = ""                           # why the next queued ticket isn't starting
 
     async def run_forever(self):
         try:
@@ -293,18 +296,30 @@ class Runner:
                 self.held_logged = time.monotonic()
             return
         for t in self.pick(await board.queued()):
-            if len(self.running) >= MAX_WORKERS:
-                return
-            ok, why = ramguard.can_start(len(self.running))
+            if self.running and time.monotonic() - max(self.last_start.values(), default=0) < START_GAP:
+                return                       # one start at a time; the next check measures it first
+            pids = [p.pid for p in self.procs.values() if p.returncode is None]
+            ok, why = ramguard.can_start(len(self.running), worker_pids=pids)
             if not ok:                       # 8 GB Mac: the ticket waits in the queue until RAM frees up
-                if time.monotonic() - self.held_logged > 300:
-                    log.info("holding %s: %s (%d worker(s) running)", t.ref, why, len(self.running))
-                    self.held_logged = time.monotonic()
+                self._waiting(t, why)
                 return
+            self._waiting(None, "")
             task = asyncio.create_task(self._work(t), name=f"worker:{t.project}")
             self.last_start[t.project] = time.monotonic()
             self.running[t.project] = task
             task.add_done_callback(lambda _t, p=t.project: self.running.pop(p, None))
+
+    def _waiting(self, t: Ticket | None, why: str):
+        """Remember (and log, at most every 5 min) why the next ticket waits; Jarvis shows it in get_status."""
+        reason = f"{t.ref} [{t.project}] waits: {why} ({len(self.running)} running)" if t else ""
+        if reason and (reason != self.wait_reason or time.monotonic() - self.held_logged > 300):
+            log.info("holding %s", reason)
+            self.held_logged = time.monotonic()
+        if reason != self.wait_reason:
+            with contextlib.suppress(OSError):
+                RUNNER_STATUS.write_text(json.dumps({"at": time.time(), "running": sorted(self.running),
+                                                     "waiting": reason}))
+        self.wait_reason = reason
 
     async def _requeue_after(self):
         """Tickets set aside so an urgent one could go first go back in the queue once it has started."""

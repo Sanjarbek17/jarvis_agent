@@ -159,7 +159,10 @@ def make_server(source: str) -> MCPServer:
     @server.tool()
     async def get_status(project: str = "") -> str:
         """Jarvis's work: tickets Queued, Working, Needs me, and finished in the last day. Empty = all projects."""
-        return await board.status_text(project)
+        text = await board.status_text(project)
+        if hooks.runner.wait_reason:          # e.g. a ticket held back because RAM is short
+            text += f"\n\nRunner: {hooks.runner.wait_reason}"
+        return text
 
     @server.tool()
     async def project_board(project: str, sprint: str = "", status: str = "") -> str:
