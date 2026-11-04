@@ -91,6 +91,12 @@ you the transcript. Asked during a call with you, it calls them after you hang u
 New project: add it to `config/projects.json` (folders + board id). Jarvis notices the change
 by itself, no restart; the brain restarts its own process with the new list and keeps the chat.
 
+Self-check (ticket e2d3398a): every 15 min Jarvis checks itself with nobody asking (`core/selfcheck.py`): the runner
+task (restarted on the spot if it died) and its heartbeat, workers vs queue with RAM, Needs me, Failed, Working with
+no live worker, and Due tickets that haven't started. Only new findings wake the chat brain with a [SELF-CHECK]
+message: it acts with its tools (answers Needs me itself unless it truly needs Sanjar, re-queues what failed for a
+passing reason or lost its worker) and sends a short 🔎 note of what changed, or nothing. Repeats wait 12 h.
+
 Runner safety (ticket 7493382f): a board that can't be read (Notion/GitHub error, rate limit) is skipped instead of
 stopping the whole queue; the GitHub board is read at most every 2 min and its last copy is used when GitHub refuses.
 The runner touches `var/state/runner_heartbeat` every loop; LaunchAgent `com.sanjar.jarvis-watchdog` runs
