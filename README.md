@@ -91,6 +91,11 @@ you the transcript. Asked during a call with you, it calls them after you hang u
 New project: add it to `config/projects.json` (folders + board id). Jarvis notices the change
 by itself, no restart; the brain restarts its own process with the new list and keeps the chat.
 
+Runner safety (ticket 7493382f): a board that can't be read (Notion/GitHub error, rate limit) is skipped instead of
+stopping the whole queue; the GitHub board is read at most every 2 min and its last copy is used when GitHub refuses.
+The runner touches `var/state/runner_heartbeat` every loop; LaunchAgent `com.sanjar.jarvis-watchdog` runs
+`scripts/watchdog.sh` every 5 min and queues a safe restart if the heartbeat is 20+ min old.
+
 RAM (8 GB Mac): 1 to 3 workers at once, following free RAM (`core/ramguard.py` slots: normal pressure and 30%+
 free -> 3, 20%+ (or 25%+ under "warning") -> 2, else 1; one always may run). Fair turns: one worker per project,
 a free slot goes to tickets with a "Due" date first (soonest first), then to the project whose last worker started

@@ -27,6 +27,7 @@ NEEDS_ME = "NEEDS ME:"
 MAX_CONTINUES = 3            # resume a worker this many times if its background work was cut off
 SWEEP_EVERY = 30 * 60        # how often to look for tickets stuck In Progress
 STUCK_AFTER = 2 * 3600       # In Progress this long with no live worker = stuck
+HEARTBEAT = STATE / "runner_heartbeat"        # touched every runner loop; scripts/watchdog.sh watches it
 RESTART_PENDING = HERE / "var" / "restart_pending"   # restart_when_idle.sh is waiting: start no new workers
 REQUEUE_AFTER = STATE / "requeue_after.json"   # {"ref": [refs]}: queue those again once "ref" has started
 AUTO_ANSWERS = STATE / "auto_answers.json"   # ticket ref -> how many questions Jarvis answered itself
@@ -231,12 +232,17 @@ class Runner:
         self.last_start: dict[str, float] = {}          # project -> when its last worker started (fair turns)
 
     async def run_forever(self):
-        await self._recover()
+        try:
+            await self._recover()
+        except Exception:                    # a failed recovery used to kill the runner for good
+            log.exception("recovering interrupted tickets failed")
         while True:
             try:
                 await self._tick()
             except Exception:
                 log.exception("runner tick failed")
+            with contextlib.suppress(OSError):
+                HEARTBEAT.touch()            # scripts/watchdog.sh restarts Jarvis if this goes stale
             if time.monotonic() - self.last_sweep > SWEEP_EVERY:
                 self.last_sweep = time.monotonic()
                 try:
