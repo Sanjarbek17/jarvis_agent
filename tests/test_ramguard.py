@@ -161,3 +161,31 @@ def test_no_new_workers_while_a_restart_waits(monkeypatch, tmp_path):
         assert started == ["a1"]
 
     asyncio.run(go())
+
+
+def test_requeue_after_the_urgent_one_started(monkeypatch, tmp_path):
+    f = tmp_path / "requeue_after.json"
+    f.write_text('{"urg1": ["big1"]}')
+    monkeypatch.setattr(runner, "REQUEUE_AFTER", f)
+    state = {"urg1": "Queued", "big1": ""}
+    updates = []
+
+    async def find_any(ref):
+        return NS(ref=ref, jarvis=state[ref])
+
+    async def update(t, **kw):
+        updates.append((t.ref, kw["jarvis"]))
+
+    monkeypatch.setattr(runner.board, "find_any", find_any)
+    monkeypatch.setattr(runner.board, "update", update)
+
+    async def go():
+        r = runner.Runner(lambda *a: None)
+        await r._requeue_after()
+        assert updates == [] and "urg1" in f.read_text()          # urgent one still waiting
+        state["urg1"] = "Working"
+        r._requeue_checked = 0
+        await r._requeue_after()
+        assert updates == [("big1", "Queued")] and f.read_text() == "{}"
+
+    asyncio.run(go())
