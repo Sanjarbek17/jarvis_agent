@@ -128,6 +128,12 @@ saved in `var/state/runner_status.json` and shown by `get_status`. Fair turns: o
 "Due" date first, then the project whose last worker started longest ago. Heavy commands go through `scripts/heavy.py`:
 one at a time, a second only with 3.5 GB+ available.
 
+Claude usage limit (ticket d23f4461): a worker stopped by it (the stream's `rate_limit_event` "rejected", or a
+"hit your limit" result) isn't Failed. The ticket goes back to Queued ("paused by the Claude usage limit"), no new
+worker starts until the reset time it announced (+2 min; `var/state/usage_limit.json`, survives restarts), and
+then the paused tickets start again in the same session, told to continue where they stopped. Sanjar gets one
+note per limit, not one per ticket.
+
 Branches: a worker merges its finished, tested work into the project's `dev` branch itself (no
 asking) and pushes `dev`. Sanjar's standing rules live in `config/rules.md` (workers and the brain
 read it live). You test `dev` as a whole, then tell Jarvis once to merge it to main.
