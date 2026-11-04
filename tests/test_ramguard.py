@@ -7,36 +7,42 @@ from types import SimpleNamespace as NS
 
 from core import ramguard, runner
 
-OK = {"level": 1, "free_pct": 40, "swap_used_mb": 100.0, "swap_total_mb": 1024.0}
+OK = {"level": 1, "free_pct": 40, "swap_used_mb": 100.0, "swap_total_mb": 1024.0,
+      "available_mb": 3000, "worker_mb": 400, "heavy": False}
 
 
 def test_first_worker_always_starts():
-    assert ramguard.can_start(0, {**OK, "level": 4, "free_pct": 3}) == (True, "")
+    assert ramguard.can_start(0, {**OK, "level": 4, "available_mb": 10}) == (True, "")
 
 
-def test_slots_follow_free_ram():
-    assert ramguard.slots({**OK, "free_pct": 55}) == 3
-    assert ramguard.slots({**OK, "free_pct": 25}) == 2
-    assert ramguard.slots({**OK, "free_pct": 12}) == 1
-    assert ramguard.slots({**OK, "level": 2, "free_pct": 30}) == 2
-    assert ramguard.slots({**OK, "level": 2, "free_pct": 20}) == 1
-    assert ramguard.slots({**OK, "level": 4, "free_pct": 60}) == 1
+def test_another_worker_when_memory_fits_one_more():
+    assert ramguard.need_mb(OK) == 1024 + 400
+    assert ramguard.can_start(3, OK)[0]                            # no fixed count: 3 running is fine
+    ok, why = ramguard.can_start(1, {**OK, "available_mb": 1200})
+    assert not ok and "needs 1424 MB" in why and "1200 MB available" in why
 
 
-def test_can_start_up_to_the_slots():
-    assert ramguard.can_start(2, {**OK, "free_pct": 55})[0]
-    assert not ramguard.can_start(3, {**OK, "free_pct": 55})[0]
-    ok, why = ramguard.can_start(1, {**OK, "level": 4})
-    assert not ok and "memory allows 1" in why
+def test_reserve_grows_under_pressure_full_swap_or_heavy_job():
+    assert ramguard.need_mb({**OK, "level": 2}) == 2048 + 400
+    assert ramguard.need_mb({**OK, "swap_used_mb": 950.0}) == 2048 + 400
+    assert ramguard.need_mb({**OK, "heavy": True}) == 1024 + 1500 + 400
+    assert ramguard.can_start(1, {**OK, "level": 4}) == (False, "memory pressure is critical")
 
 
-def test_missing_readings_dont_block():
-    assert ramguard.can_start(1, {"level": None, "free_pct": None, "swap_used_mb": None, "swap_total_mb": None})[0]
+def test_available_from_vm_stat():
+    vm = ("Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 100.\nPages active: 999.\n"
+          "Pages inactive: 200.\nPages speculative: 20.\nPages purgeable: 4.\n")
+    assert ramguard.available_mb(vm) == (100 + 200 + 20 + 4) * 16384 // (1024 * 1024)
+
+
+def test_missing_readings_are_careful():
+    assert ramguard.can_start(1, {**OK, "available_mb": None})[0]
+    assert not ramguard.can_start(1, {**OK, "available_mb": None, "level": 2})[0]
 
 
 def test_real_snapshot_reads_this_mac():
     s = ramguard.snapshot()
-    assert s["level"] in (1, 2, 4) and 0 <= s["free_pct"] <= 100
+    assert s["level"] in (1, 2, 4) and 0 <= s["free_pct"] <= 100 and s["available_mb"] > 0
 
 
 def test_runner_holds_second_ticket_when_memory_is_tight(monkeypatch):
@@ -47,7 +53,7 @@ def test_runner_holds_second_ticket_when_memory_is_tight(monkeypatch):
 
     started = []
     monkeypatch.setattr(runner.board, "queued", queued)
-    monkeypatch.setattr(runner.ramguard, "snapshot", lambda: {**OK, "level": 4})
+    monkeypatch.setattr(runner.ramguard, "snapshot", lambda worker_pids=None: {**OK, "level": 4})
 
     async def go():
         r = runner.Runner(lambda *a: None)
@@ -60,7 +66,8 @@ def test_runner_holds_second_ticket_when_memory_is_tight(monkeypatch):
         await r._tick()
         await asyncio.sleep(0)
         assert started == ["a1"] and list(r.running) == ["A"]      # B held: pressure is critical
-        monkeypatch.setattr(runner.ramguard, "snapshot", lambda: OK)
+        monkeypatch.setattr(runner.ramguard, "snapshot", lambda worker_pids=None: OK)
+        monkeypatch.setattr(runner, "START_GAP", 0)
         await r._tick()
         await asyncio.sleep(0)
         assert started == ["a1", "b1"]
@@ -74,7 +81,8 @@ def test_heavy_jobs_run_one_at_a_time(tmp_path):
     log = tmp_path / "log"
     job = f"import time; open({str(log)!r}, 'a').write('start '); time.sleep(1); open({str(log)!r}, 'a').write('end ')"
     t0 = time.monotonic()
-    procs = [subprocess.Popen([sys.executable, str(heavy), sys.executable, "-c", job], stdout=subprocess.PIPE)
+    env = {**__import__("os").environ, "HEAVY_PARALLEL_MB": "999999999"}     # never "plenty of RAM"
+    procs = [subprocess.Popen([sys.executable, str(heavy), sys.executable, "-c", job], stdout=subprocess.PIPE, env=env)
              for _ in range(2)]
     outs = [p.communicate()[0].decode() for p in procs]
     assert log.read_text().split() == ["start", "end", "start", "end"]     # never overlapped
@@ -109,14 +117,43 @@ def test_pick_puts_deadlines_first():
     assert [t.ref for t in r.pick(q2)] == ["x2"]
 
 
-def test_three_light_workers_when_memory_allows(monkeypatch):
+def test_starts_as_many_as_memory_allows_one_at_a_time(monkeypatch):
     tickets = [T("a1", "A"), T("b1", "B"), T("c1", "C"), T("d1", "D")]
 
     async def queued():
         return tickets
 
     monkeypatch.setattr(runner.board, "queued", queued)
-    monkeypatch.setattr(runner.ramguard, "snapshot", lambda: {**OK, "free_pct": 55})
+    monkeypatch.setattr(runner, "START_GAP", 0)
+    started = []
+    box = {}
+    # each running worker uses 600 MB of the 3000 available: A, B, C fit, the 4th doesn't
+    monkeypatch.setattr(runner.ramguard, "snapshot",
+                        lambda worker_pids=None: {**OK, "available_mb": 3000 - 600 * len(box["r"].running)})
+
+    async def go():
+        r = box["r"] = runner.Runner(lambda *a: None)
+
+        async def work(t):
+            started.append(t.ref)
+            await asyncio.sleep(0.3)
+
+        r._work = work
+        for _ in range(5):
+            await r._tick()
+            await asyncio.sleep(0)
+        assert started == ["a1", "b1", "c1"] and "d1 [D] waits: needs 1424 MB" in r.wait_reason
+        await asyncio.sleep(0.4)
+
+    asyncio.run(go())
+
+
+def test_one_start_per_gap(monkeypatch):
+    async def queued():
+        return [T("a1", "A"), T("b1", "B")]
+
+    monkeypatch.setattr(runner.board, "queued", queued)
+    monkeypatch.setattr(runner.ramguard, "snapshot", lambda worker_pids=None: {**OK, "available_mb": 9000})
     started = []
 
     async def go():
@@ -124,13 +161,14 @@ def test_three_light_workers_when_memory_allows(monkeypatch):
 
         async def work(t):
             started.append(t.ref)
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.2)
 
         r._work = work
         await r._tick()
+        await r._tick()
         await asyncio.sleep(0)
-        assert started == ["a1", "b1", "c1"]          # 3 slots, D waits
-        await asyncio.sleep(0.2)
+        assert started == ["a1"]                     # b1 waits for START_GAP, memory is measured first
+        await asyncio.sleep(0.3)
 
     asyncio.run(go())
 
@@ -187,3 +225,15 @@ def test_requeue_after_the_urgent_one_started(monkeypatch, tmp_path):
         assert updates == [("big1", "Queued")] and f.read_text() == "{}"
 
     asyncio.run(go())
+
+
+def test_second_heavy_job_runs_alongside_when_ram_allows(tmp_path):
+    heavy = Path(__file__).resolve().parent.parent / "scripts" / "heavy.py"
+    log = tmp_path / "log"
+    job = f"import time; open({str(log)!r}, 'a').write('start '); time.sleep(1); open({str(log)!r}, 'a').write('end ')"
+    env = {**__import__("os").environ, "HEAVY_PARALLEL_MB": "0"}             # always "plenty of RAM"
+    t0 = time.monotonic()
+    procs = [subprocess.Popen([sys.executable, str(heavy), sys.executable, "-c", job], stdout=subprocess.PIPE, env=env)
+             for _ in range(2)]
+    [p.communicate() for p in procs]
+    assert log.read_text().split()[:2] == ["start", "start"] and time.monotonic() - t0 < 1.9
