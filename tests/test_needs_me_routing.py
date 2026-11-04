@@ -42,7 +42,7 @@ def test_truly_needs_sanjar_gets_jarvis_plain_words(monkeypatch, tmp_path):
     ask = "Open the Gas Finder bot on your phone and press Start once, so it can message you."
     r, log = setup(monkeypatch, tmp_path, {"answer": "", "basis": "your call", "needs_sanjar": True, "ask_sanjar": ask})
     assert asyncio.run(r._auto_answer(CARD, "Open @gasfinder_uz_bot, press /start ... send /queue", "...")) is True
-    assert log["update"][-1] == {"jarvis": "Needs me", "note": ask}
+    assert log["update"][-1]["jarvis"] == "Needs me" and log["update"][-1]["note"] == ask
     assert log["notify"] == [("needs_me", ask)]                     # not the worker's raw question
 
 

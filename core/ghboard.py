@@ -38,6 +38,7 @@ _cache: dict[str, tuple[float, list]] = {}
 _fields: dict[str, dict] = {}       # project -> {"project_id", "status_field", "options": {name: id}}
 _labels_ready: set[str] = set()
 _backoff: dict[str, float] = {}     # project -> monotonic time until which we don't ask GitHub again
+_item_ids: dict[str, dict[int, str]] = {}   # project -> issue number -> Project item id (from board reads)
 
 
 def projects() -> dict[str, dict]:
@@ -116,6 +117,7 @@ async def tickets(project: str, fresh: bool = False) -> list:
         raise
     notes = _notes()
     items = [it for it in data.get("items", []) if (it.get("content") or {}).get("type") == "Issue"]
+    _item_ids[project] = {it["content"]["number"]: it["id"] for it in items}
     # the board's Order field is the build sequence (dependencies first); issue number breaks ties
     items.sort(key=lambda it: (it.get("order") if isinstance(it.get("order"), (int, float)) else 1e9,
                                it["content"]["number"]))
@@ -150,7 +152,10 @@ async def _field_info(project: str) -> dict:
 
 
 async def _item_id(project: str, number: int, url: str = "") -> str:
-    """The issue's item on the Project board (added to it if missing)."""
+    """The issue's item on the Project board (added to it if missing). Known items come from the last
+    board read: a full read per status change used up GitHub's rate limit."""
+    if number in _item_ids.get(project, {}):
+        return _item_ids[project][number]
     g = projects()[project]
     data = json.loads(await _gh("project", "item-list", str(g["project"]), "--owner", g["owner"],
                                 "--format", "json", "--limit", ITEM_LIMIT))

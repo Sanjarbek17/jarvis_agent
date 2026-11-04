@@ -1001,7 +1001,7 @@ async def main():
     runner_task = {"t": asyncio.create_task(runner.run_forever(), name="runner")}
 
     def restart_runner():                 # the self-check found the runner's task dead: start it again
-        runner_task["t"] = asyncio.create_task(runner.run_forever(), name="runner")
+        runner_task["t"] = asyncio.create_task(runner.run_forever(recover=False), name="runner")
 
     background = [asyncio.create_task(tools.serve()), runner_task["t"],
                   asyncio.create_task(daily_call()), asyncio.create_task(daily_reminder()),
