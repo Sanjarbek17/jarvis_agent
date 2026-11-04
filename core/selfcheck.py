@@ -48,8 +48,11 @@ Act on them yourself with your tools, following Sanjar's standing rule: never as
   network), queue it again with queue_ticket; otherwise leave it and say why in one line.
 - Working with no live worker: its worker is gone; queue it again with queue_ticket.
 - A Due ticket that hasn't started: make sure it's queued (Due tickets go first).
-Then write Sanjar a very short Telegram note: what you did, and anything that really needs him, one
-line each. If nothing is worth telling him, reply exactly NO_REPLY."""
+Before leaving anything for him, check memory / recall and the recent chat: if he already answered or
+did it, act on that instead of asking again.
+Then write Sanjar a very short Telegram note: at most one line on what you did, and at most ONE thing
+he himself must do, in plain words (no ids, no worker text, no internal steps). If nothing is worth
+telling him, reply exactly NO_REPLY."""
 
 
 def _load() -> dict:
