@@ -48,6 +48,12 @@ RESTART_PENDING = HERE / "var" / "restart_pending"   # restart_when_idle.sh is w
 REQUEUE_AFTER = STATE / "requeue_after.json"   # {"ref": [refs]}: queue those again once "ref" has started
 AUTO_ANSWERS = STATE / "auto_answers.json"   # ticket ref -> how many questions Jarvis answered itself
 STUCK_TOLD = STATE / "stuck_told.json"   # ticket ref -> when Sanjar was last told it's stuck
+# Claude usage limit (ticket d23f4461): a worker stopped by it isn't Failed; it goes back to Queued and
+# continues once the limit resets. {"until": epoch, "refs": [paused refs], "told": epoch}
+USAGE_LIMIT = STATE / "usage_limit.json"
+LIMIT_MARGIN = 120           # start again this long after the announced reset
+LIMIT_FALLBACK = 30 * 60     # no reset time known: try again after this long
+_LIMIT_TEXT = re.compile(r"hit your (\S+ )?limit|usage limit reached|out of (extra )?usage", re.I)
 # a "done" result whose ending says it is waiting on Sanjar (a merge, approval, decision...)
 _BLOCKED = re.compile(
     r"(once|after|when|until)\b[^.\n]{0,80}\b(merged?|approved?|approve|push(ed)? to main|you (decide|confirm|choose|answer|reply))"
@@ -132,6 +138,24 @@ sub-tasks, and any earlier log or answer from Sanjar at the bottom). Don't chang
 Status or Jarvis columns in Notion; Jarvis does that. If this project has its own skill or
 notes for working on board tickets (CLAUDE.md, a <project>-board skill), follow them.
 """
+
+
+def limit_state() -> dict:
+    return _load_json(USAGE_LIMIT) if USAGE_LIMIT.exists() else {}
+
+
+def limited_until() -> float:
+    """Until when new workers wait for the Claude usage limit to reset (0 = not limited)."""
+    until = float(limit_state().get("until") or 0)
+    return until + LIMIT_MARGIN if until else 0.0
+
+
+def hit_limit(result: str, is_error: bool, rejected_until: float) -> float:
+    """Did this worker stop because of the usage limit? Returns when it resets (0 = no)."""
+    tail = (result or "")[-400:]
+    if _LIMIT_TEXT.search(tail) or (rejected_until and (is_error or not tail.strip())):
+        return rejected_until or time.time() + LIMIT_FALLBACK
+    return 0.0
 
 
 def _worker_prompt(t: Ticket, shots: Path) -> str:
@@ -412,6 +436,18 @@ class Runner:
                 log.info("restart pending: not starting new workers")
                 self.held_logged = time.monotonic()
             return
+        until = limited_until()
+        if until > time.time():              # the usage limit: every worker would stop at once
+            nxt = self.pick(await board.queued())
+            if nxt:
+                self._waiting(nxt[0], "the Claude usage limit; it resets at "
+                              + time.strftime("%H:%M", time.localtime(until - LIMIT_MARGIN)))
+            return
+        if until:                            # it has reset: paused tickets are Queued and start now
+            state = limit_state()
+            state.pop("until", None)
+            USAGE_LIMIT.write_text(json.dumps(state))
+            log.info("usage limit reset: resuming %s", ", ".join(state.get("refs", [])) or "the queue")
         for t in self.pick(await board.queued()):
             if self.running and time.monotonic() - max(self.last_start.values(), default=0) < START_GAP:
                 return                       # one start at a time; the next check measures it first
@@ -542,6 +578,14 @@ class Runner:
 
         result, is_error, last_push, pending = "", False, 0.0, []
         prompt, attempt = _worker_prompt(card, shots), 0
+        state = limit_state()
+        if card.ref in state.get("refs", []):     # it was cut off by the usage limit: carry on
+            prompt += ("\n\nNote: you already started this ticket and were stopped mid-work by the Claude "
+                       "usage limit, which has reset now. Continue where you left off: check git status, your "
+                       "branch and what's already done first, and don't redo finished steps.")
+            state["refs"] = [r for r in state["refs"] if r != card.ref]
+            USAGE_LIMIT.write_text(json.dumps(state))
+        rejected_until, paused = 0.0, 0.0
         logfile = (LOGS / f"{card.project}-{card.ref}.jsonl").open("w")
         try:
             while True:
@@ -577,6 +621,10 @@ class Runner:
                             desc = bg.pop(tid)
                             if event.get("status") == "stopped" and tid not in stopped_on_purpose:
                                 cut[tid] = desc
+                    elif kind == "rate_limit_event":
+                        info = event.get("rate_limit_info") or {}
+                        if info.get("status") == "rejected":
+                            rejected_until = float(info.get("resetsAt") or 0) or time.time() + LIMIT_FALLBACK
                     elif kind == "result":
                         result, is_error = event.get("result") or "", bool(event.get("is_error"))
                     # push steps to Notion at most every 5 s
@@ -590,7 +638,8 @@ class Runner:
                 if proc.returncode and not result:
                     is_error, result = True, f"Worker exited with code {proc.returncode}."
                 unfinished = [d for d in [*bg.values(), *cut.values()] if d]
-                if (is_error or not unfinished or attempt >= MAX_CONTINUES or proc.returncode < 0
+                paused = hit_limit(result, is_error, rejected_until)
+                if (is_error or paused or not unfinished or attempt >= MAX_CONTINUES or proc.returncode < 0
                         or card.project in self.stop_reasons):
                     if unfinished and not is_error:
                         result += ("\n\nNote: background work was still unfinished after "
@@ -628,6 +677,10 @@ class Runner:
                                                "queue it again to start over.", [])
             return
 
+        if paused:
+            await self._pause_for_limit(card, paused, result)
+            return
+
         photos = sorted(shots.glob("*.png"))
         question = ""
         lines = result.strip().splitlines()
@@ -648,6 +701,27 @@ class Runner:
             REQUEUED.write_text(json.dumps(counts))
         log.info("%s %s", card.ref, status)
         await self.notify(card, kind, question or result, photos)
+
+    async def _pause_for_limit(self, card: Ticket, until: float, result: str):
+        """The usage limit stopped this worker: back to Queued (not Failed), no new starts until the
+        reset, then it continues in the same session (Sanjar, 2026-11-04: "when reset we should make
+        them continue")."""
+        state = limit_state()
+        state["until"] = max(float(state.get("until") or 0), until)
+        state["refs"] = sorted(set(state.get("refs", [])) | {card.ref})
+        first = time.time() - float(state.get("told") or 0) > 3600
+        if first:
+            state["told"] = time.time()
+        USAGE_LIMIT.write_text(json.dumps(state))
+        at = time.strftime("%H:%M", time.localtime(state["until"]))
+        await self._write(card, jarvis="Queued", note=f"paused by the Claude usage limit; continues after {at}",
+                          log_lines=[f"Paused: the Claude usage limit stopped the worker ({result.strip()[-200:]}). "
+                                     f"It continues by itself after {at}."])
+        self.finished[card.ref] = time.monotonic()
+        log.info("%s: paused by the usage limit until %s", card.ref, at)
+        if first:                            # one note per limit, not one per ticket
+            await self.notify(card, "paused", f"The Claude usage limit stopped the workers. They're back in the "
+                                              f"queue and continue by themselves after {at}.", [])
 
     async def _auto_answer(self, card: Ticket, question: str, result: str) -> bool:
         """A worker's question goes to Jarvis first (core/autoanswer.py): he answers it and re-queues the

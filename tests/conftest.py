@@ -13,3 +13,4 @@ def isolated_runner_state(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "REQUEUED", tmp_path / "requeued_after_restart.json")
     monkeypatch.setattr(runner, "WRITE_TRIES", (0, 0, 0))
     monkeypatch.setattr(runner, "FROM_SANJAR", tmp_path / "from_sanjar.json")
+    monkeypatch.setattr(runner, "USAGE_LIMIT", tmp_path / "usage_limit.json")

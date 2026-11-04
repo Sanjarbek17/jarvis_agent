@@ -15,13 +15,13 @@ import sys
 import time
 from pathlib import Path
 
-LOCK = Path(__file__).resolve().parent.parent / "var" / "heavy.lock"
+LOCK = Path(os.environ.get("HEAVY_LOCK") or Path(__file__).resolve().parent.parent / "var" / "heavy.lock")  # tests set it
 LOCK2 = LOCK.with_name("heavy2.lock")
 PARALLEL_MB = int(os.environ.get("HEAVY_PARALLEL_MB", 3500))   # tests set it
 
 
 def plenty_of_ram() -> bool:
-    sys.path.insert(0, str(LOCK.parent.parent))
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     try:
         from core import ramguard
         return (ramguard.available_mb() or 0) >= PARALLEL_MB

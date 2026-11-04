@@ -96,6 +96,7 @@ def test_heavy_jobs_run_one_at_a_time(tmp_path):
     job = f"import time; open({str(log)!r}, 'a').write('start '); time.sleep(1); open({str(log)!r}, 'a').write('end ')"
     t0 = time.monotonic()
     env = {**__import__("os").environ, "HEAVY_PARALLEL_MB": "999999999"}     # never "plenty of RAM"
+    env["HEAVY_LOCK"] = str(tmp_path / "heavy.lock")    # not the real lock: a real build may hold it
     procs = [subprocess.Popen([sys.executable, str(heavy), sys.executable, "-c", job], stdout=subprocess.PIPE, env=env)
              for _ in range(2)]
     outs = [p.communicate()[0].decode() for p in procs]
@@ -246,6 +247,7 @@ def test_second_heavy_job_runs_alongside_when_ram_allows(tmp_path):
     log = tmp_path / "log"
     job = f"import time; open({str(log)!r}, 'a').write('start '); time.sleep(1); open({str(log)!r}, 'a').write('end ')"
     env = {**__import__("os").environ, "HEAVY_PARALLEL_MB": "0"}             # always "plenty of RAM"
+    env["HEAVY_LOCK"] = str(tmp_path / "heavy.lock")
     t0 = time.monotonic()
     procs = [subprocess.Popen([sys.executable, str(heavy), sys.executable, "-c", job], stdout=subprocess.PIPE, env=env)
              for _ in range(2)]
