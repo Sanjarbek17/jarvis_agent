@@ -27,6 +27,7 @@ NEEDS_ME = "NEEDS ME:"
 MAX_CONTINUES = 3            # resume a worker this many times if its background work was cut off
 SWEEP_EVERY = 30 * 60        # how often to look for tickets stuck In Progress
 STUCK_AFTER = 2 * 3600       # In Progress this long with no live worker = stuck
+RESTART_PENDING = HERE / "var" / "restart_pending"   # restart_when_idle.sh is waiting: start no new workers
 AUTO_ANSWERS = STATE / "auto_answers.json"   # ticket ref -> how many questions Jarvis answered itself
 STUCK_TOLD = STATE / "stuck_told.json"   # ticket ref -> when Sanjar was last told it's stuck
 # a "done" result whose ending says it is waiting on Sanjar (a merge, approval, decision...)
@@ -278,6 +279,11 @@ class Runner:
     async def _tick(self):
         cutoff = time.monotonic() - 120
         self.finished = {ref: ts for ref, ts in self.finished.items() if ts > cutoff}
+        if RESTART_PENDING.exists():         # let the waiting restart happen; the queue resumes right after
+            if time.monotonic() - self.held_logged > 300:
+                log.info("restart pending: not starting new workers")
+                self.held_logged = time.monotonic()
+            return
         for t in self.pick(await board.queued()):
             if len(self.running) >= MAX_WORKERS:
                 return

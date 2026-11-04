@@ -133,3 +133,31 @@ def test_three_light_workers_when_memory_allows(monkeypatch):
         await asyncio.sleep(0.2)
 
     asyncio.run(go())
+
+
+def test_no_new_workers_while_a_restart_waits(monkeypatch, tmp_path):
+    flag = tmp_path / "restart_pending"
+    flag.touch()
+    monkeypatch.setattr(runner, "RESTART_PENDING", flag)
+
+    async def queued():
+        return [T("a1", "A")]
+
+    monkeypatch.setattr(runner.board, "queued", queued)
+    started = []
+
+    async def go():
+        r = runner.Runner(lambda *a: None)
+
+        async def work(t):
+            started.append(t.ref)
+
+        r._work = work
+        await r._tick()
+        assert started == []
+        flag.unlink()
+        await r._tick()
+        await asyncio.sleep(0)
+        assert started == ["a1"]
+
+    asyncio.run(go())
