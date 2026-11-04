@@ -345,6 +345,7 @@ async def daily_summary_text():
                              "anything that needs him. A few lines.")
     if reply.strip():
         await tgfmt.send(tg, OWNER_ID, tgfmt.daily(reply), link_preview=False)
+        app_push(reply)
 
 
 async def daily_call():
@@ -583,6 +584,14 @@ something only he can do, a failure that blocks him), reply with 1-2 plain lines
 ticket ids, no worker text, no lists. Otherwise reply exactly NO_REPLY."""
 
 
+def app_push(text: str):
+    """What Jarvis tells Sanjar on its own also goes to the phone app (its notifications, ticket e028892d)."""
+    try:
+        appserver.push(text)
+    except Exception:
+        log.exception("app push failed")
+
+
 async def relay(report: str, photos: list[Path] = (), label: str = ""):
     """A worker/runner message goes to Jarvis's brain, never straight to Sanjar; he gets 1-2 plain lines
     only when it matters to him (and the screenshots with them)."""
@@ -593,6 +602,7 @@ async def relay(report: str, photos: list[Path] = (), label: str = ""):
         return
     if reply and not is_silent(reply):
         await tgfmt.send(tg, OWNER_ID, tgfmt.md(reply), link_preview=False)
+        app_push(reply)
         if photos:
             await send_photos(list(photos)[:10], label)
     else:
