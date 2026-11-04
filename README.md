@@ -76,6 +76,17 @@ At start Jarvis also imports our whole Telegram chat into memory through its own
 all of it, then only newer messages; already-stored ones are skipped). Passwords, keys and tokens are
 scrubbed out of everything memory stores (`memory.scrub`).
 
+Core memory (ticket 35ec396e, after OpenClaw; `core/coremem.py`): `var/state/memory/CORE.md` is a short
+curated list of Sanjar's lasting decisions, preferences, facts and open requests, one dated line per key.
+It is in every chat and call prompt (not found by search), and a new line with the same key replaces the
+old one, so two rules never contradict. It is filled by `remember(fact, kind, key)` / `forget_core(key)`
+and by a consolidation pass (Opus reads the chats since the last pass, adds, replaces and removes lines;
+open requests stay until done) that runs nightly at 03:00, at start, and before `/clear` throws a session
+away. When CORE.md changes, the chat brain restarts its session so it sees the new version.
+Reliability: messages sent while Jarvis is busy join the next turn together (no queueing one by one); a
+worker failure on a ticket Sanjar asked for, or any Needs-me, is always sent to him, with the report's
+own lines if the brain stays silent or fails (`relay(..., must=True)`).
+
 Reading files: Jarvis can look things up itself (read-only: Read, Glob, Grep) anywhere under
 `~/dev`, e.g. "what port does the taxi backend use", and Sanjar's global skills in `~/.claude/skills`
 (e.g. taxi-server). `.env` files too (since 2026-11-04, to find ids/tokens before asking Sanjar; values are never repeated); nothing else outside `~/dev`

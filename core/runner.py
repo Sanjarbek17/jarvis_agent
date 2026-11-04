@@ -42,6 +42,7 @@ PENDING = STATE / "pending_results.json"      # board writes that failed (e.g. G
 REQUEUED = STATE / "requeued_after_restart.json"   # ref -> times put back in the queue after a restart
 WRITE_TRIES = (0, 10, 30)                     # seconds to wait before each try of a board write
 MAX_REQUEUES = 2
+FROM_SANJAR = STATE / "from_sanjar.json"      # refs of tickets he asked for himself (Telegram / call)
 HEARTBEAT = STATE / "runner_heartbeat"        # touched every runner loop; scripts/watchdog.sh watches it
 RESTART_PENDING = HERE / "var" / "restart_pending"   # restart_when_idle.sh is waiting: start no new workers
 REQUEUE_AFTER = STATE / "requeue_after.json"   # {"ref": [refs]}: queue those again once "ref" has started
@@ -79,6 +80,20 @@ def _load_json(path: Path) -> dict:
         return json.loads(path.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+
+
+def from_sanjar(ref: str) -> bool:
+    """Did Sanjar ask for this ticket himself? Then its failures are never kept from him."""
+    return ref in _load_json(FROM_SANJAR)
+
+
+def _mark_from_sanjar(card: Ticket) -> None:
+    note = (card.note or "").lower()
+    if any(s in note for s in ("from telegram", "from call", "from a call", "from the app")):
+        marks = _load_json(FROM_SANJAR)
+        if card.ref not in marks:
+            marks[card.ref] = time.time()
+            FROM_SANJAR.write_text(json.dumps(marks))
 
 
 def _load_sessions() -> dict[str, str]:
@@ -501,6 +516,7 @@ class Runner:
         return card
 
     async def _work(self, card: Ticket):
+        _mark_from_sanjar(card)
         dirs = project_dirs(card.project)
         shots = SHOTS / card.ref
         shots.mkdir(exist_ok=True)

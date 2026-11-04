@@ -44,7 +44,7 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.types import InputPeerChannel, MessageActionGroupCall
 
-from core import appserver, board, contacts, memory, outbox, selfcheck, tgfmt, tools
+from core import appserver, board, contacts, coremem, memory, outbox, selfcheck, tgfmt, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, WATCHED_GROUP_IDS, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
@@ -592,14 +592,26 @@ def app_push(text: str):
         log.exception("app push failed")
 
 
-async def relay(report: str, photos: list[Path] = (), label: str = ""):
+MUST_TELL = """
+
+He IS waiting on this one (he asked for it himself, or only he can unblock it), so you MUST tell him
+now: 1-2 plain lines with what happened, why, and the fix or what you are doing about it (or the one
+thing he has to do). NO_REPLY is not allowed here."""
+
+
+async def relay(report: str, photos: list[Path] = (), label: str = "", must: bool = False):
     """A worker/runner message goes to Jarvis's brain, never straight to Sanjar; he gets 1-2 plain lines
-    only when it matters to him (and the screenshots with them)."""
+    only when it matters to him (and the screenshots with them). must=True: something he's waiting on
+    failed or needs him: he is told, enforced here in code even if the brain says NO_REPLY (ticket 35ec396e)."""
+    fallback = report.splitlines()[0][:200] + "\n" + "\n".join(report.splitlines()[1:3])[:300]
     try:
-        reply = (await chat.reply(REPORT_PROMPT.format(report=report[:4000]))).strip()
+        reply = (await chat.reply(REPORT_PROMPT.format(report=report[:4000]) + (MUST_TELL if must else ""))).strip()
     except Exception:
         log.exception("relaying a worker report failed")
-        return
+        reply = fallback if must else ""
+    if must and (not reply or is_silent(reply)):
+        log.warning("brain stayed silent on a report Sanjar is waiting on; sending it anyway")
+        reply = fallback
     if reply and not is_silent(reply):
         await tgfmt.send(tg, OWNER_ID, tgfmt.md(reply), link_preview=False)
         app_push(reply)
@@ -616,8 +628,11 @@ async def notify(card: Ticket, kind: str, text: str, photos: list[Path]):
     if call and not call.guest:
         call.tell(update)
         return
+    # enforced in code: a question that reached this point needs him (Jarvis's answerer couldn't take
+    # it), and a failure of something he asked for himself is never kept from him
+    must = kind == "needs_me" or (kind == "failed" and runner.from_sanjar(card.ref))
     asyncio.create_task(relay(f"Ticket {card.ref} [{card.project}] \"{card.title}\" is {kind.replace('_', ' ')}.\n"
-                              f"{text}", photos, f"{card.title[:60]}"))
+                              f"{text}", photos, f"{card.title[:60]}", must=must))
 
 
 async def check_mac_permissions():
@@ -638,8 +653,9 @@ async def mac_late(task: str, text: str, photos: list[Path], question: bool):
     if call and not call.guest:
         call.tell(update)
         return
+    # Mac tasks are always his own requests: a question or a failure always reaches him
     asyncio.create_task(relay(f"Mac task \"{task}\" {'needs a decision' if question else 'finished'}.\n{text}",
-                              photos, "Mac"))
+                              photos, "Mac", must=question or text.startswith("Failed")))
 
 
 # --- Telegram ------------------------------------------------------------------------------
@@ -752,11 +768,40 @@ async def send_format_samples():
                                             "**waiting on a SIM**\n- renderer: in progress"), silent=True)
 
 
+_inbox: list[tuple] = []        # (event, text) that came in while the brain was busy
+_inbox_running = False
+
+
+async def chat_turn(event, text: str):
+    """Messages that arrive while Jarvis is still answering join ONE follow-up turn, answered together,
+    instead of a line of separate turns that each wait for the brain (OpenClaw's "collect" mode)."""
+    global _inbox_running
+    _inbox.append((event, text))
+    if _inbox_running:
+        return                       # the loop below picks it up with the next turn
+    _inbox_running = True
+    try:
+        while _inbox:
+            batch = _inbox[:]
+            _inbox.clear()
+            msg = batch[0][1] if len(batch) == 1 else (
+                "[He sent these one after another while you were busy; answer them together, in order]\n\n"
+                + "\n\n---\n\n".join(t for _, t in batch))
+            async with tg.action(OWNER_ID, "typing"):
+                reply = await chat.reply(msg)
+            await tgfmt.reply(batch[-1][0], tgfmt.md(reply) if reply else "(no reply)")
+    finally:
+        _inbox_running = False
+
+
 async def remember_history():
     """At start: scrub secrets out of stored memory, index old call transcripts, and import our
     Telegram chat (all of it the first time, then only newer messages) through this connection."""
     memory.scrub_existing()
     await memory.backfill_calls()
+    # anything said since the last core-memory pass (e.g. right before this restart) gets saved now
+    with contextlib.suppress(Exception):
+        await coremem.consolidate()
     first = not memory.TG_STATE.exists()
     try:
         added = await memory.backfill_telegram(tg, OWNER_ID)
@@ -847,13 +892,17 @@ async def on_message(event):
             return
         await event.respond(f"🔐 {await tgjobs('code', code)}")
     elif text.startswith("/clear"):
+        # save before forgetting: fold this conversation into core memory first (ticket 35ec396e)
+        try:
+            n_set, n_rm = await asyncio.wait_for(coremem.consolidate(), 300)
+            saved = f" Saved {n_set} thing(s) to core memory first." if n_set else ""
+        except Exception:
+            log.exception("core memory before /clear failed")
+            saved = " (Couldn't update core memory first; the chat log still has everything.)"
         await chat.clear()
-        await event.reply("Cleared.")
+        await event.reply("Cleared." + saved)
     else:
-        ctx = await reply_context(event)
-        async with tg.action(OWNER_ID, "typing"):
-            reply = await chat.reply(ctx + text)
-        await tgfmt.reply(event, tgfmt.md(reply) if reply else "(no reply)")
+        await chat_turn(event, await reply_context(event) + text)
 
 
 @tg.on(events.NewMessage(incoming=True, func=lambda e: e.is_group and bool((e.raw_text or "").strip())))
@@ -1015,6 +1064,7 @@ async def main():
 
     background = [asyncio.create_task(tools.serve()), runner_task["t"],
                   asyncio.create_task(daily_call()), asyncio.create_task(daily_reminder()),
+                  asyncio.create_task(daily_at((3, 0), coremem.consolidate)),   # nightly core-memory pass
                   asyncio.create_task(selfcheck.run_forever(
                       runner, lambda: not runner_task["t"].done(), restart_runner, chat.reply,
                       lambda text: tgfmt.send(tg, OWNER_ID, "🔎 " + tgfmt.md(text), silent=True)))]

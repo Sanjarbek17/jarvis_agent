@@ -15,7 +15,7 @@ from typing import Awaitable, Callable
 import uvicorn
 from mcp.server.mcpserver import MCPServer
 
-from . import board, grants, memory
+from . import board, coremem, grants, memory
 from .config import DEV, PROJECTS, SHOTS, TOOLS_PORT, reload_projects
 from .mac import MacWorker, run_quick
 
@@ -111,12 +111,22 @@ def make_server(source: str) -> MCPServer:
         return server
 
     @server.tool()
-    async def remember(fact: str) -> str:
-        """Save something to Jarvis's long-term memory so it's known in every later chat and call:
-        a preference, decision, plan, name, fact about him or a project. One clear self-contained
-        sentence (who/what/when), e.g. "Sanjar wants the taxi app work on the dev branch"."""
-        item = await memory.add(fact, "fact", "brain")
-        return f"Remembered (id {item})." if item else "Nothing to remember."
+    async def remember(fact: str, kind: str = "fact", key: str = "") -> str:
+        """Save something to Jarvis's CORE memory, which is in every later chat and call: one clear
+        self-contained sentence. kind: "decision" (he decided), "preference" (how he wants things,
+        rules for you), "fact", or "open" (something he asked for that isn't done yet). key: a short
+        kebab-case name; reuse an existing key from CORE MEMORY to replace that line (when he changes
+        his mind, or an open request is now done with new info)."""
+        if not fact.strip():
+            return "Nothing to remember."
+        k = coremem.put(fact, kind, key)
+        await memory.add(fact, "fact", "brain")
+        return f"Remembered in core memory as {k} ({kind})."
+
+    @server.tool()
+    async def forget_core(key: str) -> str:
+        """Remove one line from CORE memory by its key: wrong, outdated, or an open request that's done."""
+        return "Removed from core memory." if coremem.drop(key) else f"No core memory line {key}."
 
     @server.tool()
     async def recall(query: str) -> str:
