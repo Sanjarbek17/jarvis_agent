@@ -10,12 +10,17 @@ Every request needs the app token (APP_TOKEN in .env): header "Authorization: Be
     GET  /api/chats/{id}/messages            [{role: "me"|"jarvis", text, ts, voice?}]
     POST /api/chats/{id}/messages {text}     Jarvis's reply (waits for it)
     POST /api/chats/{id}/voice  (audio body) {heard, reply}: transcribed like a Telegram voice note
+    GET  /api/notifications?after=<ts>       {chat, items}: what Jarvis wrote first (ticket news, "needs
+                                             you", the daily summary) since ts; the phone polls this
     WS   /api/call?token=&chat=              a live call: phone sends 48 kHz mono s16 PCM, gets
                                              24 kHz mono s16 PCM back; text frames are transcript
                                              lines {"who", "text"}
 
 Each chat is its own Claude conversation (resumed by session id, stopped when idle), told which
 project it is about, so Sanjar doesn't have to say it. Chats live in var/state/app_chats/.
+
+Whatever Jarvis tells Sanjar on its own (push()) also lands in the "Updates from Jarvis" chat (ticket
+e028892d); the app polls /api/notifications and shows a phone notification, no Google services needed.
 """
 import asyncio
 import contextlib
@@ -43,6 +48,8 @@ PORT = 8790
 CHATS = STATE / "app_chats"
 IDLE_STOP = 15 * 60                    # stop a chat's Claude process after this long unused
 GENERAL = "General"
+UPDATES = "updates"                    # chat id of "Updates from Jarvis"
+KEEP_UPDATES = 300
 
 _brains: dict[str, tuple[Brain, float]] = {}   # chat id -> (brain, last used)
 start_call: Callable[[WebSocket, dict], Awaitable[None]] | None = None   # set by jarvis.py
@@ -128,13 +135,15 @@ def _brain(chat: dict) -> Brain:
 
 async def ask(chat: dict, text: str, voice: bool = False) -> dict:
     """Sanjar says `text` in this chat; returns Jarvis's message (both are saved)."""
+    earlier = _unseen_pushes(chat)
+    chat["seen_pushes"] = time.time()
     chat["messages"].append({"role": "me", "text": text, "ts": time.time(), **({"voice": True} if voice else {})})
     if chat["title"] == "New chat":
         chat["title"] = text[:40] + ("…" if len(text) > 40 else "")
     save_chat(chat)
     brain = _brain(chat)
     try:
-        reply = await brain.reply(f"{context_line(chat['project'])}\n{text}")
+        reply = await brain.reply(f"{context_line(chat['project'])}\n{earlier}{text}")
     except Exception:
         log.exception("app chat %s: brain failed", chat["id"])
         reply = "Sorry, something went wrong on my side. Try again?"
@@ -147,6 +156,35 @@ async def ask(chat: dict, text: str, voice: bool = False) -> dict:
     save_chat(chat)
     _brains[chat["id"]] = (brain, time.monotonic())
     return msg
+
+
+def push(text: str) -> dict | None:
+    """Jarvis wrote to Sanjar first: keep a copy for the app (its notifications poll for these)."""
+    text = (text or "").strip()
+    if not text or is_silent(text):
+        return None
+    chat = load_chat(UPDATES) or {"id": UPDATES, "project": GENERAL, "title": "Updates from Jarvis",
+                                  "created": time.time(), "session": "", "messages": []}
+    msg = {"role": "jarvis", "text": text[:4000], "ts": time.time(), "pushed": True}
+    chat["messages"] = (chat["messages"] + [msg])[-KEEP_UPDATES:]
+    chat["updated"] = msg["ts"]
+    save_chat(chat)
+    return msg
+
+
+def updates_since(after: float, limit: int = 20) -> list[dict]:
+    chat = load_chat(UPDATES)
+    items = [m for m in chat["messages"] if m.get("pushed") and m["ts"] > after] if chat else []
+    return items[-limit:]
+
+
+def _unseen_pushes(chat: dict) -> str:
+    """Updates Jarvis pushed into this chat that its Claude conversation hasn't seen yet."""
+    seen = chat.get("seen_pushes", 0)
+    news = [m["text"] for m in chat["messages"] if m.get("pushed") and m["ts"] > seen]
+    if not news:
+        return ""
+    return "[Earlier in this chat you wrote to Sanjar on your own:\n" + "\n---\n".join(news[-5:])[-3000:] + "]\n"
 
 
 async def stop_idle_brains() -> None:
@@ -231,6 +269,16 @@ async def call(ws: WebSocket):
             await ws.close(code=1011)
 
 
+async def notifications(req: Request):
+    if not _authorized(req):
+        return _deny()
+    try:
+        after = float(req.query_params.get("after") or 0)
+    except ValueError:
+        after = 0.0
+    return JSONResponse({"chat": UPDATES, "title": "Updates from Jarvis", "items": updates_since(after)})
+
+
 async def health(req: Request):
     return JSONResponse({"ok": True, "authorized": _authorized(req)})
 
@@ -241,6 +289,7 @@ app = Starlette(routes=[
     Route("/api/chats", chats, methods=["GET", "POST"]),
     Route("/api/chats/{chat}/messages", messages, methods=["GET", "POST"]),
     Route("/api/chats/{chat}/voice", voice, methods=["POST"]),
+    Route("/api/notifications", notifications),
     WebSocketRoute("/api/call", call),
 ])
 
