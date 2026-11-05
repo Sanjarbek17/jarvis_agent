@@ -42,7 +42,7 @@ at login, restarts if it crashes, and keeps the Mac awake with `caffeinate`.
 
 Saying "stop it" about a running ticket is enough: Jarvis stops that worker itself (`stop_worker`, same as
 `/stop`); a stopped ticket goes off the queue (⏹), not Failed. Dropping a running ticket stops it first.
-Telegram: plain text or a voice message = talk to Jarvis, `/status [project]`, `/stop <project|mac>`, `/call`, `/transcript`, `/clear`, `/2fa <password>` (only while `scripts/qr_login.py` waits for it; the message is deleted at once).
+Telegram: plain text or a voice message = talk to Jarvis, `/status [project]`, `/stop <project|mac>`, `/call`, `/transcript`, `/clear`, `/guard [off|status|test]`, `/2fa <password>` (only while `scripts/qr_login.py` waits for it; the message is deleted at once).
 `/joblogin` logs in the Upwork job worker's own Telegram account (+7 906, `~/dev/upwork_job`): a QR in the
 hunter bot chat to scan with the phone; `/joblogin code` + `/jobcode 1-2-3-4-5` for the code route. It runs as
 the worker's own process on its own session, so Jarvis keeps answering.
@@ -123,6 +123,12 @@ Calling other people: "call Olimjon and tell him ..." (by message or on a call).
 name up in the Jarvis account's Telegram contacts and chats (or takes an @username), asks if it's
 not sure who, calls them with a brain that can only deliver the message and hang up, and sends
 you the transcript. Asked during a call with you, it calls them after you hang up.
+
+Mac guard (ticket 3b226456, `core/guard.py`): Sanjar arms it himself (`/guard`, or just tell Jarvis "guard"; there is
+no automatic away detection, so it can't photograph him by mistake). After 60 s, any keyboard, mouse or trackpad
+input sends him a Telegram alert at once, a screenshot, and camera photos, again at most every 2 min while it goes on.
+`/guard off` before touching the Mac. It stays on across restarts, and the Mac worker's own clicks don't count. The
+camera needs macOS's Camera permission for what runs Jarvis: `/guard test` at the Mac brings up the prompt.
 
 ## Boards
 
