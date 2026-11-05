@@ -17,6 +17,7 @@ WebSocket. Two kinds (ticket 31ed52a7):
     GET  /api/projects                       [{name, about}] ("General" first)
     GET  /api/chats?project=X                that project's chats, newest first
     POST /api/chats {project, title?}        a new chat
+    POST /api/chats/{id}/move {project}      moves it to another project; messages and conversation stay
     GET  /api/chats/{id}/messages            [{role: "me"|"jarvis", text, ts, voice?}]
     POST /api/chats/{id}/messages {text}     Jarvis's reply (waits for it)
     POST /api/chats/{id}/voice  (audio body) {heard, reply}: transcribed like a Telegram voice note
@@ -262,6 +263,39 @@ def chats_of(project: str) -> list[dict]:
     return sorted(out, key=lambda c: -c["updated"])
 
 
+def find_project(name: str) -> str:
+    """The exact name of a project, or "" if there's none by that name."""
+    reload_projects()
+    wanted = name.strip().lower()
+    return next((p for p in (GENERAL, *PROJECTS) if p.lower() == wanted), "")
+
+
+def move_chat(chat_id: str, project: str, when_created: bool = False) -> dict | None:
+    """Put a chat in another project; its next message tells its Claude conversation (context_line).
+    when_created: the project doesn't exist yet, so wait for it (finish_moves). None: can't be moved."""
+    chat = load_chat(chat_id)
+    name = find_project(project)
+    if not chat or chat_id == UPDATES or not (name or (when_created and project.strip())):
+        return None
+    if name:
+        chat["project"] = name
+        chat.pop("move_to", None)
+    else:
+        chat["move_to"] = project.strip()
+    save_chat(chat)
+    return chat
+
+
+def finish_moves() -> None:
+    """Chats waiting for a new project go there once it's on the list."""
+    for f in CHATS.glob("*.json") if CHATS.exists() else []:
+        with contextlib.suppress(Exception):
+            chat = json.loads(f.read_text())
+            name = find_project(chat.get("move_to", ""))
+            if name and move_chat(chat["id"], name):
+                push(f"Moved this chat to {name}.", chat["id"])
+
+
 def context_line(project: str) -> str:
     if project == GENERAL:
         return "[Jarvis app or website · general chat]"
@@ -305,7 +339,7 @@ async def ask(chat: dict, text: str, voice: bool = False) -> dict:
     chat["session"], chat["updated"] = brain.session_id, time.time()
     save_chat(chat)
     _brains[chat["id"]] = (brain, time.monotonic())
-    return msg
+    return {**msg, "chat_project": chat["project"]}    # Jarvis may have moved the chat while answering
 
 
 def save_images(paths) -> list[str]:
@@ -394,6 +428,7 @@ def _unseen_pushes(chat: dict) -> str:
 async def stop_idle_brains() -> None:
     while True:
         await asyncio.sleep(60)
+        finish_moves()
         for cid, (brain, used) in list(_brains.items()):
             if time.monotonic() - used > IDLE_STOP and not brain.lock.locked():
                 await brain.stop()
@@ -437,6 +472,17 @@ async def messages(req: Request):
         return JSONResponse(await ask(chat, text))
     recent = chat["messages"][-200:]
     return JSONResponse(_with_project(recent) if chat["id"] == UPDATES else recent)
+
+
+async def move(req: Request):
+    if not _authorized(req):
+        return _deny()
+    if not load_chat(req.path_params["chat"]):
+        return JSONResponse({"error": "no such chat"}, status_code=404)
+    moved = move_chat(req.path_params["chat"], str((await _json(req)).get("project") or ""))
+    if not moved:
+        return JSONResponse({"error": "That chat can't move there."}, status_code=400)
+    return JSONResponse(_summary(moved))
 
 
 async def voice(req: Request):
@@ -524,6 +570,7 @@ app = Starlette(routes=[
     Route("/api/projects", projects),
     Route("/api/chats", chats, methods=["GET", "POST"]),
     Route("/api/chats/{chat}/messages", messages, methods=["GET", "POST"]),
+    Route("/api/chats/{chat}/move", move, methods=["POST"]),
     Route("/api/chats/{chat}/voice", voice, methods=["POST"]),
     Route("/api/images/{name}", image),
     Route("/api/notifications", notifications),
