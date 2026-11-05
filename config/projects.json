@@ -137,5 +137,12 @@
       "side_project/projects/jarvis_app"
     ],
     "board": "cb7eb4938ce04c2e8a2882168785a771"
+  },
+  "Code Learning": {
+    "about": "website that teaches students programming: Codewalk animation videos explain the content, then students try the tasks by writing the code themselves. Working name. Idea stage: Sanjar is discussing the SRS first, so nothing is planned or built yet",
+    "folders": [
+      "side_project/projects/code_learning"
+    ],
+    "board": "7f4f5b38da9a40f48b7f6ed60dc42ca8"
   }
 }
