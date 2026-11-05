@@ -10,8 +10,10 @@
 # Log: var/logs/restart.log
 HERE=$(cd "$(dirname "$0")/.." && pwd); LOG="$HERE/var/logs/restart.log"
 CALLS=yes; [ "$1" = "--now-ish" ] && CALLS=no
-# only one waiting restart at a time
-if pgrep -f "restart_when_idle.sh" | grep -qv "^$$\$"; then
+# only one waiting restart at a time. Look for the script itself being run by sh: `pgrep -f` also matched
+# whatever shell started it (its command line contains the name), so it refused to start and said one
+# was already waiting when none was (Mac guard, ticket 6e558d62)
+if ps -axo pid=,command= | awk -v me="$$" '$1 != me && $2 ~ /(^|\/)(ba|da|z)?sh$/ && $3 ~ /(^|\/)restart_when_idle\.sh$/ { f = 1 } END { exit !f }'; then
   echo "$(date) a restart is already waiting, not starting another" >> "$LOG"; exit 0
 fi
 # Jarvis's own pid as launchd knows it
