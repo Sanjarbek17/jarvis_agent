@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from . import autoanswer, board, grants, ramguard, tgfmt
+from . import autoanswer, board, grants, origin, ramguard, tgfmt
 from .brain import BRAIN_MODEL   # workers run on the same model as the Jarvis brain (Opus)
 from .board import Ticket
 from .config import (rules_text, GIT_FLOW, HERE, LOGS, NEVER_DO, NEVER_DO_MAIN_OK, POLL_SECONDS,
@@ -593,7 +593,8 @@ class Runner:
                 cut: dict[str, str] = {}       # ...and ones killed before finishing
                 stopped_on_purpose: set[str] = set()
                 proc = await asyncio.create_subprocess_exec(
-                    *make_cmd(prompt), cwd=dirs[0], stdin=asyncio.subprocess.DEVNULL, env={**os.environ, **GIT_ENV},
+                    *make_cmd(prompt), cwd=dirs[0], stdin=asyncio.subprocess.DEVNULL,
+                    env={**os.environ, **GIT_ENV, "JARVIS_APP_CHAT": origin.get(card.ref).get("chat", "")},
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, limit=50_000_000)
                 self.procs[card.project] = proc
                 while line := await proc.stdout.readline():

@@ -1,5 +1,6 @@
 """The website is served by the app server, so the app and the site share one backend."""
 import asyncio
+import json
 from types import SimpleNamespace as NS
 
 from starlette.testclient import TestClient
@@ -163,3 +164,75 @@ def test_a_reply_says_where_the_chat_is_now(tmp_path, monkeypatch):
     monkeypatch.setattr(appserver, "_brain", lambda c: Moves())
     res = client.post(f"/api/chats/{chat['id']}/messages", json={"text": "move this"}, headers=auth).json()
     assert res["chat_project"] == "Jarvis" and appserver.load_chat(chat["id"])["project"] == "Jarvis"
+
+
+def _files_setup(tmp_path, monkeypatch):
+    client, auth = _move_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(appserver, "FILES", tmp_path / "files")
+    return client, auth
+
+
+def test_a_sent_file_lands_in_the_asking_chat_and_downloads_with_login_only(tmp_path, monkeypatch):
+    client, auth = _files_setup(tmp_path, monkeypatch)
+    chat = appserver.new_chat("Jarvis", "Video")
+    src = tmp_path / "gas finder.mp4"
+    src.write_bytes(b"movie")
+    asyncio.run(appserver.push_file(src, "Your video", chat["id"]))
+
+    msg = appserver.load_chat(chat["id"])["messages"][-1]
+    file = msg["files"][0]
+    assert msg["text"] == "Your video" and file["title"] == "gas finder.mp4" and file["size"] == 5
+    assert appserver.updates_since(0)[-1]["files"] == [file]            # the Updates chat has it too
+    url = f"/api/files/{file['name']}"
+    assert client.get(url).status_code == 401
+    res = client.get(url, headers=auth)
+    assert res.content == b"movie" and "attachment" in res.headers["content-disposition"]
+    assert res.headers["content-security-policy"] == "sandbox"
+    for bad in ("nope", "..%2f.env", "0123456789abcdef"):
+        assert client.get(f"/api/files/{bad}", headers=auth).status_code == 404
+
+
+def test_file_without_a_chat_goes_to_updates_and_big_ones_stay_on_telegram(tmp_path, monkeypatch):
+    _files_setup(tmp_path, monkeypatch)
+    src = tmp_path / "report.pdf"
+    src.write_bytes(b"pdf")
+    asyncio.run(appserver.push_file(src))
+    assert appserver.updates_since(0)[-1]["text"] == "File: report.pdf"
+
+    monkeypatch.setattr(appserver, "FILE_MAX", 1)
+    asyncio.run(appserver.push_file(src, "Report"))
+    last = appserver.updates_since(0)[-1]
+    assert "files" not in last and "on Telegram: report.pdf" in last["text"]
+
+
+def test_only_send_file_notes_reach_the_app(tmp_path, monkeypatch):
+    from core import outbox
+    monkeypatch.setattr(outbox, "OUTBOX", tmp_path / "out")
+    outbox.OUTBOX.mkdir()
+    (outbox.OUTBOX / "1.json").write_text(json.dumps({"file": "/x/a.apk", "caption": "app", "app": True, "chat": "c1"}))
+    (outbox.OUTBOX / "2.json").write_text(json.dumps({"file": "/x/qr.png", "caption": "login"}))
+    seen = []
+
+    async def on_file(*args):
+        seen.append(args)
+
+    class Tg:
+        async def send_file(self, *a, **k):
+            return NS(id=1)
+
+    async def go():
+        job = asyncio.create_task(outbox.run(Tg(), 1, on_file))
+        await asyncio.sleep(0.1)
+        job.cancel()
+
+    asyncio.run(go())
+    assert seen == [("/x/a.apk", "app", "c1")]
+
+
+def test_projects_with_new_activity_and_new_projects_come_first(tmp_path, monkeypatch):
+    client, auth = _move_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(appserver, "PROJECTS", {"Old": {}, "Quiet": {}, "Newest": {}})
+    names = lambda: [p["name"] for p in client.get("/api/projects", headers=auth).json()]
+    assert names() == ["General", "Newest", "Quiet", "Old"]
+    appserver.new_chat("Old", "Back at it")
+    assert names() == ["General", "Old", "Newest", "Quiet"]

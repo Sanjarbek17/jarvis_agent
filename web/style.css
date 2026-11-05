@@ -106,6 +106,11 @@ h1, h2, p { margin: 0; }
 .bubble .meta a { color: inherit; }
 .bubble .pic { display: block; margin: 4px 0; max-width: 100%; max-height: 360px; border-radius: 8px; cursor: zoom-in; }
 .bubble.typing { color: var(--muted); }
+.file {
+  display: block; width: 100%; margin: 6px 0 2px; padding: 8px 10px; border-radius: 8px; text-align: left;
+  background: rgba(255, 255, 255, .08); color: var(--accent); font-weight: 600; overflow-wrap: anywhere;
+}
+.file:hover:not(:disabled) { background: rgba(255, 255, 255, .14); }
 .pane.main { position: relative; }
 .jump {
   position: absolute; bottom: 76px; left: 50%; transform: translateX(-50%); z-index: 5; padding: 7px 14px; border-radius: 16px;
@@ -166,7 +171,9 @@ h1, h2, p { margin: 0; }
   width: 100%; max-width: 420px; max-height: min(640px, calc(100dvh - 32px)); display: flex; flex-direction: column; gap: 10px;
   background: var(--bar); border: 1px solid var(--line); border-radius: 16px; padding: 14px;
 }
-.sheet-box h2 { font-size: 17px; padding: 2px 4px; }
+.sheet-box h2 { font-size: 17px; padding: 2px 4px; overflow-wrap: anywhere; }
+.sheet-box.wide { max-width: 860px; max-height: calc(100dvh - 32px); }
+.sheet-box video { width: 100%; min-height: 0; max-height: calc(100dvh - 190px); border-radius: 8px; background: #000; }
 .sheet-box .list { padding: 0; }
 .hide { display: none !important; }
 

@@ -355,6 +355,7 @@ async function newChat(project) {
     const chat = await api("/api/chats", { method: "POST", json: { project } });
     chats.unshift(chat);
     location.hash = chatLink(project, chat.id);
+    pollProjects();
   } catch (e) {
     if (e.status !== 401) toast(e.message);
   }
@@ -395,6 +396,7 @@ function moveSheet(chat) {
       await api(`/api/chats/${encodeURIComponent(chat.id)}/move`, { method: "POST", json: { project: name } });
       toast(`Moved to ${name}.`);
       location.hash = chatLink(name, chat.id);
+      pollProjects();
     } catch (e) {
       if (e.status !== 401) toast(e.message);
     }
@@ -500,6 +502,41 @@ function drawMessages(chat) {
   else if (arrived) document.getElementById("jump")?.classList.remove("hide");
 }
 
+function sizeText(bytes) {
+  return bytes < 1e6 ? `${Math.max(1, Math.round(bytes / 1e3))} KB` : `${(bytes / 1e6).toFixed(1)} MB`;
+}
+
+/** A file from Jarvis: videos play here, everything else downloads. */
+async function openFile(file, button) {
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = "Getting it…";
+  try {
+    const res = await request(`/api/files/${encodeURIComponent(file.name)}`);
+    if (!res.ok) throw new ApiError("That file is gone.", res.status);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const save = () => h("a", { class: "btn", href: url, download: file.title, text: "Save" });
+    if (/\.(mp4|webm|mov|m4v)$/i.test(file.title)) {
+      const video = new Blob([blob], { type: "video/mp4" });
+      const playing = URL.createObjectURL(video);
+      const close = () => { sheet.remove(); URL.revokeObjectURL(playing); URL.revokeObjectURL(url); };
+      const sheet = h("div", { class: "sheet", role: "dialog", "aria-label": file.title, onclick: e => { if (e.target === sheet) close(); } },
+        h("div", { class: "sheet-box wide" }, h("h2", { text: file.title }),
+          h("video", { src: playing, controls: true, autoplay: true }), save(),
+          h("button", { class: "btn", text: "Close", onclick: close })));
+      document.body.append(sheet);
+    } else {
+      save().click();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    }
+  } catch (e) {
+    if (e.status !== 401) toast(e.message);
+  }
+  button.disabled = false;
+  button.textContent = label;
+}
+
 function bubble(m, gap) {
   const el = h("div", { class: `bubble ${m.role === "me" ? "me" : ""} ${gap ? "gap" : ""}` });
   for (const name of m.images || []) {
@@ -509,6 +546,10 @@ function bubble(m, gap) {
     el.append(pic);
   }
   if (m.text) el.append(h("div", { class: "text" }, rich(m.text)));
+  for (const file of m.files || []) {
+    const btn = h("button", { class: "file", text: `${file.title} · ${sizeText(file.size)}`, onclick: () => openFile(file, btn) });
+    el.append(btn);
+  }
   const from = m.chat_title ? `from ${m.chat_title}` : "";
   const meta = [m.voice ? "voice" : "", m.ts ? clock(m.ts) : "sending"].filter(Boolean).join(" · ");
   el.append(h("div", { class: "meta" }, from && m.chat_project ? h("a", { href: chatLink(m.chat_project, m.chat), text: from }) : from,
@@ -617,6 +658,7 @@ async function send(chat, text, audio) {
   if (open === chat) await loadMessages(chat);
   if (open === chat && !waiting.has(chat.id)) drawMessages(chat);
   if (chatsOf === chat.project) renderChats(chat.project);
+  pollProjects();
 }
 
 async function record(chat, form, text) {
@@ -857,9 +899,16 @@ function newsToast(item) {
   });
 }
 
+async function pollProjects() {
+  try {
+    projects = await api("/api/projects");
+    renderSideKeepingScroll();
+  } catch { /* the next check tries again */ }
+}
+
 function tick() {
   ticks++;
-  if (ticks % 10 === 0) pollNews();
+  if (ticks % 10 === 0) { pollNews(); pollProjects(); }
   if (document.hidden) return;
   if (open && (waiting.has(open.id) || ticks % 4 === 0)) loadMessages(open);
   if (document.getElementById("workers") ? ticks % 2 === 0 : ticks % 5 === 0) pollWorkers();

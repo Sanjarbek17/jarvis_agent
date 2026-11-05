@@ -66,7 +66,7 @@ class MacWorker:
         except (FileNotFoundError, json.JSONDecodeError):
             return ""
 
-    async def run(self, task: str, words: str) -> tuple[str, list[Path], bool]:
+    async def run(self, task: str, words: str, app_chat: str = "") -> tuple[str, list[Path], bool]:
         """Do one task (waits for the one before it). Returns (text for Sanjar, photos, is_question)."""
         async with self.lock:
             stamp = time.strftime("%Y%m%d%H%M%S")
@@ -85,7 +85,8 @@ class MacWorker:
                 with self.log_path.open("w") as logfile:
                     self.proc = await asyncio.create_subprocess_exec(
                         *cmd, cwd=WORKDIR, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.STDOUT, limit=50_000_000)
+                        stderr=asyncio.subprocess.STDOUT, limit=50_000_000,
+                        env={**os.environ, "JARVIS_APP_CHAT": app_chat})
                     while line := await self.proc.stdout.readline():
                         logfile.write(line.decode(errors="replace"))
                         logfile.flush()

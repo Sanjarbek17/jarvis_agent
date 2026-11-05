@@ -43,18 +43,19 @@ def jarvis_running() -> bool:
 
 def send(text: str = "", file: str | Path = "", caption: str = "", key: str = "",
          delete_key: str = "", document: bool = False, whoami: bool = False, accept_login: bytes = b"",
-         wait: float = 120) -> dict:
+         wait: float = 120, app: bool = False, chat: str = "") -> dict:
     """Queue a message for Jarvis to send to Sanjar and wait for the result.
     key: name this message; a later message with the same key replaces it (old one deleted).
     delete_key: just delete the message saved under that key.
     whoami: also return the Jarvis account as "me": {"id", "username"}.
     accept_login: a QR login token; Jarvis approves it, like scanning it on a logged-in phone.
+    app: the file also shows in the Jarvis app and website, in app chat `chat` or else in Updates.
     Returns {"ok": bool, ...}."""
     OUTBOX.mkdir(parents=True, exist_ok=True)
     name = f"{time.time():.6f}-{uuid.uuid4().hex[:6]}"
     note = {"text": text, "file": str(Path(file).resolve()) if file else "", "caption": caption,
             "key": key, "delete_key": delete_key, "document": document, "whoami": whoami,
-            "accept_login": base64.b64encode(accept_login).decode()}
+            "accept_login": base64.b64encode(accept_login).decode(), "app": app, "chat": chat}
     tmp = OUTBOX / f"{name}.tmp"
     tmp.write_text(json.dumps(note, ensure_ascii=False))
     tmp.rename(OUTBOX / f"{name}.json")            # appears complete, never half-written
@@ -69,8 +70,9 @@ def send(text: str = "", file: str | Path = "", caption: str = "", key: str = ""
     return {"ok": False, "error": "Jarvis didn't pick it up in time"}
 
 
-async def run(tg, owner_id: int) -> None:
-    """Inside Jarvis: send whatever scripts queued, to Sanjar only."""
+async def run(tg, owner_id: int, on_file=None) -> None:
+    """Inside Jarvis: send whatever scripts queued, to Sanjar only. on_file(path, caption, chat): also
+    called for files marked `app`; its failure doesn't fail the send."""
     OUTBOX.mkdir(parents=True, exist_ok=True)
     keyed: dict[str, object] = {}                    # key -> sent message
     while True:
@@ -94,6 +96,11 @@ async def run(tg, owner_id: int) -> None:
                 if note.get("file"):
                     msg = await tg.send_file(owner_id, note["file"], caption=(note.get("caption") or "")[:1000],
                                              force_document=bool(note.get("document")))
+                    if note.get("app") and on_file:
+                        try:
+                            await on_file(note["file"], note.get("caption") or "", note.get("chat") or "")
+                        except Exception:
+                            log.exception("showing %s in the app failed", note["file"])
                 elif note.get("text"):
                     msg = await tg.send_message(owner_id, note["text"][:4000], link_preview=False)
                 else:
