@@ -34,7 +34,8 @@ class Hooks:
     call_contact: Callable[[str, str], Awaitable[str]]
     worker_progress: Callable[[str, str], str]
     mac: MacWorker
-    mac_late: Callable[[str, str, list[Path], bool], Awaitable[None]]   # result after MAC_WAIT
+    mac_late: Callable[..., Awaitable[None]]   # result after MAC_WAIT
+    guard: object = None                       # core/guard.py's Guard
     runner: "Runner"                                                    # core.runner.Runner
 
 
@@ -388,6 +389,20 @@ def make_server(source: str) -> MCPServer:
         where = await show_photos(photos[:10], "Mac", ctx)
         return (f"The Mac worker needs Sanjar's decision: {text}" if question else text) + \
                (f" ({len(photos)} screenshot(s) {where})" if photos else "")
+
+    @server.tool()
+    async def mac_guard(action: str) -> str:
+        """The Mac guard: when Sanjar says "guard" (he's leaving the Mac), arm it; while it's on, anyone
+        touching the Mac gets photographed and he's alerted on Telegram. It never turns on by itself.
+        action: "on", "off", "status", or "test" (take a camera photo now and send it)."""
+        action = action.strip().lower()
+        if action == "on":
+            return hooks.guard.arm()
+        if action == "off":
+            return hooks.guard.disarm()
+        if action == "test":
+            return await hooks.guard.test()
+        return hooks.guard.status()
 
     @server.tool()
     async def mac_progress() -> str:

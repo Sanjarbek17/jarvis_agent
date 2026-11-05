@@ -44,7 +44,7 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.types import InputPeerChannel, MessageActionGroupCall
 
-from core import appserver, board, contacts, coremem, memory, origin, outbox, selfcheck, tgfmt, tools
+from core import appserver, board, contacts, coremem, guard, memory, origin, outbox, selfcheck, tgfmt, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, WATCHED_GROUP_IDS, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
@@ -643,6 +643,27 @@ async def notify(card: Ticket, kind: str, text: str, photos: list[Path]):
                               app_chat=origin.get(card.ref).get("chat", "")))
 
 
+async def guard_alert(text: str):
+    await tg.send_message(OWNER_ID, text)
+    app_push(text)
+
+
+async def guard_photos(paths: list[Path], caption: str):
+    await send_photos(paths, caption)
+    app_push(caption, "", paths)
+
+
+async def guard_command(arg: str) -> str:
+    """/guard, /guard off, /guard status, /guard test."""
+    if arg == "off":
+        return tools.hooks.guard.disarm()
+    if arg == "status":
+        return tools.hooks.guard.status()
+    if arg == "test":
+        return await tools.hooks.guard.test()
+    return tools.hooks.guard.arm()
+
+
 async def check_mac_permissions():
     """At start: can the Mac worker see the screen and use the mouse and keyboard? Asking also
     puts Jarvis in the lists in System Settings, so I only have to switch it on."""
@@ -851,6 +872,9 @@ async def on_message(event):
             return
         await event.reply(f"Stopped {project}." if runner.stop_project(project)
                           else f"Nothing running for {project!r}. Projects: {', '.join(PROJECTS)}")
+    elif text.startswith("/guard") or text.startswith("/unguard"):
+        arg = "off" if text.startswith("/unguard") else text.removeprefix("/guard").strip().lower()
+        await event.reply(await guard_command(arg))
     elif text.startswith("/transcript"):
         files = sorted(CALLS.glob("*.txt")) if CALLS.exists() else []
         await event.reply(f"📞 {files[-1].stem}\n\n" + files[-1].read_text()[-3800:] if files else "No calls yet.")
@@ -1066,6 +1090,8 @@ async def main():
     tools.hooks.mac = mac
     tools.hooks.runner = runner
     tools.hooks.mac_late = mac_late
+    tools.hooks.guard = guard.Guard(guard_alert, guard_photos, tools.take_screenshot,
+                                    busy=lambda: bool(tools.hooks.mac.current))
     runner_task = {"t": asyncio.create_task(runner.run_forever(), name="runner")}
 
     def restart_runner():                 # the self-check found the runner's task dead: start it again
@@ -1074,6 +1100,7 @@ async def main():
     background = [asyncio.create_task(tools.serve()), runner_task["t"],
                   asyncio.create_task(daily_call()), asyncio.create_task(daily_reminder()),
                   asyncio.create_task(daily_at((3, 0), coremem.consolidate)),   # nightly core-memory pass
+                  asyncio.create_task(tools.hooks.guard.run_forever()),
                   asyncio.create_task(selfcheck.run_forever(
                       runner, lambda: not runner_task["t"].done(), restart_runner, chat.reply,
                       lambda text: tgfmt.send(tg, OWNER_ID, "🔎 " + tgfmt.md(text), silent=True)))]
