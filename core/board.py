@@ -6,8 +6,10 @@ last step or the result. The board's own Status column is moved to in-progress /
 Projects with "github" instead of "board" in projects.json keep their tickets as GitHub Issues
 (core/ghboard.py); the functions here hand those over, so callers don't need to care.
 """
+import asyncio
 import logging
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -28,9 +30,15 @@ STAGE_NAMES = {
     "done": ("done",),
 }
 
+CACHE_SECONDS = 60     # one full read per Notion board per minute: filtered reads of every board on
+                       # every 10 s tick came close to Notion's rate limit
 log = logging.getLogger("jarvis.board")
 _http = httpx.AsyncClient(base_url=API, headers=HEADERS, timeout=30)
 _schemas: dict[str, dict] = {}       # db id -> {"title": prop name, "status": (type, [options])}
+_cache: dict[str, tuple[float, list]] = {}    # project -> (when read, every ticket, oldest first)
+_writes: dict[str, int] = {}                  # project -> writes so far: spots a write during a read
+_read_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+_unreadable: dict[str, float] = {}    # project -> last time its board failed (for quiet logging)
 
 
 @dataclass
@@ -61,7 +69,7 @@ def boards() -> dict[str, str]:
 
 
 def _matches(t: "Ticket", f: dict | None) -> bool:
-    """The Notion filters this module uses, applied to a GitHub ticket."""
+    """The Notion filters this module uses, applied to a ticket we already have."""
     if not f:
         return True
     if "or" in f:
@@ -72,7 +80,10 @@ def _matches(t: "Ticket", f: dict | None) -> bool:
         sel = f.get("select", {})
         return t.jarvis == sel["equals"] if "equals" in sel else bool(t.jarvis) if sel.get("is_not_empty") else True
     if f.get("timestamp") == "last_edited_time":
-        return ghboard.recently_finished(t)
+        if ghboard.is_gh_page(t.page_id):
+            return ghboard.recently_finished(t)
+        after = datetime.fromisoformat(f["last_edited_time"]["after"])
+        return bool(t.edited) and datetime.fromisoformat(t.edited) > after
     return True
 
 
@@ -127,13 +138,18 @@ def _ticket(project: str, page) -> Ticket:
     )
 
 
-async def _query(project: str, filter_: dict | None = None, sorts=None) -> list[Ticket]:
-    if ghboard.is_gh(project):
-        return [t for t in await ghboard.tickets(project) if _matches(t, filter_)]
+def _quietly(project: str, message: str) -> None:
+    """Warn about a failing board once in a while, not on every check."""
+    if time.monotonic() - _unreadable.get(project, 0) > 600:
+        log.warning("board %s %s", project, message[:200])
+        _unreadable[project] = time.monotonic()
+
+
+async def _read_board(project: str) -> list[Ticket]:
     db, out, cursor = boards()[project], [], None
     while True:
-        body = {"page_size": 100, **({"filter": filter_} if filter_ else {}),
-                **({"sorts": sorts} if sorts else {}), **({"start_cursor": cursor} if cursor else {})}
+        body = {"page_size": 100, "sorts": [{"timestamp": "created_time", "direction": "ascending"}],
+                **({"start_cursor": cursor} if cursor else {})}
         r = await _http.post(f"/databases/{db}/query", json=body)
         r.raise_for_status()
         data = r.json()
@@ -141,6 +157,53 @@ async def _query(project: str, filter_: dict | None = None, sorts=None) -> list[
         if not data.get("has_more"):
             return out
         cursor = data["next_cursor"]
+
+
+async def _tickets(project: str, fresh: bool = False) -> list[Ticket]:
+    """Every ticket on a Notion board, read at most once per CACHE_SECONDS. If Notion fails, the last
+    good copy is served and asked for again after CACHE_SECONDS."""
+    def recent(entry) -> bool:
+        return bool(entry) and time.monotonic() - entry[0] < CACHE_SECONDS
+
+    if not fresh and recent(_cache.get(project)):
+        return _cache[project][1]
+    async with _read_locks[project]:
+        hit = _cache.get(project)
+        if not fresh and recent(hit):        # someone else read it while we waited
+            return hit[1]
+        writes = _writes.get(project, 0)
+        try:
+            out = await _read_board(project)
+        except Exception as e:
+            if not hit:
+                raise
+            _quietly(project, f"unreadable, using the copy from {time.monotonic() - hit[0]:.0f} s ago: {e}")
+            _cache[project] = (time.monotonic(), hit[1])
+            return hit[1]
+        # a write during the read may be missing from it, so read again next time
+        _cache[project] = (time.monotonic() if _writes.get(project, 0) == writes else 0.0, out)
+        return out
+
+
+def _remember(project: str, page: dict) -> Ticket:
+    """Put a page Notion just returned from a write into the cached board, so the runner never acts
+    on the old state of a ticket it just changed."""
+    new = _ticket(project, page)
+    _writes[project] = _writes.get(project, 0) + 1
+    if hit := _cache.get(project):
+        rows = hit[1]
+        for i, t in enumerate(rows):
+            if t.page_id == new.page_id:
+                rows[i] = new
+                break
+        else:
+            rows.append(new)
+    return new
+
+
+async def _query(project: str, filter_: dict | None = None, fresh: bool = False) -> list[Ticket]:
+    rows = await ghboard.tickets(project) if ghboard.is_gh(project) else await _tickets(project, fresh)
+    return [t for t in rows if _matches(t, filter_)]
 
 
 def _jarvis_is(*states: str) -> dict:
@@ -152,26 +215,21 @@ async def in_progress(project: str) -> list[Ticket]:
     return [t for t in await _query(project) if (t.status or "").lower() in STAGE_NAMES["doing"]]
 
 
-_unreadable: dict[str, float] = {}    # project -> last time its board failed (for quiet logging)
-
-
-async def _each_board(filter_: dict, sorts=None) -> list[Ticket]:
+async def _each_board(filter_: dict) -> list[Ticket]:
     """Across all boards; a board that can't be read (Notion/GitHub error, rate limit) is skipped,
     so one bad board never stops the others (it stalled the whole runner on 2026-11-02..04)."""
     out = []
     for project in boards():
         try:
-            out += await _query(project, filter_, sorts=sorts)
+            out += await _query(project, filter_)
         except Exception as e:
-            if time.monotonic() - _unreadable.get(project, 0) > 600:
-                log.warning("board %s unreadable, skipped: %s", project, str(e)[:200])
-                _unreadable[project] = time.monotonic()
+            _quietly(project, f"unreadable, skipped: {e}")
     return out
 
 
 async def queued() -> list[Ticket]:
     """Tickets waiting for a worker, oldest first, across all boards."""
-    return await _each_board(_jarvis_is("Queued"), sorts=[{"timestamp": "created_time", "direction": "ascending"}])
+    return await _each_board(_jarvis_is("Queued"))
 
 
 async def with_jarvis(state: str) -> list[Ticket]:
@@ -192,7 +250,7 @@ async def add_ticket(project: str, title: str, my_words: str, source: str) -> Ti
              "paragraph": {"rich_text": [{"text": {"content": f"Sanjar's words ({source}): {my_words}"[:1900]}}]}}]
     r = await _http.post("/pages", json={"parent": {"database_id": db}, "properties": props, "children": body})
     r.raise_for_status()
-    return _ticket(project, r.json())
+    return _remember(project, r.json())
 
 
 async def find_open(project: str, query: str) -> list[Ticket]:
@@ -219,8 +277,8 @@ async def find_any(ref: str) -> Ticket | None:
     """Any ticket on any board by its short ref, also ones Jarvis was never asked to do."""
     if t := await find(ref):
         return t
-    for project in boards():
-        for t in await _query(project):
+    for project in boards():             # not in our copy: maybe it was only just added on Notion
+        for t in await _query(project, fresh=True):
             if t.ref == ref.strip().lower():
                 return t
     return None
@@ -235,6 +293,7 @@ async def unqueue(t: Ticket, reason: str) -> None:
     r = await _http.patch(f"/pages/{t.page_id}", json={"properties": {
         "Jarvis": {"select": None}, "Jarvis note": _rich(reason)}})
     r.raise_for_status()
+    _remember(t.project, r.json())
     await append_log(t.page_id, [f"Taken off Jarvis's queue: {reason}"])
 
 
@@ -257,6 +316,7 @@ async def drop(t: Ticket, reason: str) -> str:
         how = "title marked [dropped]"
     r = await _http.patch(f"/pages/{t.page_id}", json={"properties": props})
     r.raise_for_status()
+    _remember(t.project, r.json())
     _schemas.pop(db, None)          # a new "Dropped" option may have been added
     await append_log(t.page_id, [f"Dropped: {reason}"])
     return how
@@ -311,7 +371,7 @@ async def move(t: Ticket, to_project: str, reason: str) -> Ticket:
                  "paragraph": {"rich_text": [{"text": {"content": line[:1900]}}]}} for line in lines[:100]]
     r = await _http.post("/pages", json={"parent": {"database_id": db}, "properties": props, "children": children})
     r.raise_for_status()
-    new = _ticket(to_project, r.json())
+    new = _remember(to_project, r.json())
     await drop(t, f"moved to {to_project} as {new.ref}: {reason}")
     return new
 
@@ -329,6 +389,7 @@ async def update(t: Ticket, *, jarvis: str | None = None, note: str | None = Non
         props["Status"] = value
     r = await _http.patch(f"/pages/{t.page_id}", json={"properties": props})
     r.raise_for_status()
+    _remember(t.project, r.json())
 
 
 async def append_log(page_id: str, lines: list[str]) -> None:

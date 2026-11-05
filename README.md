@@ -130,6 +130,10 @@ tickets left Working go back in the queue (twice at most, then Failed) instead o
 self-check's in-place runner restart doesn't touch them. Every restart path (restart_when_idle.sh, the watchdog)
 waits until no worker runs.
 
+Notion reads: each board is read in full at most once a minute (`CACHE_SECONDS` in core/board.py) and filtered
+locally, instead of every board on every 10 s check. Jarvis's own writes update that copy at once; if Notion fails,
+the last copy is served. So a ticket queued by hand on Notion can take up to a minute to start.
+
 Runner safety (ticket 7493382f): a board that can't be read (Notion/GitHub error, rate limit) is skipped instead of
 stopping the whole queue; the GitHub board is read at most every 2 min and its last copy is used when GitHub refuses.
 The runner touches `var/state/runner_heartbeat` every loop; LaunchAgent `com.sanjar.jarvis-watchdog` runs
