@@ -1,6 +1,6 @@
 #!/bin/sh
 # Public HTTPS for the Jarvis phone app (ticket 31ed52a7): Cloudflare tunnel "jarvis-app",
-# https://jarvis.sanjarbek17.uz/api/* -> the app server on :8790. Run by launchd
+# https://jarvis.sanjarbek17.uz (app API and website) -> the app server on :8790. Run by launchd
 # (~/Library/LaunchAgents/com.sanjar.jarvis-app-tunnel.plist, KeepAlive).
 #
 # Safety: the tunnel only opens once the running Jarvis has the login code (/api/health says

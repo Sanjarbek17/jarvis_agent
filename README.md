@@ -78,8 +78,8 @@ when the answer went to Telegram). Images are kept shrunk to 1280 px JPEG in `va
 
 Website: `web/` (plain HTML/JS, no build step), served by the same `core/appserver.py`, so the phone app and the
 site share one backend, chats and login. It does what the app does: projects, chats, images, voice messages, live
-calls, workers, Updates. Open `http://127.0.0.1:8790` on the Mac; the public address is `https://jarvis.sanjarbek17.uz`
-once the tunnel lets `/` through (`~/.cloudflared/jarvis-app.yml` only passes `/api/` until then). Login is the Telegram
+calls, workers, Updates. Open `https://jarvis.sanjarbek17.uz`, or `http://127.0.0.1:8790` on the Mac (the tunnel in
+`~/.cloudflared/jarvis-app.yml` passes the whole address; the server 404s anything but `/api/*` and `WEB_FILES`). Login is the Telegram
 code; the site never has `APP_TOKEN`. Microphone features need https or localhost, so not the plain home Wi-Fi address.
 Only the files in `WEB_FILES` are served; add a new one there. No login is needed for those files: they hold no data.
 
