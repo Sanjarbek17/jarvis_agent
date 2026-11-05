@@ -15,6 +15,7 @@ core/
   board.py           Notion API: each project's board + its Jarvis column
   runner.py          picks Queued tickets and runs Claude Code workers
   mac.py             Mac worker: does things on the Mac itself (apps, settings, screen)
+web/                 the website, served by core/appserver.py
 config/projects.json project -> folders in ~/dev + its sprint board
 scripts/login.py     one-time Telegram login for the Jarvis account
 scripts/relogin.py   fresh Telegram login, no scan/code: the current login approves it, 2FA from
@@ -74,6 +75,13 @@ Images in the app (ticket 546d965e): screenshots from mac_task / screenshot aske
 chat (not Telegram); ticket and Mac results carry their screenshots into the app too (the Updates chat gets them even
 when the answer went to Telegram). Images are kept shrunk to 1280 px JPEG in `var/state/app_images/` and served at
 `GET /api/images/{name}` with the app login. Needs app 0.7+.
+
+Website: `web/` (plain HTML/JS, no build step), served by the same `core/appserver.py`, so the phone app and the
+site share one backend, chats and login. It does what the app does: projects, chats, images, voice messages, live
+calls, workers, Updates. Open `http://127.0.0.1:8790` on the Mac; the public address is `https://jarvis.sanjarbek17.uz`
+once the tunnel lets `/` through (`~/.cloudflared/jarvis-app.yml` only passes `/api/` until then). Login is the Telegram
+code; the site never has `APP_TOKEN`. Microphone features need https or localhost, so not the plain home Wi-Fi address.
+Only the files in `WEB_FILES` are served; add a new one there. No login is needed for those files: they hold no data.
 
 Memory: Jarvis keeps long-term memory in `var/state/memory/` (facts it was told to `remember`, plus
 every chat and call turn, and old call transcripts). Relevant bits are pulled in front of each
