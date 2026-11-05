@@ -367,10 +367,19 @@ def push(text: str, chat_id: str = "", photos=()) -> dict | None:
     return msg
 
 
+def _with_project(items: list[dict]) -> list[dict]:
+    """News from a chat also says that chat's project, which the website needs to open it."""
+    out = []
+    for m in items:
+        chat = load_chat(m["chat"]) if m.get("chat") else None
+        out.append({**m, "chat_project": chat["project"]} if chat else m)
+    return out
+
+
 def updates_since(after: float, limit: int = 20) -> list[dict]:
     chat = load_chat(UPDATES)
     items = [m for m in chat["messages"] if m.get("pushed") and m["ts"] > after] if chat else []
-    return items[-limit:]
+    return _with_project(items[-limit:])
 
 
 def _unseen_pushes(chat: dict) -> str:
@@ -426,7 +435,8 @@ async def messages(req: Request):
         if not text:
             return JSONResponse({"error": "empty"}, status_code=400)
         return JSONResponse(await ask(chat, text))
-    return JSONResponse(chat["messages"][-200:])
+    recent = chat["messages"][-200:]
+    return JSONResponse(_with_project(recent) if chat["id"] == UPDATES else recent)
 
 
 async def voice(req: Request):
