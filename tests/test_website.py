@@ -236,3 +236,35 @@ def test_projects_with_new_activity_and_new_projects_come_first(tmp_path, monkey
     assert names() == ["General", "Newest", "Quiet", "Old"]
     appserver.new_chat("Old", "Back at it")
     assert names() == ["General", "Old", "Newest", "Quiet"]
+
+
+def test_telegram_and_the_website_are_one_conversation(tmp_path, monkeypatch):
+    import asyncio
+    monkeypatch.setattr(appserver, "CHATS", tmp_path / "chats")
+    sent, asked = [], []
+
+    class Main:
+        session_id = "main"
+
+        async def reply(self, text):
+            asked.append(text)
+            return "Answer"
+
+    async def tell(text):
+        sent.append(text)
+
+    monkeypatch.setattr(appserver, "main_brain", Main())
+    monkeypatch.setattr(appserver, "tell_telegram", tell)
+    monkeypatch.setattr(appserver, "_brains", {})
+
+    appserver.telegram_said("me", "hello from Telegram")
+    appserver.telegram_said("jarvis", "hello back")
+    chat = appserver.load_chat(appserver.UPDATES)
+    assert [m["role"] for m in chat["messages"]] == ["me", "jarvis"]
+    assert appserver.updates_since(0) == []                 # the conversation is not news
+
+    asyncio.run(appserver.ask(chat, "hello from the site"))
+    assert "hello from the site" in asked[0]                # the same brain as Telegram
+    assert sent == ["From the website: hello from the site", "Answer"]
+    assert appserver._brains == {}                          # so the idle check never stops it
+    assert [m["text"] for m in appserver.load_chat(appserver.UPDATES)["messages"]][-2:] == ["hello from the site", "Answer"]

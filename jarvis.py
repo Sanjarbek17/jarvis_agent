@@ -802,10 +802,19 @@ _inbox: list[tuple] = []        # (event, text) that came in while the brain was
 _inbox_running = False
 
 
-async def chat_turn(event, text: str):
+def show_on_site(role: str, text: str):
+    """The website's Telegram chat shows this conversation too."""
+    try:
+        appserver.telegram_said(role, text)
+    except Exception:
+        log.exception("couldn't copy a Telegram message to the website")
+
+
+async def chat_turn(event, text: str, shown: str = ""):
     """Messages that arrive while Jarvis is still answering join ONE follow-up turn, answered together,
     instead of a line of separate turns that each wait for the brain (OpenClaw's "collect" mode)."""
     global _inbox_running
+    show_on_site("me", shown or text)
     _inbox.append((event, text))
     if _inbox_running:
         return                       # the loop below picks it up with the next turn
@@ -820,6 +829,7 @@ async def chat_turn(event, text: str):
             async with tg.action(OWNER_ID, "typing"):
                 reply = await chat.reply(msg)
             await tgfmt.reply(batch[-1][0], tgfmt.md(reply) if reply else "(no reply)")
+            show_on_site("jarvis", reply)
     finally:
         _inbox_running = False
 
@@ -857,10 +867,12 @@ async def on_message(event):
     if not text and not file_note:
         return
     if file_note:
+        show_on_site("me", text or "Sent a file on Telegram")
         ctx = await reply_context(event)
         async with tg.action(OWNER_ID, "typing"):
             reply = await chat.reply("\n".join(p for p in (file_note, ctx + text) if p.strip()))
         await tgfmt.reply(event, tgfmt.md(reply) if reply else "Saved it, sir.")
+        show_on_site("jarvis", reply)
         return
     if text.startswith("/status"):
         project = text.removeprefix("/status").strip()
@@ -935,7 +947,7 @@ async def on_message(event):
         await chat.clear()
         await event.reply("Cleared." + saved)
     else:
-        await chat_turn(event, await reply_context(event) + text)
+        await chat_turn(event, await reply_context(event) + text, shown=text)
 
 
 @tg.on(events.NewMessage(incoming=True, func=lambda e: e.is_group and bool((e.raw_text or "").strip())))
@@ -1114,6 +1126,8 @@ async def main():
     appserver.start_call = app_call
     appserver.worker_status = runner.snapshot
     appserver.send_code = lambda text: tg.send_message(OWNER_ID, text)   # app login codes (ticket 31ed52a7)
+    appserver.main_brain = chat                                          # the website's Telegram chat
+    appserver.tell_telegram = lambda text: tgfmt.send(tg, OWNER_ID, tgfmt.md(text), link_preview=False)
     asyncio.create_task(appserver.serve())
     asyncio.create_task(send_format_samples())
     asyncio.create_task(outbox.run(tg, OWNER_ID, appserver.push_file))   # scripts send Sanjar things through us

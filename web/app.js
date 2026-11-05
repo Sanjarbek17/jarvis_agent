@@ -910,7 +910,7 @@ function tick() {
   ticks++;
   if (ticks % 10 === 0) { pollNews(); pollProjects(); }
   if (document.hidden) return;
-  if (open && (waiting.has(open.id) || ticks % 4 === 0)) loadMessages(open);
+  if (open && (waiting.has(open.id) || ticks % (open.id === UPDATES ? 2 : 4) === 0)) loadMessages(open);
   if (document.getElementById("workers") ? ticks % 2 === 0 : ticks % 5 === 0) pollWorkers();
 }
 

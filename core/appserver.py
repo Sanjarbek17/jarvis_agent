@@ -38,6 +38,8 @@ with a login session (the site never has APP_TOKEN).
 Each chat is its own Claude conversation (resumed by session id, stopped when idle), told which
 project it is about, so Sanjar doesn't have to say it. Chats live in var/state/app_chats/.
 
+"Updates from Jarvis" is the same conversation as Telegram: same brain, and what is said on one side
+shows on the other (commands like /status and /2fa stay on Telegram).
 Whatever Jarvis tells Sanjar on its own (push()) also lands in the "Updates from Jarvis" chat (ticket
 e028892d); the app polls /api/notifications and shows a phone notification, no Google services needed.
 """
@@ -85,7 +87,7 @@ CODE_GAP = 60                          # at most one code a minute...
 CODES_PER_HOUR = 5                     # ...and this many an hour
 IDLE_STOP = 15 * 60                    # stop a chat's Claude process after this long unused
 GENERAL = "General"
-UPDATES = "updates"                    # chat id of "Updates from Jarvis"
+UPDATES = "updates"                    # chat id of "Updates from Jarvis", the same conversation as Telegram
 KEEP_UPDATES = 300
 WEB = Path(__file__).resolve().parent.parent / "web"
 WEB_FILES = {"": "index.html", "app.js": "app.js", "style.css": "style.css",   # only these are served
@@ -103,6 +105,8 @@ _brains: dict[str, tuple[Brain, float]] = {}   # chat id -> (brain, last used)
 start_call: Callable[[WebSocket, dict], Awaitable[None]] | None = None   # set by jarvis.py
 worker_status: Callable[[], dict] | None = None                          # set by jarvis.py (runner.snapshot)
 send_code: Callable[[str], Awaitable] | None = None                      # set by jarvis.py: text to Sanjar's Telegram
+main_brain: Brain | None = None                                          # set by jarvis.py: the Telegram conversation
+tell_telegram: Callable[[str], Awaitable] | None = None                  # set by jarvis.py: text to Sanjar's Telegram
 
 _code: dict = {}                       # the one pending login code: {hash, until, tries}
 _code_times: list[float] = []          # when codes were sent (rate limit)
@@ -311,7 +315,35 @@ def context_line(project: str) -> str:
 
 # --- talking ---------------------------------------------------------------------------------
 
+def _shared(chat: dict) -> bool:
+    """This chat is the Telegram conversation: same brain, and each side sees what the other says."""
+    return chat["id"] == UPDATES and main_brain is not None
+
+
+async def _to_telegram(text: str) -> None:
+    if tell_telegram is None:
+        return
+    try:
+        await tell_telegram(text)
+    except Exception:
+        log.exception("couldn't copy a website message to Telegram")
+
+
+def telegram_said(role: str, text: str) -> None:
+    """A message of the Telegram conversation (role "me" or "jarvis"): show it in the shared chat.
+    Not "pushed", so it never counts as news."""
+    text = (text or "").strip()
+    if not text:
+        return
+    chat = _updates_chat()
+    chat["messages"] = (chat["messages"] + [{"role": role, "text": text[:4000], "ts": time.time()}])[-KEEP_UPDATES:]
+    chat["updated"] = chat["messages"][-1]["ts"]
+    save_chat(chat)
+
+
 def _brain(chat: dict) -> Brain:
+    if _shared(chat):
+        return main_brain                      # lives as long as Jarvis, so it's not in _brains
     hit = _brains.get(chat["id"])
     if hit:
         brain = hit[0]
@@ -331,6 +363,9 @@ async def ask(chat: dict, text: str, voice: bool = False) -> dict:
     if chat["title"] == "New chat":
         chat["title"] = text[:40] + ("…" if len(text) > 40 else "")
     save_chat(chat)
+    shared = _shared(chat)
+    if shared:
+        await _to_telegram(f"From the website: {text}")
     brain = _brain(chat)
     try:
         reply = await brain.reply(f"{context_line(chat['project'])}\n{earlier}{text}")
@@ -344,7 +379,10 @@ async def ask(chat: dict, text: str, voice: bool = False) -> dict:
     chat["messages"].append(msg)
     chat["session"], chat["updated"] = brain.session_id, time.time()
     save_chat(chat)
-    _brains[chat["id"]] = (brain, time.monotonic())
+    if shared:
+        await _to_telegram(reply)
+    else:
+        _brains[chat["id"]] = (brain, time.monotonic())
     return {**msg, "chat_project": chat["project"]}    # Jarvis may have moved the chat while answering
 
 
@@ -408,6 +446,11 @@ def add_images(chat_id: str, paths, caption: str = "") -> dict | None:
     return msg
 
 
+def _updates_chat() -> dict:
+    return load_chat(UPDATES) or {"id": UPDATES, "project": GENERAL, "title": "Updates from Jarvis",
+                                  "created": time.time(), "session": "", "messages": []}
+
+
 def push(text: str, chat_id: str = "", photos=(), files=()) -> dict | None:
     """Jarvis wrote to Sanjar first: keep a copy for the app (its notifications poll for these).
     chat_id: also put it into that app chat (the one he asked from), where its Claude conversation
@@ -425,8 +468,7 @@ def push(text: str, chat_id: str = "", photos=(), files=()) -> dict | None:
         target["messages"].append(msg)
         target["updated"] = msg["ts"]
         save_chat(target)
-    chat = load_chat(UPDATES) or {"id": UPDATES, "project": GENERAL, "title": "Updates from Jarvis",
-                                  "created": time.time(), "session": "", "messages": []}
+    chat = _updates_chat()
     msg = {"role": "jarvis", "text": text[:4000], "ts": time.time(), "pushed": True, **extra,
            **({"chat": target["id"], "chat_title": target["title"]} if target else {})}
     chat["messages"] = (chat["messages"] + [msg])[-KEEP_UPDATES:]

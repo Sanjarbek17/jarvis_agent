@@ -123,7 +123,9 @@ def test_messages_while_busy_join_one_turn():
     async def reply(event, html):
         replies.append(event)
 
+    shown = []
     g = _jarvis_funcs("chat_turn", chat=NS(reply=chat_reply), tg=NS(action=lambda *a: Action()), OWNER_ID=1,
+                      show_on_site=lambda role, text: shown.append((role, text)),
                       tgfmt=NS(reply=reply, md=lambda t: t), _inbox=[], _inbox_running=False, asyncio=asyncio)
 
     async def go():
@@ -136,6 +138,7 @@ def test_messages_while_busy_join_one_turn():
     asyncio.run(go())
     assert len(calls) == 2 and calls[0] == "hello"
     assert "and also this" in calls[1] and "and one more" in calls[1] and replies == ["e1", "e3"]
+    assert shown == [("me", "hello"), ("me", "and also this"), ("me", "and one more"), ("jarvis", "ok"), ("jarvis", "ok")]
 
 
 def test_tickets_from_sanjar_are_remembered():
