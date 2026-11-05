@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from . import autoanswer, board, grants, origin, ramguard, tgfmt
+from . import autoanswer, board, grants, localboard, origin, ramguard, tgfmt
 from .brain import BRAIN_MODEL   # workers run on the same model as the Jarvis brain (Opus)
 from .board import Ticket
 from .config import (rules_text, GIT_FLOW, HERE, LOGS, NEVER_DO, NEVER_DO_MAIN_OK, POLL_SECONDS,
@@ -128,6 +128,17 @@ change its Status field on the GitHub Project, its jarvis:* labels or its open/c
 Jarvis does that. Tick acceptance-criteria checkboxes in the issue body only if you verified them.
 If this project has its own skill or notes for its board (CLAUDE.md, a <project>-board skill),
 follow them, except for the Status/labels part above.
+"""
+    if localboard.is_local_page(t.page_id):
+        board_cli = f"{HERE / '.venv/bin/python'} {HERE / 'scripts/board.py'}"
+        return f"""Ticket {t.ref} for project {t.project}, from Sanjar's Jarvis board: {t.title}
+{f"Latest note on it: {t.note}" if t.note else ""}
+
+First read the whole ticket: `{board_cli} show {t.ref}` (description, acceptance criteria, sub-tasks,
+and any earlier log or answer from Sanjar at the bottom). This board lives on the Mac, not in Notion.
+Don't change the ticket's status or Jarvis state; Jarvis does that. To add other tickets or edit this
+one's text, see `{board_cli} --help`. If this project has its own skill or notes for working on board
+tickets (CLAUDE.md, a <project>-board skill), follow them, but this board replaces any Notion steps in them.
 """
     return f"""Ticket {t.ref} for project {t.project}, from Sanjar's Notion board: {t.title}
 Ticket page: {t.url}

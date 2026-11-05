@@ -35,6 +35,8 @@ let timer = null;
 const waiting = new Map(); // chat id -> {since, text, voice, lost, at}: a message Jarvis is answering
 const drafts = new Map();
 const images = new Map();  // image name -> a promise of its blob: URL
+const boards = new Map();  // project -> the last /api/board answer, so a board opens at once
+let boardOn = null;        // the board on screen: {project, show: "open"|"done"|"all", find, adding}
 
 // --- small helpers ---------------------------------------------------------------------------
 
@@ -94,6 +96,8 @@ function clock(seconds) {
 
 const chatLink = (project, id) => `#/c/${encodeURIComponent(project)}/${encodeURIComponent(id)}`;
 const projectLink = project => `#/p/${encodeURIComponent(project)}`;
+const boardLink = project => `#/b/${encodeURIComponent(project)}`;
+const ticketLink = (project, ref) => `#/t/${encodeURIComponent(project)}/${encodeURIComponent(ref)}`;
 const about = name => projects.find(p => p.name === name)?.about || "";
 
 function device() {
@@ -289,6 +293,8 @@ function parseRoute() {
     if (kind === "p" && one) return { view: "chats", project: one };
     if (kind === "c" && one && two) return { view: "main", project: one, chat: two };
     if (kind === "workers") return { view: "main", workers: true };
+    if (kind === "b" && one) return { view: "main", project: one, board: true };
+    if (kind === "t" && one && two) return { view: "main", project: one, ticket: two };
   } catch { /* a broken link: go home */ }
   return { view: "home" };
 }
@@ -303,6 +309,8 @@ function route() {
   renderSide();
   renderChats(where.project || GENERAL);
   if (where.workers) showWorkers();
+  else if (where.board) showBoard(where.project);
+  else if (where.ticket) showTicket(where.project, where.ticket);
   else if (where.chat) showChat(where.project, where.chat);
   else showNothing();
 }
@@ -346,7 +354,9 @@ function drawChats(project) {
   const rows = chats.map(c => h("a", { class: `row ${c.id === open?.id ? "on" : ""}`, href: chatLink(project, c.id) },
     h("span", { class: "grow" }, h("div", { class: "name", text: c.title }), h("div", { class: "about", text: c.last.replace(/\*\*|`/g, "") || "No messages yet" })),
     h("span", { class: "when", text: ago(c.updated) })));
-  document.getElementById("chats").replaceChildren(chatsTop(project), h("nav", { class: "list", "aria-label": `Chats in ${project}` },
+  const boardRow = project === GENERAL ? null : h("a", { class: `row ${location.hash.startsWith(boardLink(project)) ? "on" : ""}`, href: boardLink(project) },
+    h("span", { class: "grow" }, h("div", { class: "name", text: "Board" }), h("div", { class: "about", text: "Tickets for this project" })));
+  document.getElementById("chats").replaceChildren(chatsTop(project), h("nav", { class: "list", "aria-label": `Chats in ${project}` }, boardRow,
     ...(rows.length ? rows : [h("div", { class: "empty", text: "No chats here yet." })])));
 }
 
@@ -812,6 +822,175 @@ function play(ctx, data, playAt) {
 
 // --- workers ---------------------------------------------------------------------------------
 
+// --- boards ----------------------------------------------------------------------------------
+
+const CLOSED = /^(done|shipped|complete|completed|cancelled|canceled|dropped|won't do|archived)$/i;
+const STATUSES = ["To do", "In progress", "Test", "Done", "Dropped"];
+
+function pill(jarvis) {
+  if (!jarvis) return null;
+  return h("span", { class: `pill ${jarvis.toLowerCase().replace(/\s/g, "-")}`, text: jarvis });
+}
+
+function showBoard(project) {
+  open = null;
+  if (boardOn?.project !== project) boardOn = { project, show: "open", find: "", adding: false };
+  const back = h("button", { class: "back", "aria-label": "Back to chats", text: "‹", onclick: () => { location.hash = projectLink(project); } });
+  document.getElementById("main").replaceChildren(
+    h("header", { class: "top" }, back,
+      h("div", { class: "grow" }, h("h2", { text: `${project} board` }), h("div", { class: "sub", id: "board-sub" })),
+      h("button", { class: "new", title: "New ticket", "aria-label": "New ticket", text: "+", onclick: () => { boardOn.adding = !boardOn.adding; drawBoardForm(); } })),
+    h("div", { class: "board-bar" },
+      h("input", { class: "field", type: "search", placeholder: "Find a ticket", "aria-label": "Find a ticket", value: boardOn.find,
+        oninput: e => { boardOn.find = e.target.value; drawBoard(); } }),
+      h("div", { class: "seg", id: "board-seg" })),
+    h("div", { id: "board-form" }),
+    h("div", { class: "board", id: "board" }));
+  drawBoardForm();
+  drawBoard();
+  loadBoard(project);
+}
+
+async function loadBoard(project) {
+  try {
+    const data = await api(`/api/board?project=${encodeURIComponent(project)}`);
+    boards.set(project, data);
+    if (boardOn?.project === project) drawBoard();
+  } catch (e) {
+    const box = document.getElementById("board");
+    if (e.status !== 401 && box && boardOn?.project === project && !boards.has(project)) box.replaceChildren(h("p", { class: "empty", text: e.message }));
+  }
+}
+
+function drawBoard() {
+  const box = document.getElementById("board");
+  if (!box) return;
+  const data = boards.get(boardOn.project);
+  const seg = document.getElementById("board-seg");
+  seg.replaceChildren(...[["open", "Open"], ["done", "Finished"], ["all", "All"]].map(([key, label]) =>
+    h("button", { class: boardOn.show === key ? "on" : "", text: label, "aria-pressed": String(boardOn.show === key), onclick: () => { boardOn.show = key; drawBoard(); } })));
+  if (!data) { if (!box.firstChild) box.append(h("p", { class: "empty", text: "Loading…" })); return; }
+  const open_ = data.tickets.filter(t => !CLOSED.test(t.status)).length;
+  document.getElementById("board-sub").textContent = `${open_} open of ${data.tickets.length}${data.local ? "" : " · still on Notion"}`;
+  const words = boardOn.find.toLowerCase().split(/\s+/).filter(Boolean);
+  const shown = data.tickets.filter(t => {
+    const closed = CLOSED.test(t.status);
+    if (boardOn.show === "open" ? closed : boardOn.show === "done" && !closed) return false;
+    const text = `${t.title} ${t.ref} ${t.sprint}`.toLowerCase();
+    return words.every(w => text.includes(w));
+  });
+  const groups = data.columns.map(name => [name, shown.filter(t => (t.status || "No status") === name)]).filter(([, rows]) => rows.length);
+  const top = box.scrollTop;
+  box.replaceChildren(...(groups.length ? groups.map(([name, rows]) => h("section", { class: "column" },
+    h("h3", {}, h("span", { text: name }), h("span", { class: "muted", text: String(rows.length) })),
+    ...rows.map(t => h("a", { class: "card", href: ticketLink(boardOn.project, t.ref) },
+      h("div", { class: "title", text: t.title || "Untitled" }),
+      h("div", { class: "meta" }, pill(t.jarvis), h("span", { class: "muted", text: [t.sprint, t.due && `due ${t.due.slice(0, 10)}`, t.ref].filter(Boolean).join(" · ") })))))) :
+    [h("p", { class: "empty", text: words.length ? "No ticket matches that." : "No tickets here." })]));
+  box.scrollTop = top;
+}
+
+function drawBoardForm() {
+  const box = document.getElementById("board-form");
+  if (!box) return;
+  if (!boardOn.adding) { box.replaceChildren(); return; }
+  const title = h("input", { class: "field", placeholder: "Title", "aria-label": "Title", maxlength: "200" });
+  const text = h("textarea", { class: "field", rows: "4", placeholder: "What should be done", "aria-label": "What should be done" });
+  const add = async queue => {
+    if (!title.value.trim()) { title.focus(); return; }
+    try {
+      const { ticket } = await api("/api/board", { method: "POST", json: { project: boardOn.project, title: title.value, text: text.value, queue } });
+      boardOn.adding = false;
+      drawBoardForm();
+      location.hash = ticketLink(ticket.project, ticket.ref);
+    } catch (e) {
+      if (e.status !== 401) toast(e.message);
+    }
+  };
+  box.replaceChildren(h("form", { class: "ticket-form", onsubmit: e => { e.preventDefault(); add(false); } }, title, text,
+    h("div", { class: "actions" },
+      h("button", { class: "btn", type: "submit", text: "Add" }),
+      h("button", { class: "btn primary", type: "button", text: "Add and queue for Jarvis", onclick: () => add(true) }))));
+  title.focus();
+}
+
+async function showTicket(project, ref) {
+  open = null;
+  const main = document.getElementById("main");
+  const backToBoard = () => { location.hash = boardLink(project); };
+  main.replaceChildren(
+    h("header", { class: "top" },
+      h("button", { class: "back", "aria-label": "Back to the board", text: "‹", onclick: backToBoard }),
+      h("div", { class: "grow" }, h("h2", { id: "ticket-head", text: ref }), h("div", { class: "sub" }, h("a", { href: boardLink(project), text: `${project} board` })))),
+    h("div", { class: "ticket", id: "ticket" }, h("p", { class: "empty", text: "Loading…" })));
+  try {
+    const data = await api(`/api/tickets/${encodeURIComponent(ref)}`);
+    if (location.hash === ticketLink(project, ref)) drawTicket(data);
+  } catch (e) {
+    const box = document.getElementById("ticket");
+    if (e.status !== 401 && box) box.replaceChildren(h("p", { class: "empty", text: e.message }));
+  }
+}
+
+async function ticketAction(ref, json) {
+  try {
+    await api(`/api/tickets/${encodeURIComponent(ref)}`, { method: "POST", json });
+    return true;
+  } catch (e) {
+    if (e.status !== 401) toast(e.message);
+    return false;
+  }
+}
+
+function drawTicket(data, editing = false) {
+  const t = data.ticket;
+  const box = document.getElementById("ticket");
+  if (!box) return;
+  const local = data.notion_url !== undefined;
+  const again = () => { boards.delete(t.project); showTicket(t.project, t.ref); };
+  const act = (label, action, cls = "btn", ask = "") => h("button", { class: cls, text: label, onclick: async () => {
+    if (ask && !confirm(ask)) return;
+    if (await ticketAction(t.ref, { action })) again();
+  } });
+  document.getElementById("ticket-head").textContent = t.title || t.ref;
+  if (editing) {
+    const title = h("input", { class: "field", value: t.title, "aria-label": "Title", maxlength: "200" });
+    const text = h("textarea", { class: "field", rows: "16", "aria-label": "Text" });
+    text.value = data.text;
+    box.replaceChildren(h("form", { class: "ticket-form", onsubmit: async e => {
+      e.preventDefault();
+      if (await ticketAction(t.ref, { action: "edit", title: title.value, text: text.value })) again();
+    } }, title, text, h("div", { class: "actions" },
+      h("button", { class: "btn primary", type: "submit", text: "Save" }),
+      h("button", { class: "btn", type: "button", text: "Cancel", onclick: () => drawTicket(data) }))));
+    return;
+  }
+  let status = h("span", { class: "chip", text: t.status || "No status" });
+  if (local) {
+    const names = [...new Set([...(boards.get(t.project)?.columns || []), ...STATUSES, t.status].filter(Boolean))];
+    status = h("select", { class: "chip", "aria-label": "Status", onchange: async e => {
+      if (await ticketAction(t.ref, { action: "edit", status: e.target.value })) again();
+    } }, ...names.map(name => h("option", { value: name, selected: name === t.status, text: name })));
+  }
+  const working = t.jarvis === "Working";
+  const steps = data.log.filter(l => !l.line.startsWith("• "));
+  box.replaceChildren(...[
+    h("div", { class: "meta" }, status, pill(t.jarvis), h("span", { class: "muted small", text: [t.sprint, t.due && `due ${t.due.slice(0, 10)}`, t.ref].filter(Boolean).join(" · ") })),
+    t.note ? h("p", { class: "note", text: t.note }) : null,
+    h("div", { class: "actions" },
+      t.jarvis === "Queued" || working ? null : act("Queue for Jarvis", "queue", "btn primary"),
+      working ? null : t.jarvis && t.jarvis !== "Done" ? act("Take off queue", "unqueue") : null,
+      CLOSED.test(t.status) || working ? null : act("Mark done", "done"),
+      local ? h("button", { class: "btn", text: "Edit", onclick: () => drawTicket(data, true) }) : null,
+      CLOSED.test(t.status) || working ? null : act("Drop", "drop", "btn", `Drop "${t.title}"?`)),
+    h("pre", { class: "ticket-text", text: data.text || "This ticket has no text." }),
+    data.log.length ? h("details", { class: "log", open: steps.length > 0 },
+      h("summary", { text: `Jarvis's log (${data.log.length})` }),
+      ...data.log.map(l => h("div", { class: l.line.startsWith("• ") ? "muted small" : "", text: l.line }))) : null,
+    data.notion_url || !local ? h("a", { class: "small", href: data.notion_url || t.url, target: "_blank", rel: "noopener noreferrer", text: "Open the original page" }) : null,
+  ].filter(Boolean));
+}
+
 function showWorkers() {
   open = null;
   document.getElementById("main").replaceChildren(
@@ -909,6 +1088,7 @@ async function pollProjects() {
 function tick() {
   ticks++;
   if (ticks % 10 === 0) { pollNews(); pollProjects(); }
+  if (ticks % 5 === 0 && boardOn && document.getElementById("board")) loadBoard(boardOn.project);
   if (document.hidden) return;
   if (open && (waiting.has(open.id) || ticks % (open.id === UPDATES ? 2 : 4) === 0)) loadMessages(open);
   if (document.getElementById("workers") ? ticks % 2 === 0 : ticks % 5 === 0) pollWorkers();

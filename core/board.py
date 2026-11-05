@@ -4,7 +4,8 @@ Jarvis column: Queued -> Working -> Needs me / Done / Failed. The runner only ta
 marked Queued; tickets with an empty Jarvis column are left alone. "Jarvis note" holds the
 last step or the result. The board's own Status column is moved to in-progress / done too.
 Projects with "github" instead of "board" in projects.json keep their tickets as GitHub Issues
-(core/ghboard.py); the functions here hand those over, so callers don't need to care.
+(core/ghboard.py), and projects with "local": true keep them on the Mac (core/localboard.py); the
+functions here hand those over, so callers don't need to care.
 """
 import asyncio
 import logging
@@ -15,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from . import ghboard
+from . import ghboard, localboard
 from .config import NOTION_TOKEN, PROJECTS, reload_projects
 
 API = "https://api.notion.com/v1"
@@ -62,10 +63,11 @@ class Ticket:
 
 
 def boards() -> dict[str, str]:
-    """Every project with a board: Notion database id, or "github:<repo>" for GitHub Issues ones."""
+    """Every project with a board: Notion database id, "github:<repo>" for GitHub Issues ones, or
+    "local" for the ones kept on the Mac."""
     reload_projects()
-    return {name: p["board"] if p.get("board") else f"github:{p['github']['repo']}"
-            for name, p in PROJECTS.items() if p.get("board") or p.get("github")}
+    return {name: "local" if p.get("local") else p["board"] if p.get("board") else f"github:{p['github']['repo']}"
+            for name, p in PROJECTS.items() if p.get("local") or p.get("board") or p.get("github")}
 
 
 def _matches(t: "Ticket", f: dict | None) -> bool:
@@ -202,12 +204,22 @@ def _remember(project: str, page: dict) -> Ticket:
 
 
 async def _query(project: str, filter_: dict | None = None, fresh: bool = False) -> list[Ticket]:
-    rows = await ghboard.tickets(project) if ghboard.is_gh(project) else await _tickets(project, fresh)
+    if localboard.is_local(project):
+        rows = localboard.tickets(project)
+    elif ghboard.is_gh(project):
+        rows = await ghboard.tickets(project)
+    else:
+        rows = await _tickets(project, fresh)
     return [t for t in rows if _matches(t, filter_)]
 
 
 def _jarvis_is(*states: str) -> dict:
     return {"or": [{"property": "Jarvis", "select": {"equals": s}} for s in states]}
+
+
+async def all_tickets(project: str) -> list[Ticket]:
+    """Every ticket on the board, whatever kind of board it is."""
+    return await _query(project)
 
 
 async def in_progress(project: str) -> list[Ticket]:
@@ -236,14 +248,19 @@ async def with_jarvis(state: str) -> list[Ticket]:
     return await _each_board(_jarvis_is(state))
 
 
-async def add_ticket(project: str, title: str, my_words: str, source: str) -> Ticket:
-    """A new ticket on the project's board, queued for Jarvis."""
+async def add_ticket(project: str, title: str, my_words: str, source: str, queued: bool = True) -> Ticket:
+    """A new ticket on the project's board, queued for Jarvis unless queued=False."""
+    if localboard.is_local(project):
+        return localboard.add_ticket(project, title, f"Sanjar's words ({source}): {my_words}", queued=queued,
+                                     note=f"added from {source}")
     if ghboard.is_gh(project):
-        return await ghboard.add_ticket(project, title, f"Sanjar's words ({source}): {my_words}")
+        return await ghboard.add_ticket(project, title, f"Sanjar's words ({source}): {my_words}", queued=queued)
     db = boards()[project]
     schema = await _schema(db)
     props = {schema["title"]: {"title": [{"text": {"content": title[:200]}}]},
-             "Jarvis": {"select": {"name": "Queued"}}, "Jarvis note": _rich(f"added from {source}")}
+             "Jarvis note": _rich(f"added from {source}")}
+    if queued:
+        props["Jarvis"] = {"select": {"name": "Queued"}}
     if todo := await _status_value(db, "todo"):
         props["Status"] = todo
     body = [{"object": "block", "type": "paragraph",
@@ -266,6 +283,8 @@ async def find_open(project: str, query: str) -> list[Ticket]:
 
 async def find(ref: str) -> Ticket | None:
     """A ticket Jarvis is involved with, by its short ref."""
+    if (t := localboard.get(ref)) and t.jarvis:
+        return t
     for project in boards():
         for t in await _query(project, {"property": "Jarvis", "select": {"is_not_empty": True}}):
             if t.ref == ref.strip().lower():
@@ -275,7 +294,7 @@ async def find(ref: str) -> Ticket | None:
 
 async def find_any(ref: str) -> Ticket | None:
     """Any ticket on any board by its short ref, also ones Jarvis was never asked to do."""
-    if t := await find(ref):
+    if t := localboard.get(ref) or await find(ref):
         return t
     for project in boards():             # not in our copy: maybe it was only just added on Notion
         for t in await _query(project, fresh=True):
@@ -286,6 +305,10 @@ async def find_any(ref: str) -> Ticket | None:
 
 async def unqueue(t: Ticket, reason: str) -> None:
     """Clear the Jarvis column: the runner leaves the ticket alone from now on."""
+    if localboard.is_local_page(t.page_id):
+        localboard.clear_jarvis(t, reason)
+        await append_log(t.page_id, [f"Taken off Jarvis's queue: {reason}"])
+        return
     if ghboard.is_gh_page(t.page_id):
         await ghboard.clear_jarvis(t, reason)
         await append_log(t.page_id, [f"Taken off Jarvis's queue: {reason}"])
@@ -301,6 +324,8 @@ async def drop(t: Ticket, reason: str) -> str:
     """Unqueue and mark the ticket Dropped on its board. Select-type Status columns get a
     "Dropped" option (Notion adds it on first use); fixed status-type columns can't, so the
     title gets a [dropped] prefix instead. Returns how it was marked."""
+    if localboard.is_local_page(t.page_id):
+        return localboard.drop(t, reason)
     if ghboard.is_gh_page(t.page_id):
         return await ghboard.drop(t, reason)
     db = boards()[t.project]
@@ -325,6 +350,10 @@ async def drop(t: Ticket, reason: str) -> str:
 async def mark_done(t: Ticket, reason: str) -> str:
     """Mark the ticket Done: the Jarvis column Done, and the board's own Status to its done stage
     (every board here has a "Done"). Returns how it was marked."""
+    if localboard.is_local_page(t.page_id):
+        await update(t, jarvis="Done", note=f"done: {reason}", stage="done")
+        await append_log(t.page_id, [f"Marked Done: {reason}"])
+        return "Status + Jarvis Done"
     if ghboard.is_gh_page(t.page_id):
         await update(t, jarvis="Done", note=f"done: {reason}", stage="done")
         await append_log(t.page_id, [f"Marked Done: {reason}"])
@@ -337,6 +366,8 @@ async def mark_done(t: Ticket, reason: str) -> str:
 
 async def body_lines(page_id: str) -> list[str]:
     """The ticket page's text, block by block (plain text, no formatting)."""
+    if localboard.is_local_page(page_id):
+        return localboard.body_lines(page_id)
     if ghboard.is_gh_page(page_id):
         return await ghboard.body_lines(page_id)
     r = await _http.get(f"/blocks/{page_id}/children", params={"page_size": 100})
@@ -352,6 +383,12 @@ async def body_lines(page_id: str) -> list[str]:
 async def move(t: Ticket, to_project: str, reason: str) -> Ticket:
     """Copy the ticket (title + text) to another project's board, then drop the original.
     The copy is queued for Jarvis only if the original was waiting for it."""
+    if localboard.is_local(to_project):
+        lines = await body_lines(t.page_id) + [f"Moved here from {t.project} ({t.ref}): {reason}"]
+        new = localboard.add_ticket(to_project, t.title, "\n".join(lines), note=f"moved from {t.project} {t.ref}",
+                                    queued=t.jarvis in ("Queued", "Needs me", "Failed"))
+        await drop(t, f"moved to {to_project} as {new.ref}: {reason}")
+        return new
     if ghboard.is_gh(to_project):
         lines = await body_lines(t.page_id) + [f"Moved here from {t.project} ({t.ref}): {reason}"]
         new = await ghboard.add_ticket(to_project, t.title, "\n\n".join(lines),
@@ -378,6 +415,8 @@ async def move(t: Ticket, to_project: str, reason: str) -> Ticket:
 
 async def update(t: Ticket, *, jarvis: str | None = None, note: str | None = None,
                  stage: str | None = None) -> None:
+    if localboard.is_local_page(t.page_id):
+        return localboard.update(t, jarvis=jarvis, note=note, stage=stage)
     if ghboard.is_gh_page(t.page_id):
         return await ghboard.update(t, jarvis=jarvis, note=note, stage=stage)
     props = {}
@@ -394,6 +433,8 @@ async def update(t: Ticket, *, jarvis: str | None = None, note: str | None = Non
 
 async def append_log(page_id: str, lines: list[str]) -> None:
     """Add lines to the ticket's page body (its live log)."""
+    if localboard.is_local_page(page_id):
+        return localboard.append_log(page_id, lines)
     if ghboard.is_gh_page(page_id):
         return await ghboard.append_log(page_id, lines)
     blocks = [{"object": "block", "type": "paragraph",

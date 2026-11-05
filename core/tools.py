@@ -157,7 +157,7 @@ def make_server(source: str) -> MCPServer:
 
     @server.tool()
     async def add_task(project: str, task: str, my_words: str, ctx: Context = None) -> str:
-        """Put a NEW ticket on the project's own Notion board, queued for Jarvis; a Claude Code
+        """Put a NEW ticket on the project's own board, queued for Jarvis; a Claude Code
         worker will do it. project: a known project name. task: short title. my_words: what
         Sanjar actually said. For a ticket that already exists on the board, use queue_ticket."""
         if project not in board.boards():
@@ -264,7 +264,7 @@ def make_server(source: str) -> MCPServer:
     @server.tool()
     async def drop_ticket(ticket_ref: str, reason: str) -> str:
         """Drop a ticket that isn't needed: off Jarvis's queue and marked Dropped on its board
-        (nothing is deleted; Sanjar can undo it in Notion)."""
+        (nothing is deleted; Sanjar can undo it on the board)."""
         t = await _editable(ticket_ref, stop=f"dropped: {reason}")
         if isinstance(t, str):
             return t

@@ -25,5 +25,6 @@ Not needed after editing config/projects.json: Jarvis reloads that by itself.
   Never touch main unless this ticket was explicitly allowed to; Sanjar tests `dev`, then has it
   merged to main in one go. If you made a worktree for the ticket, remove it after the merge to
   `dev` (from the main checkout) and delete the merged branch.
+- Boards on the Mac ("local": true in projects.json) are read and changed with `scripts/board.py`, not Notion.
 - Test tools through `core.tools.make_server(...).call_tool(...)`; test Notion changes on
   throwaway cards that are never "Queued" (the live runner would pick them up), then archive them.

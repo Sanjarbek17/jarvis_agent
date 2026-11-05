@@ -147,6 +147,13 @@ tickets left Working go back in the queue (twice at most, then Failed) instead o
 self-check's in-place runner restart doesn't touch them. Every restart path (restart_when_idle.sh, the watchdog)
 waits until no worker runs.
 
+Boards on the Mac: a project with `"local": true` keeps its tickets in `var/state/boards.db` (`core/localboard.py`), not
+Notion. The website and app show every board (Board in a project's chat list; `/api/board`, `/api/tickets/{ref}`):
+search, queue, take off the queue, done, drop, and for boards on the Mac also edit and status. Workers and skills use
+`scripts/board.py` (show, list, add, edit, log). Move a board with `scripts/notion_to_local.py <project> --switch`
+(it refuses while a ticket is Working); Notion isn't changed and the "board" id stays in projects.json as the way back.
+Images and files stay on the old Notion page, which each copied ticket links to.
+
 Notion reads: each board is read in full at most once a minute (`CACHE_SECONDS` in core/board.py) and filtered
 locally, instead of every board on every 10 s check. Jarvis's own writes update that copy at once; if Notion fails,
 the last copy is served. So a ticket queued by hand on Notion can take up to a minute to start.

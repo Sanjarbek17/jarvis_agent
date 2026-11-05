@@ -25,6 +25,11 @@ WebSocket. Two kinds (ticket 31ed52a7):
     GET  /api/files/{name}                   a file from a message's "files" list [{name, title, size}]
     GET  /api/notifications?after=<ts>       {chat, items}: what Jarvis wrote first (ticket news, "needs
                                              you", the daily summary) since ts; the phone polls this
+    GET  /api/board?project=X                {project, local, columns, tickets: [...]}: any board, Notion too
+    POST /api/board {project, title, text, queue?}  a new ticket; {ticket}
+    GET  /api/tickets/{ref}                  {ticket, text, log: [{at, line}], notion_url?}
+    POST /api/tickets/{ref} {action, ...}    queue / unqueue / done / drop / edit {title?, text?, status?,
+                                             sprint?} (edit: boards on the Mac only); {ticket}
     GET  /api/workers                        {count, workers: [{project, ref, title, url, started, step,
                                              active}], waiting}: the ticket workers running right now
     WS   /api/call?token=&chat=              a live call: phone sends 48 kHz mono s16 PCM, gets
@@ -65,6 +70,7 @@ from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from . import board, localboard
 from .brain import Brain, is_silent
 from .config import PROJECTS, STATE, reload_projects
 from .voice import transcribe_audio
@@ -644,6 +650,78 @@ async def workers(req: Request):
     return JSONResponse(worker_status())
 
 
+def _ticket_json(t: board.Ticket) -> dict:
+    return {"ref": t.ref, "project": t.project, "title": t.title, "status": t.status, "jarvis": t.jarvis,
+            "note": t.note, "sprint": t.sprint, "due": t.due, "url": t.url, "edited": t.edited}
+
+
+def _column_rank(name: str) -> tuple[int, str]:
+    low = name.lower()
+    rank = (0 if low in board.STAGE_NAMES["todo"] else 1 if low in board.STAGE_NAMES["doing"]
+            else 4 if low in ("dropped", "cancelled", "canceled", "won't do") else 3 if low in board.FINISHED
+            else 2)
+    return rank, low
+
+
+async def board_view(req: Request):
+    if not _authorized(req):
+        return _deny()
+    if req.method == "POST":
+        data = await req.json()
+        project, title = data.get("project", ""), (data.get("title") or "").strip()
+        if project not in board.boards() or not title:
+            return JSONResponse({"error": "needs a known project and a title"}, status_code=400)
+        t = await board.add_ticket(project, title, (data.get("text") or "").strip(), "the app",
+                                   queued=bool(data.get("queue")))
+        return JSONResponse({"ticket": _ticket_json(t)})
+    project = req.query_params.get("project", "")
+    if project not in board.boards():
+        return JSONResponse({"error": "this project has no board"}, status_code=404)
+    try:
+        tickets = await board.all_tickets(project)
+    except Exception as e:
+        log.warning("board %s for the app: %s", project, str(e)[:200])
+        return JSONResponse({"error": "That board can't be read right now."}, status_code=502)
+    return JSONResponse({"project": project, "local": localboard.is_local(project),
+                         "columns": sorted({t.status or "No status" for t in tickets}, key=_column_rank),
+                         "tickets": [_ticket_json(t) for t in reversed(tickets)]})
+
+
+async def ticket_view(req: Request):
+    if not _authorized(req):
+        return _deny()
+    ref = req.path_params["ref"].strip().lower()
+    t = await board.find_any(ref)
+    if not t:
+        return JSONResponse({"error": "no such ticket"}, status_code=404)
+    if req.method == "GET":
+        if localboard.is_local_page(t.page_id):
+            return JSONResponse({"ticket": _ticket_json(t), **localboard.details(ref)})
+        return JSONResponse({"ticket": _ticket_json(t), "text": "\n".join(await board.body_lines(t.page_id)), "log": []})
+    data = await req.json()
+    action = data.get("action")
+    running = {w["ref"] for w in (worker_status() if worker_status else {"workers": []})["workers"]}
+    if action in ("queue", "unqueue", "done", "drop") and t.ref in running:
+        return JSONResponse({"error": "Jarvis is working on this ticket right now."}, status_code=409)
+    if action == "queue":
+        await board.update(t, jarvis="Queued", note="queued from the app")
+    elif action == "unqueue":
+        await board.unqueue(t, "taken off in the app")
+    elif action == "done":
+        await board.mark_done(t, "marked done in the app")
+    elif action == "drop":
+        await board.drop(t, "dropped in the app")
+    elif action == "edit" and localboard.is_local_page(t.page_id):
+        names = {"title": "title", "text": "body", "status": "status", "sprint": "sprint"}
+        fields = {col: str(data[key]) for key, col in names.items() if key in data}
+        if not fields or not fields.get("title", "x").strip():
+            return JSONResponse({"error": "nothing to save"}, status_code=400)
+        localboard.set_fields(ref, **fields)
+    else:
+        return JSONResponse({"error": f"can't {action} here"}, status_code=400)
+    return JSONResponse({"ticket": _ticket_json(await board.find_any(ref) or t)})
+
+
 async def health(req: Request):
     return JSONResponse({"ok": True, "authorized": _authorized(req), "login": True, "public": public(req)})
 
@@ -669,6 +747,8 @@ app = Starlette(routes=[
     Route("/api/images/{name}", image),
     Route("/api/files/{name}", file_),
     Route("/api/notifications", notifications),
+    Route("/api/board", board_view, methods=["GET", "POST"]),
+    Route("/api/tickets/{ref}", ticket_view, methods=["GET", "POST"]),
     Route("/api/workers", workers),
     WebSocketRoute("/api/call", call),
     Route("/{name:path}", website),
