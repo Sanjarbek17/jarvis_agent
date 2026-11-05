@@ -29,6 +29,10 @@ WebSocket. Two kinds (ticket 31ed52a7):
                                              24 kHz mono s16 PCM back; text frames are transcript
                                              lines {"who", "text"}
 
+The website (web/, ticket: website) is served from here too, so the app and the site share this one
+backend: GET / and its few files need no login, everything they do goes through the /api routes above
+with a login session (the site never has APP_TOKEN).
+
 Each chat is its own Claude conversation (resumed by session id, stopped when idle), told which
 project it is about, so Sanjar doesn't have to say it. Chats live in var/state/app_chats/.
 
@@ -76,6 +80,17 @@ IDLE_STOP = 15 * 60                    # stop a chat's Claude process after this
 GENERAL = "General"
 UPDATES = "updates"                    # chat id of "Updates from Jarvis"
 KEEP_UPDATES = 300
+WEB = Path(__file__).resolve().parent.parent / "web"
+WEB_FILES = {"": "index.html", "app.js": "app.js", "style.css": "style.css",   # only these are served
+             "mic-worklet.js": "mic-worklet.js", "icon.svg": "icon.svg"}
+WEB_HEADERS = {
+    "Cache-Control": "no-cache",        # a new version shows on the next load
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "microphone=(self)",
+    "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; "
+                               "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+}
 
 _brains: dict[str, tuple[Brain, float]] = {}   # chat id -> (brain, last used)
 start_call: Callable[[WebSocket, dict], Awaitable[None]] | None = None   # set by jarvis.py
@@ -249,8 +264,8 @@ def chats_of(project: str) -> list[dict]:
 
 def context_line(project: str) -> str:
     if project == GENERAL:
-        return "[Jarvis app on Sanjar's phone · general chat]"
-    return (f"[Jarvis app on Sanjar's phone · this chat is about the project «{project}»: take everything "
+        return "[Jarvis app or website · general chat]"
+    return (f"[Jarvis app or website · this chat is about the project «{project}»: take everything "
             f"here as about {project} unless he clearly says otherwise]")
 
 
@@ -483,6 +498,14 @@ async def health(req: Request):
     return JSONResponse({"ok": True, "authorized": _authorized(req), "login": True, "public": public(req)})
 
 
+async def website(req: Request):
+    """The website's own files. No login here: they hold no data or secrets, the site logs in like the app."""
+    name = WEB_FILES.get(req.path_params["name"])
+    if not name:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return FileResponse(WEB / name, headers=WEB_HEADERS)
+
+
 app = Starlette(routes=[
     Route("/api/health", health),
     Route("/api/login/start", login_start, methods=["POST"]),
@@ -496,6 +519,7 @@ app = Starlette(routes=[
     Route("/api/notifications", notifications),
     Route("/api/workers", workers),
     WebSocketRoute("/api/call", call),
+    Route("/{name:path}", website),
 ])
 
 
