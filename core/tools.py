@@ -377,7 +377,7 @@ def make_server(source: str) -> MCPServer:
         Waits a little for the result; a longer task finishes in the background and its
         result comes to Sanjar where he asked (the app chat or Telegram), and to you as an [UPDATE]."""
         busy = hooks.mac.current
-        job = asyncio.create_task(hooks.mac.run(task, sanjar_words))
+        job = asyncio.create_task(hooks.mac.run(task, sanjar_words, origin.from_ctx(ctx).get("chat", "")))
         done, _ = await asyncio.wait({job}, timeout=MAC_WAIT[source])
         if job not in done:
             app_chat = origin.from_ctx(ctx).get("chat", "")

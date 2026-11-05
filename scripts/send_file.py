@@ -40,7 +40,8 @@ def main(path: Path, caption: str):
         sys.exit(f"No such file: {path}")
     if outbox.jarvis_running():
         # big files take a while to upload: allow about a minute per 20 MB, at least 2 minutes
-        r = outbox.send(file=path, caption=caption, document=True,
+        r = outbox.send(file=path, caption=caption, document=True, app=True,
+                        chat=os.environ.get("JARVIS_APP_CHAT", ""),   # the chat this was asked from
                         wait=max(120, path.stat().st_size / 20e6 * 60))
         if not r.get("ok"):
             sys.exit(f"Jarvis couldn't send it: {r.get('error')}")

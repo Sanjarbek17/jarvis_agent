@@ -22,6 +22,7 @@ WebSocket. Two kinds (ticket 31ed52a7):
     POST /api/chats/{id}/messages {text}     Jarvis's reply (waits for it)
     POST /api/chats/{id}/voice  (audio body) {heard, reply}: transcribed like a Telegram voice note
     GET  /api/images/{name}                  an image named in a message's "images" list (JPEG/PNG)
+    GET  /api/files/{name}                   a file from a message's "files" list [{name, title, size}]
     GET  /api/notifications?after=<ts>       {chat, items}: what Jarvis wrote first (ticket news, "needs
                                              you", the daily summary) since ts; the phone polls this
     GET  /api/workers                        {count, workers: [{project, ref, title, url, started, step,
@@ -72,6 +73,11 @@ CHATS = STATE / "app_chats"
 IMAGES = STATE / "app_images"          # screenshots and photos shown in app chats (ticket 546d965e)
 IMAGE_MAX_PX = 1280                    # longest side: plenty for a phone, small over mobile data
 _IMAGE_NAME = re.compile(r"^[0-9a-f]{16}\.(jpg|png)$")
+FILES = STATE / "app_files"            # copies of what send_file.py sends, for the app and the website
+FILE_MAX = 500_000_000                 # bigger ones stay on Telegram only
+FILE_KEEP = 30 * 86400
+_FILE_NAME = re.compile(r"^[0-9a-f]{16}(\.[A-Za-z0-9]{1,8})?$")
+IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".webp", ".heic"}
 SESSIONS = STATE / "app_sessions.json"
 CODE_TTL = 5 * 60                      # a login code works this long
 CODE_TRIES = 5                         # wrong guesses before the code is dropped
@@ -90,7 +96,7 @@ WEB_HEADERS = {
     "Referrer-Policy": "no-referrer",
     "Permissions-Policy": "microphone=(self)",
     "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; "
-                               "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+                               "connect-src 'self'; media-src blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
 }
 
 _brains: dict[str, tuple[Brain, float]] = {}   # chat id -> (brain, last used)
@@ -278,7 +284,7 @@ def move_chat(chat_id: str, project: str, when_created: bool = False) -> dict | 
     if not chat or chat_id == UPDATES or not (name or (when_created and project.strip())):
         return None
     if name:
-        chat["project"] = name
+        chat["project"], chat["updated"] = name, time.time()      # shows on top of its new project
         chat.pop("move_to", None)
     else:
         chat["move_to"] = project.strip()
@@ -362,6 +368,32 @@ def save_images(paths) -> list[str]:
     return names
 
 
+def save_file(src) -> dict | None:
+    """Keep a copy of a file for the app and website; None if it's missing or too big. Old copies go."""
+    src = Path(src)
+    if not src.is_file() or src.stat().st_size > FILE_MAX:
+        return None
+    FILES.mkdir(parents=True, exist_ok=True)
+    for old in FILES.iterdir():
+        if time.time() - old.stat().st_mtime > FILE_KEEP:
+            old.unlink(missing_ok=True)
+    suffix = src.suffix if re.fullmatch(r"\.[A-Za-z0-9]{1,8}", src.suffix) else ""
+    name = uuid.uuid4().hex[:16] + suffix
+    shutil.copyfile(src, FILES / name)
+    return {"name": name, "title": src.name[:120], "size": src.stat().st_size}
+
+
+async def push_file(path, caption: str = "", chat_id: str = "") -> dict | None:
+    """A file sent to Sanjar on Telegram also shows in the app and website, in chat_id or else in Updates."""
+    path = Path(path)
+    text = caption.strip() or f"File: {path.name}"
+    if path.suffix.lower() in IMAGE_TYPES:
+        return push(text, chat_id, [path])
+    saved = await asyncio.to_thread(save_file, path)
+    return push(text if saved else f"{text}\n(Too big to show here, it's on Telegram: {path.name})",
+                chat_id, files=[saved] if saved else ())
+
+
 def add_images(chat_id: str, paths, caption: str = "") -> dict | None:
     """Show images in an app chat right away (e.g. the Mac worker's screenshots while he waits for the
     answer there). Not a push: it's part of the reply he's waiting for."""
@@ -376,15 +408,17 @@ def add_images(chat_id: str, paths, caption: str = "") -> dict | None:
     return msg
 
 
-def push(text: str, chat_id: str = "", photos=()) -> dict | None:
+def push(text: str, chat_id: str = "", photos=(), files=()) -> dict | None:
     """Jarvis wrote to Sanjar first: keep a copy for the app (its notifications poll for these).
     chat_id: also put it into that app chat (the one he asked from), where its Claude conversation
-    picks it up with his next message. photos: images shown with it (ticket 546d965e)."""
+    picks it up with his next message. photos: images shown with it (ticket 546d965e). files: from save_file."""
     text = (text or "").strip()
     images = save_images(photos)
-    if (not text and not images) or (text and is_silent(text)):
+    if (not text and not images and not files) or (text and is_silent(text)):
         return None
     extra = {"images": images} if images else {}
+    if files:
+        extra["files"] = list(files)
     target = load_chat(chat_id) if chat_id and chat_id != UPDATES else None
     if target:
         msg = {"role": "jarvis", "text": text[:4000], "ts": time.time(), "pushed": True, **extra}
@@ -441,8 +475,14 @@ async def projects(req: Request):
     if not _authorized(req):
         return _deny()
     reload_projects()
+    latest: dict[str, float] = {}
+    for f in CHATS.glob("*.json") if CHATS.exists() else []:
+        with contextlib.suppress(Exception):
+            chat = json.loads(f.read_text())
+            latest[chat["project"]] = max(latest.get(chat["project"], 0), chat["updated"])
+    names = sorted(reversed(PROJECTS), key=lambda n: -latest.get(n, 0))     # latest activity, then newest added
     items = [{"name": GENERAL, "about": "anything, no project"}]
-    items += [{"name": n, "about": p.get("about", "")} for n, p in PROJECTS.items()]
+    items += [{"name": n, "about": PROJECTS[n].get("about", "")} for n in names]
     return JSONResponse(items)
 
 
@@ -532,6 +572,18 @@ async def image(req: Request):
                         headers={"Cache-Control": "private, max-age=31536000, immutable"})
 
 
+async def file_(req: Request):
+    """GET /api/files/{name}: a file from a chat message, always as a download."""
+    if not _authorized(req):
+        return _deny()
+    name = req.path_params["name"]
+    path = FILES / name
+    if not _FILE_NAME.match(name) or not path.is_file():
+        return JSONResponse({"error": "no such file"}, status_code=404)
+    return FileResponse(path, filename=name, headers={"X-Content-Type-Options": "nosniff",
+                                                      "Content-Security-Policy": "sandbox"})
+
+
 async def notifications(req: Request):
     if not _authorized(req):
         return _deny()
@@ -573,6 +625,7 @@ app = Starlette(routes=[
     Route("/api/chats/{chat}/move", move, methods=["POST"]),
     Route("/api/chats/{chat}/voice", voice, methods=["POST"]),
     Route("/api/images/{name}", image),
+    Route("/api/files/{name}", file_),
     Route("/api/notifications", notifications),
     Route("/api/workers", workers),
     WebSocketRoute("/api/call", call),

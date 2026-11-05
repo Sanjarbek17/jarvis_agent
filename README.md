@@ -88,6 +88,12 @@ conversation included (`POST /api/chats/{id}/move`). Jarvis does the same with `
 For a project that doesn't exist yet it files the setup ticket and uses `when_created=True`: the chat waits, and
 `finish_moves` moves it within a minute once a project with that name is in config/projects.json.
 
+Files: whatever `scripts/send_file.py` sends to Telegram also shows in the app chat it was asked from (workers and
+the Mac worker get `JARVIS_APP_CHAT`), else in Updates. Copies live in `var/state/app_files/` for 30 days, up to
+500 MB each, served at `GET /api/files/{name}` with the login. Images show inline. The website plays videos and
+downloads the rest. Files sent before this existed are only on Telegram. Other outbox files (like login QRs) stay
+out on purpose: only `send_file.py` marks a file for the app.
+
 Memory: Jarvis keeps long-term memory in `var/state/memory/` (facts it was told to `remember`, plus
 every chat and call turn, and old call transcripts). Relevant bits are pulled in front of each
 message by meaning (Gemini embeddings, Uzbek/Russian/English), so it doesn't guess after a restart,

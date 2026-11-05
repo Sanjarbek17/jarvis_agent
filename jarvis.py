@@ -1089,7 +1089,7 @@ async def main():
     appserver.send_code = lambda text: tg.send_message(OWNER_ID, text)   # app login codes (ticket 31ed52a7)
     asyncio.create_task(appserver.serve())
     asyncio.create_task(send_format_samples())
-    asyncio.create_task(outbox.run(tg, OWNER_ID))   # scripts send Sanjar things through us
+    asyncio.create_task(outbox.run(tg, OWNER_ID, appserver.push_file))   # scripts send Sanjar things through us
     if "--call" in sys.argv and CALL_SANJAR:
         try:
             await start_call(OWNER_ID)
