@@ -364,7 +364,7 @@ async function newChat(project) {
 
 function showChat(project, id) {
   if (open?.id === id && open.project === project && document.getElementById("messages")) return;
-  const chat = open = { id, project, msgs: [], key: null, found: true };
+  const chat = open = { id, project, msgs: [], key: null, found: true, pinned: true, newest: null, bubbles: new Map() };
   const title = id === UPDATES ? "Updates from Jarvis" : chats.find(c => c.id === id)?.title || "Chat";
   document.getElementById("main").replaceChildren(
     h("header", { class: "top" },
@@ -374,7 +374,12 @@ function showChat(project, id) {
       h("button", { class: "round", title: "Call Jarvis", "aria-label": "Call Jarvis", onclick: () => startCall(chat) }, icon("phone"))),
     h("div", { class: "messages", id: "messages", role: "log", "aria-label": "Messages" },
       h("div", { class: "notice first", text: "Loading…" })),
+    h("button", { class: "jump hide", id: "jump", text: "New message below", onclick: toBottom }),
     composer(chat));
+  document.getElementById("messages").addEventListener("scroll", e => {
+    chat.pinned = e.target.scrollHeight - e.target.scrollTop - e.target.clientHeight < 80;
+    if (chat.pinned) document.getElementById("jump")?.classList.add("hide");
+  });
   document.getElementById("composer-text")?.focus();
   if (id === UPDATES) clearUnread();
   drawChatsIfOpen();
@@ -409,6 +414,11 @@ function followChat(chat, project) {
   if (!project || project === chat.project) return;
   if (open === chat) location.hash = chatLink(project, chat.id);
   else chat.project = project;
+}
+
+function toBottom() {
+  const box = document.getElementById("messages");
+  if (box) box.scrollTop = box.scrollHeight;
 }
 
 function drawChatsIfOpen() {
@@ -462,13 +472,18 @@ function drawMessages(chat) {
   const last = chat.msgs[chat.msgs.length - 1];
   const key = `${chat.found}|${chat.msgs.length}|${last?.ts}|${wait?.since}|${!!wait}`;
   if (key === chat.key) return;
-  const stuck = chat.key === null || box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  const arrived = chat.newest !== null && last?.ts !== chat.newest;
+  chat.newest = last?.ts ?? null;
   chat.key = key;
 
   const out = [];
   let before = null;
   for (const m of chat.msgs) {
-    out.push(bubble(m, before !== null && before !== m.role));
+    const id = `${m.ts}|${m.role}`;      // keep drawn bubbles: redrawn images would jump the page
+    const el = chat.bubbles.get(id) || bubble(m, before !== null && before !== m.role);
+    chat.bubbles.set(id, el);
+    el.classList.remove("first");
+    out.push(el);
     before = m.role;
   }
   if (wait) {
@@ -481,13 +496,15 @@ function drawMessages(chat) {
   }
   out[0].classList.add("first");
   box.replaceChildren(...out);
-  if (stuck) box.scrollTop = box.scrollHeight;
+  if (chat.pinned) toBottom();
+  else if (arrived) document.getElementById("jump")?.classList.remove("hide");
 }
 
 function bubble(m, gap) {
   const el = h("div", { class: `bubble ${m.role === "me" ? "me" : ""} ${gap ? "gap" : ""}` });
   for (const name of m.images || []) {
     const pic = h("img", { class: "pic", alt: "Image from Jarvis", onclick: () => lightbox(pic.src) });
+    pic.addEventListener("load", () => { if (open?.pinned) toBottom(); });    // images arrive late and push the end down
     image(name).then(url => { pic.src = url; }, () => pic.replaceWith(h("div", { class: "muted small", text: "Image not available" })));
     el.append(pic);
   }
