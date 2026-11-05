@@ -147,7 +147,7 @@ h1, h2, p { margin: 0; }
 .call .round.off { background: #fff; color: #111; }
 
 /* small things */
-#toasts { position: fixed; right: 16px; bottom: 16px; left: 16px; z-index: 30; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; pointer-events: none; }
+#toasts { position: fixed; top: calc(12px + env(safe-area-inset-top)); right: 16px; left: 16px; z-index: 30; display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; }
 .toast {
   pointer-events: auto; max-width: 380px; background: var(--field); border: 1px solid var(--line); border-radius: 12px;
   padding: 10px 14px; text-align: left; box-shadow: 0 6px 24px rgba(0, 0, 0, .4);
