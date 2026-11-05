@@ -83,6 +83,11 @@ calls, workers, Updates. Open `https://jarvis.sanjarbek17.uz`, or `http://127.0.
 code; the site never has `APP_TOKEN`. Microphone features need https or localhost, so not the plain home Wi-Fi address.
 Only the files in `WEB_FILES` are served; add a new one there. No login is needed for those files: they hold no data.
 
+Moving a chat: the folder button in a chat (website, app 0.8+) moves it to another project, messages and Claude
+conversation included (`POST /api/chats/{id}/move`). Jarvis does the same with `move_chat` when asked in that chat.
+For a project that doesn't exist yet it files the setup ticket and uses `when_created=True`: the chat waits, and
+`finish_moves` moves it within a minute once a project with that name is in config/projects.json.
+
 Memory: Jarvis keeps long-term memory in `var/state/memory/` (facts it was told to `remember`, plus
 every chat and call turn, and old call transcripts). Relevant bits are pulled in front of each
 message by meaning (Gemini embeddings, Uzbek/Russian/English), so it doesn't guess after a restart,

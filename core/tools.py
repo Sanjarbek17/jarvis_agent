@@ -185,6 +185,23 @@ def make_server(source: str) -> MCPServer:
         return f"Queued {t.ref}: {t.title}"
 
     @server.tool()
+    async def move_chat(project: str, when_created: bool = False, ctx: Context = None) -> str:
+        """Move the Jarvis app or website chat Sanjar is talking in to another project ("General" too).
+        Its messages and this conversation stay. when_created=True: the project doesn't exist yet and
+        you have filed the ticket that sets it up; the chat moves by itself once a project with exactly
+        this name is on his list."""
+        from . import appserver
+        o = origin.from_ctx(ctx)
+        if o.get("channel") != "app":
+            return "Only chats in the Jarvis app or website can be moved, and this isn't one."
+        chat = appserver.move_chat(o["chat"], project, when_created)
+        if not chat:
+            return f"Couldn't move this chat to {project!r}: no such project, or this chat can't be moved."
+        if chat.get("move_to"):
+            return f"This chat will move to {chat['move_to']} as soon as that project exists."
+        return f"Moved this chat to {chat['project']}."
+
+    @server.tool()
     async def get_status(project: str = "") -> str:
         """Jarvis's work: tickets Queued, Working, Needs me, and finished in the last day. Empty = all projects."""
         text = await board.status_text(project)

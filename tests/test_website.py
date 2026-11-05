@@ -1,7 +1,10 @@
 """The website is served by the app server, so the app and the site share one backend."""
+import asyncio
+from types import SimpleNamespace as NS
+
 from starlette.testclient import TestClient
 
-from core import appserver
+from core import appserver, origin, tools
 
 
 def _client(tmp_path, monkeypatch):
@@ -80,3 +83,83 @@ def test_news_from_a_chat_says_how_to_open_that_chat(tmp_path, monkeypatch):
     assert "chat_project" not in items[1] and "chat_project" not in items[2]
     shown = client.get(f"/api/chats/{appserver.UPDATES}/messages", headers=auth).json()
     assert shown[0]["chat_project"] == "Jarvis"
+
+
+def _move_setup(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(appserver, "reload_projects", lambda: None)
+    monkeypatch.setattr(appserver, "PROJECTS", {"Jarvis": {}})
+    return client, {"Authorization": "Bearer t0k"}
+
+
+def test_a_chat_moves_to_another_project_and_keeps_its_messages(tmp_path, monkeypatch):
+    client, auth = _move_setup(tmp_path, monkeypatch)
+    chat = appserver.new_chat("General", "Idea")
+    chat["messages"].append({"role": "me", "text": "hi", "ts": 1.0})
+    appserver.save_chat(chat)
+
+    res = client.post(f"/api/chats/{chat['id']}/move", json={"project": "jarvis"}, headers=auth)
+    assert res.status_code == 200 and res.json()["project"] == "Jarvis"
+    assert [c["id"] for c in appserver.chats_of("Jarvis")] == [chat["id"]] and not appserver.chats_of("General")
+    assert appserver.load_chat(chat["id"])["messages"][0]["text"] == "hi"
+    assert "Jarvis" in appserver.context_line(appserver.load_chat(chat["id"])["project"])
+
+
+def test_a_move_needs_login_and_a_real_target(tmp_path, monkeypatch):
+    client, auth = _move_setup(tmp_path, monkeypatch)
+    chat = appserver.new_chat("General")
+    path = f"/api/chats/{chat['id']}/move"
+    assert client.post(path, json={"project": "Jarvis"}).status_code == 401
+    assert client.post(path, json={"project": "Nope"}, headers=auth).status_code == 400
+    assert client.post("/api/chats/missing/move", json={"project": "Jarvis"}, headers=auth).status_code == 404
+    appserver.push("news")
+    assert client.post(f"/api/chats/{appserver.UPDATES}/move", json={"project": "Jarvis"}, headers=auth).status_code == 400
+    assert appserver.load_chat(chat["id"])["project"] == "General"
+
+
+def test_a_chat_waits_for_a_project_that_is_being_created(tmp_path, monkeypatch):
+    _move_setup(tmp_path, monkeypatch)
+    chat = appserver.new_chat("General")
+    assert appserver.move_chat(chat["id"], "Code Learning", when_created=True)["move_to"] == "Code Learning"
+    appserver.finish_moves()
+    assert appserver.load_chat(chat["id"])["project"] == "General"            # not there yet
+
+    appserver.PROJECTS["Code Learning"] = {}
+    appserver.finish_moves()
+    moved = appserver.load_chat(chat["id"])
+    assert moved["project"] == "Code Learning" and "move_to" not in moved
+    assert "Moved this chat to Code Learning." in moved["messages"][-1]["text"]
+    appserver.finish_moves()                                                  # once only
+    assert len(appserver.load_chat(chat["id"])["messages"]) == 1
+
+
+def test_jarvis_moves_the_chat_it_is_in_with_its_tool(tmp_path, monkeypatch):
+    _move_setup(tmp_path, monkeypatch)
+    chat = appserver.new_chat("General")
+
+    async def call(header, **args):
+        ctx = NS(request_context=NS(request=NS(headers={origin.HEADER: header} if header else {})))
+        tool = tools.make_server("Telegram")._tool_manager.get_tool("move_chat")
+        return await tool.fn(ctx=ctx, **args)
+
+    assert "Moved this chat to Jarvis" in asyncio.run(call(f"app:{chat['id']}", project="Jarvis"))
+    assert appserver.load_chat(chat["id"])["project"] == "Jarvis"
+    assert "as soon as" in asyncio.run(call(f"app:{chat['id']}", project="New One", when_created=True))
+    assert "Couldn't" in asyncio.run(call(f"app:{chat['id']}", project="Nope"))
+    assert "isn't one" in asyncio.run(call("", project="Jarvis"))              # Telegram
+
+
+def test_a_reply_says_where_the_chat_is_now(tmp_path, monkeypatch):
+    client, auth = _move_setup(tmp_path, monkeypatch)
+    chat = appserver.new_chat("General")
+
+    class Moves:
+        session_id, lock = "", asyncio.Lock()
+
+        async def reply(self, text):
+            appserver.move_chat(chat["id"], "Jarvis")
+            return "Moved it."
+
+    monkeypatch.setattr(appserver, "_brain", lambda c: Moves())
+    res = client.post(f"/api/chats/{chat['id']}/messages", json={"text": "move this"}, headers=auth).json()
+    assert res["chat_project"] == "Jarvis" and appserver.load_chat(chat["id"])["project"] == "Jarvis"

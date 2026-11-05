@@ -13,6 +13,7 @@ const ICONS = {
   mic: "M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 0 0-7 0v6A3.5 3.5 0 0 0 12 15Zm6.5-3.5a1 1 0 1 0-2 0 4.5 4.5 0 0 1-9 0 1 1 0 1 0-2 0 6.5 6.5 0 0 0 5.5 6.4V20H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.1a6.5 6.5 0 0 0 5.5-6.4Z",
   send: "M3.4 20.6 22 12 3.4 3.4 3.4 10l12 2-12 2z",
   phone: "M6.6 10.8a15 15 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25 11 11 0 0 0 3.6.6 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1 11 11 0 0 0 .6 3.6 1 1 0 0 1-.25 1z",
+  move: "M3 6a2 2 0 0 1 2-2h4.6a2 2 0 0 1 1.4.6L12.4 6H19a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zm9.3 4.3a1 1 0 0 0 0 1.4l.3.3H8a1 1 0 1 0 0 2h4.6l-.3.3a1 1 0 0 0 1.4 1.4l2-2a1 1 0 0 0 0-1.4l-2-2a1 1 0 0 0-1.4 0z",
   close: "M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 0 0-1.4 1.4l4.9 4.9-4.9 4.9a1 1 0 1 0 1.4 1.4l4.9-4.9 4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z",
 };
 
@@ -362,13 +363,14 @@ async function newChat(project) {
 // --- a chat ----------------------------------------------------------------------------------
 
 function showChat(project, id) {
-  if (open?.id === id && document.getElementById("messages")) return;
+  if (open?.id === id && open.project === project && document.getElementById("messages")) return;
   const chat = open = { id, project, msgs: [], key: null, found: true };
   const title = id === UPDATES ? "Updates from Jarvis" : chats.find(c => c.id === id)?.title || "Chat";
   document.getElementById("main").replaceChildren(
     h("header", { class: "top" },
       h("button", { class: "back", "aria-label": "Back to chats", text: "‹", onclick: () => { location.hash = projectLink(project); } }),
       h("div", { class: "grow" }, h("h2", { id: "chat-title", text: title }), h("div", { class: "sub", text: project })),
+      id === UPDATES ? null : h("button", { class: "round", title: "Move to another project", "aria-label": "Move to another project", onclick: () => moveSheet(chat) }, icon("move")),
       h("button", { class: "round", title: "Call Jarvis", "aria-label": "Call Jarvis", onclick: () => startCall(chat) }, icon("phone"))),
     h("div", { class: "messages", id: "messages", role: "log", "aria-label": "Messages" },
       h("div", { class: "notice first", text: "Loading…" })),
@@ -377,6 +379,36 @@ function showChat(project, id) {
   if (id === UPDATES) clearUnread();
   drawChatsIfOpen();
   loadMessages(chat);
+}
+
+function moveSheet(chat) {
+  const close = () => { sheet.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = e => { if (e.key === "Escape") close(); };
+  const pick = async name => {
+    close();
+    try {
+      await api(`/api/chats/${encodeURIComponent(chat.id)}/move`, { method: "POST", json: { project: name } });
+      toast(`Moved to ${name}.`);
+      location.hash = chatLink(name, chat.id);
+    } catch (e) {
+      if (e.status !== 401) toast(e.message);
+    }
+  };
+  const rows = projects.filter(p => p.name !== chat.project).map(p => h("button", { class: "row", onclick: () => pick(p.name) },
+    avatar(p.name), h("span", { class: "grow" }, h("div", { class: "name", text: p.name }), h("div", { class: "about", text: p.about }))));
+  const sheet = h("div", { class: "sheet", role: "dialog", "aria-label": "Move this chat to a project", onclick: e => { if (e.target === sheet) close(); } },
+    h("div", { class: "sheet-box" }, h("h2", { text: "Move this chat to" }), h("div", { class: "list" }, ...rows),
+      h("button", { class: "btn", text: "Cancel", onclick: close })));
+  document.addEventListener("keydown", onKey);
+  document.body.append(sheet);
+  sheet.querySelector(".row")?.focus();
+}
+
+/** Jarvis moved the chat while answering: follow it. */
+function followChat(chat, project) {
+  if (!project || project === chat.project) return;
+  if (open === chat) location.hash = chatLink(project, chat.id);
+  else chat.project = project;
 }
 
 function drawChatsIfOpen() {
@@ -556,6 +588,7 @@ async function send(chat, text, audio) {
       : await api(`${path}/messages`, { method: "POST", json: { text } });
     waiting.delete(chat.id);
     if (audio && !res.heard) toast("Jarvis couldn't make out that voice message.");
+    followChat(chat, res.chat_project || res.reply?.chat_project);
   } catch (e) {
     if (e.status === 401) return;
     if (e.unsure) wait.lost = true;    // Jarvis may well be answering: the regular check picks it up

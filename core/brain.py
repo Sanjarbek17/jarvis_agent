@@ -74,6 +74,9 @@ What needs him (his permanent rules, 2026-11-04, after mistakes he had to correc
   I allow it"), repeat it back, then allow_push_to_main for that ticket and queue/answer it
 - a ticket queued by mistake -> unqueue_ticket; not needed at all -> drop_ticket; on the wrong
   project's board -> move_ticket (if you filed it wrong yourself, fix it right away and say so)
+- "move this chat to X / this belongs in X" in a Jarvis app or website chat -> move_chat yourself right
+  away. If X doesn't exist yet: file the ticket that sets it up, then move_chat with when_created=True
+  and the same exact project name
 - "stop it / stop that worker / stop the taxi ticket" about a ticket being worked on -> stop_worker
   yourself right away (don't tell him to type /stop); drop_ticket / unqueue_ticket also stop a
   running ticket's worker first. If it's unclear which worker he means and several run, ask.

@@ -156,6 +156,13 @@ h1, h2, p { margin: 0; }
 .lightbox { position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, .9); display: grid; place-items: center; padding: 16px; cursor: zoom-out; width: 100%; }
 .lightbox img { max-width: 100%; max-height: calc(100dvh - 32px); }
 .offline { flex: none; padding: 6px 14px; background: #4a2426; color: #ffc9cb; font-size: 13px; text-align: center; }
+.sheet { position: fixed; inset: 0; z-index: 25; background: rgba(0, 0, 0, .6); display: grid; place-items: center; padding: 16px; }
+.sheet-box {
+  width: 100%; max-width: 420px; max-height: min(640px, calc(100dvh - 32px)); display: flex; flex-direction: column; gap: 10px;
+  background: var(--bar); border: 1px solid var(--line); border-radius: 16px; padding: 14px;
+}
+.sheet-box h2 { font-size: 17px; padding: 2px 4px; }
+.sheet-box .list { padding: 0; }
 .hide { display: none !important; }
 
 @media (max-width: 1100px) {
