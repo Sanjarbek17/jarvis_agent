@@ -103,6 +103,7 @@ h1, h2, p { margin: 0; }
 .bubble code { font: .9em ui-monospace, Menlo, Consolas, monospace; background: rgba(255, 255, 255, .12); padding: 1px 4px; border-radius: 4px; }
 .bubble.me a { color: #fff; }
 .bubble .meta { font-size: 11px; opacity: .65; margin-top: 2px; text-align: right; }
+.bubble .meta a { color: inherit; }
 .bubble .pic { display: block; margin: 4px 0; max-width: 100%; max-height: 360px; border-radius: 8px; cursor: zoom-in; }
 .bubble.typing { color: var(--muted); }
 .notice { align-self: center; font-size: 13px; color: var(--muted); }

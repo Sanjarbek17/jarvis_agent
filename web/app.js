@@ -72,7 +72,7 @@ function toast(text, onclick) {
   const el = h(onclick ? "button" : "div", { class: "toast", text });
   if (onclick) el.addEventListener("click", () => { el.remove(); onclick(); });
   document.getElementById("toasts").append(el);
-  setTimeout(() => el.remove(), onclick ? 12000 : 6000);
+  setTimeout(() => el.remove(), onclick ? 20000 : 6000);
 }
 
 function ago(seconds) {
@@ -339,6 +339,9 @@ function chatsTop(project) {
 }
 
 function drawChats(project) {
+  const title = document.getElementById("chat-title");
+  const named = chats.find(c => c.id === open?.id);
+  if (title && named) title.textContent = named.title;
   const rows = chats.map(c => h("a", { class: `row ${c.id === open?.id ? "on" : ""}`, href: chatLink(project, c.id) },
     h("span", { class: "grow" }, h("div", { class: "name", text: c.title }), h("div", { class: "about", text: c.last.replace(/\*\*|`/g, "") || "No messages yet" })),
     h("span", { class: "when", text: ago(c.updated) })));
@@ -457,8 +460,10 @@ function bubble(m, gap) {
     el.append(pic);
   }
   if (m.text) el.append(h("div", { class: "text" }, rich(m.text)));
-  const meta = [m.voice ? "voice" : "", m.chat_title ? `from ${m.chat_title}` : "", m.ts ? clock(m.ts) : "sending"].filter(Boolean);
-  el.append(h("div", { class: "meta", text: meta.join(" · ") }));
+  const from = m.chat_title ? `from ${m.chat_title}` : "";
+  const meta = [m.voice ? "voice" : "", m.ts ? clock(m.ts) : "sending"].filter(Boolean).join(" · ");
+  el.append(h("div", { class: "meta" }, from && m.chat_project ? h("a", { href: chatLink(m.chat_project, m.chat), text: from }) : from,
+    from ? " · " : "", meta));
   return el;
 }
 
@@ -777,13 +782,29 @@ async function pollNews() {
     }
     store.set("jarvis.after", String(items[items.length - 1].ts));
     if (!after) return;               // first visit: old news stays in the Updates chat
-    if (open?.id === UPDATES) return loadMessages(open);
-    unread += items.length;
+    if (open && (open.id === UPDATES || items.some(i => i.chat === open.id))) loadMessages(open);
+    if (items.some(i => i.chat_project === chatsOf)) renderChats(chatsOf);
+    if (open?.id === UPDATES) return;
+    const fresh = items.filter(i => i.chat !== open?.id);
+    unread += fresh.length;
     store.set("jarvis.unread", String(unread));
     renderSideKeepingScroll();
-    const last = items[items.length - 1];
-    toast((last.text || "Jarvis sent an image").slice(0, 140), () => { location.hash = chatLink(GENERAL, UPDATES); });
+    fresh.slice(-3).forEach(newsToast);
   } catch { /* the next check tries again */ }
+}
+
+/** News from a chat opens that chat; the rest opens Updates. */
+function newsToast(item) {
+  const inChat = item.chat && item.chat_project;
+  const text = (item.text || "Jarvis sent an image").replace(/\*\*|`/g, "").slice(0, 140);
+  toast(inChat ? `${item.chat_title}: ${text}` : text, () => {
+    location.hash = inChat ? chatLink(item.chat_project, item.chat) : chatLink(GENERAL, UPDATES);
+    if (inChat) {
+      unread = Math.max(0, unread - 1);
+      store.set("jarvis.unread", String(unread));
+      renderSideKeepingScroll();
+    }
+  });
 }
 
 function tick() {

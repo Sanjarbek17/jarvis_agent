@@ -63,3 +63,20 @@ def test_site_logs_in_like_the_app(tmp_path, monkeypatch):
     session = client.post("/api/login", json={"code": code, "device": device}).json()["token"]
     outside = {"Authorization": f"Bearer {session}", "Cf-Connecting-IP": "1.2.3.4"}
     assert client.get("/api/projects", headers=outside).status_code == 200
+
+
+def test_news_from_a_chat_says_how_to_open_that_chat(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    auth = {"Authorization": "Bearer t0k"}
+    chat = appserver.new_chat("Jarvis", "Website plan")
+    gone = appserver.new_chat("Jarvis", "Deleted later")
+    appserver.push("From the chat", chat["id"])
+    appserver.push("From a chat that went away", gone["id"])
+    appserver.push("From nowhere")
+    (appserver.CHATS / f"{gone['id']}.json").unlink()
+
+    items = client.get("/api/notifications", headers=auth).json()["items"]
+    assert (items[0]["chat"], items[0]["chat_project"]) == (chat["id"], "Jarvis")
+    assert "chat_project" not in items[1] and "chat_project" not in items[2]
+    shown = client.get(f"/api/chats/{appserver.UPDATES}/messages", headers=auth).json()
+    assert shown[0]["chat_project"] == "Jarvis"
