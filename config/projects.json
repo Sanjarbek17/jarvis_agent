@@ -5,14 +5,16 @@
       "side_project/projects/haydovchi_darslari",
       "side_project/projects/code_explainer/animations/haydovchi-darslari"
     ],
-    "board": "ed155c9a9c544c11a177f3dcd2303cd1"
+    "board": "ed155c9a9c544c11a177f3dcd2303cd1",
+    "local": true
   },
   "Jarvis": {
     "about": "this assistant itself (Telegram calls, Notion board, runner)",
     "folders": [
       "side_project/projects/jarvis"
     ],
-    "board": "2e0c596ef4e24baeb896beac4d9d7b13"
+    "board": "2e0c596ef4e24baeb896beac4d9d7b13",
+    "local": true
   },
   "Theater": {
     "about": "Theater project (formerly called Madaniyat): portal with FastAPI backend + Flutter frontend",
@@ -20,7 +22,8 @@
       "backend/madaniyat_backend",
       "frontend/madaniyat_frontend"
     ],
-    "board": "7f3380537c0d48d094bbc43c5418a047"
+    "board": "7f3380537c0d48d094bbc43c5418a047",
+    "local": true
   },
   "School": {
     "about": "EduPulse school system: backend, Flutter app and website",
@@ -29,94 +32,108 @@
       "frontend/school_frontend",
       "frontend/school_web"
     ],
-    "board": "ac8999f1d6054726893068cb3759e20a"
+    "board": "ac8999f1d6054726893068cb3759e20a",
+    "local": true
   },
   "Yo'lchi": {
     "about": "Yo'lchi iOS app",
     "folders": [
       "mobile/yolchi-ios"
     ],
-    "board": "546cc066ba404ec0a87497d9ded7115b"
+    "board": "546cc066ba404ec0a87497d9ded7115b",
+    "local": true
   },
   "Taxi App": {
     "about": "taxi app: backend, driver app, operator web",
     "folders": [
       "side_project/taxi_app"
     ],
-    "board": "13e5d3d7bd79436783721dca64c74f27"
+    "board": "13e5d3d7bd79436783721dca64c74f27",
+    "local": true
   },
   "Shop Assistant": {
     "about": "shop assistant AI agent",
     "folders": [
       "agi/shop_assistant"
     ],
-    "board": "96fa75417b274b1395abe219e3bd5c3b"
+    "board": "96fa75417b274b1395abe219e3bd5c3b",
+    "local": true
   },
   "Obod Mahalla": {
     "about": "Obod Mahalla backend API",
     "folders": [
       "backend/obod_mahalla_backend"
     ],
-    "board": "f1e887b91cc24ad2aab3858a095359a0"
+    "board": "f1e887b91cc24ad2aab3858a095359a0",
+    "local": true
   },
   "RoadEye": {
     "about": "RoadEye project (folder not set yet)",
     "folders": [],
-    "board": "d2838944ba2945159bcfa7ab501a40e6"
+    "board": "d2838944ba2945159bcfa7ab501a40e6",
+    "local": true
   },
   "Effortless Speaking": {
     "about": "Effortless English speaking app",
     "folders": [
       "agi/projects/effortless_english"
     ],
-    "board": "b3b32c0098374371bfaa51bdaced574c"
+    "board": "b3b32c0098374371bfaa51bdaced574c",
+    "local": true
   },
   "Code Explainer": {
     "about": "animated code explainer: shows code like a programmer navigating the IDE (name not decided; planning)",
     "folders": [
       "side_project/projects/code_explainer"
     ],
-    "board": "246c3dd8f1db43e799e0ba28738f51e8"
+    "board": "246c3dd8f1db43e799e0ba28738f51e8",
+    "local": true
   },
   "Hikvision": {
     "about": "run Sanjar's own code on his own Hikvision CCTV cameras (e.g. camera -> Telegram, no NVR); research stage",
     "folders": [],
-    "board": "66dc104608f94a51b68ebf90c3012467"
+    "board": "66dc104608f94a51b68ebf90c3012467",
+    "local": true
   },
   "Soft Skills": {
     "about": "Sanjar's 12-week soft-skills coaching program; Jarvis coaches live on calls, a worker logs each session to memory/",
     "folders": [
       "agi/projects/soft_skills"
     ],
-    "board": "42a3ced033524471b95d0bc404d119e2"
+    "board": "42a3ced033524471b95d0bc404d119e2",
+    "local": true
   },
   "Upwork": {
     "about": "Upwork job search: a worker finds and scores matching jobs, drafts a tailored proposal, and sends it to Sanjar for approval; Sanjar submits himself (no auto-submit)",
     "folders": [
       "upwork_job"
     ],
-    "board": "7b1950c38ce94dbba9e920afa6654ea5"
+    "board": "7b1950c38ce94dbba9e920afa6654ea5",
+    "local": true
   },
   "QarsDaftar": {
     "about": "debt-ledger app for sellers who sell on credit: track debts, SMS reminders, agreed late penalty, tamper-evident evidence for authorities (planning)",
     "folders": [
       "qarsdaftar"
     ],
-    "board": "4b3126acdca0429abbb711a3e15f436d"
+    "board": "4b3126acdca0429abbb711a3e15f436d",
+    "local": true
   },
   "Game": {
     "about": "a polished browser game with good animation and game feel (not started)",
     "folders": [
       "side_project/projects/game"
     ],
-    "board": "360a0a0ca8184bffa1cdea94fa23d836"
+    "board": "360a0a0ca8184bffa1cdea94fa23d836",
+    "local": true
   },
   "Gas Finder": {
     "about": "Telegram bot that finds where gas is sold during supply cuts, crowdsourced from drivers' Telegram groups (text, voice, video; Uzbek/Russian, misspelled place names) (planning)",
     "folders": [
       "side_project/projects/gas_finder"
     ],
-    "board": "7a5135fff6e243d8ba7ae28bb899f08c"
+    "board": "7a5135fff6e243d8ba7ae28bb899f08c",
+    "local": true
   },
   "AI English Teacher": {
     "about": "AI agent that teaches Uzbek speakers to speak English over Telegram (calls, lessons); planning, SRS/SDD done. Tickets are GitHub Issues on GitHub Project #4 (ref aet-<issue number>), Notion only mirrors them",
@@ -136,14 +153,16 @@
     "folders": [
       "side_project/projects/jarvis_app"
     ],
-    "board": "cb7eb4938ce04c2e8a2882168785a771"
+    "board": "cb7eb4938ce04c2e8a2882168785a771",
+    "local": true
   },
   "Code Learning": {
     "about": "website that teaches students programming: Codewalk animation videos explain the content, then students try the tasks by writing the code themselves. Working name. Idea stage: Sanjar is discussing the SRS first, so nothing is planned or built yet",
     "folders": [
       "side_project/projects/code_learning"
     ],
-    "board": "7f4f5b38da9a40f48b7f6ed60dc42ca8"
+    "board": "7f4f5b38da9a40f48b7f6ed60dc42ca8",
+    "local": true
   },
   "Apartment Search": {
     "about": "worker that looks for a home in Samarkand for 5 people around $250 for Sanjar: every 30 min it reads public rental groups with the +7 906 job account, takes only places that accept boys and fit 5 young men by rooms, size and beds, writes to posters (5 new people a day, three fixed messages; it never tells them how many we are) and reports offers and owners' answers with photos to his Jarvis app chat. Change the price, people or limits in side_project/projects/apartment_search/config.json; when he says to stop or he found a place, set \"active\": false there",
