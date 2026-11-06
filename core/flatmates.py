@@ -28,6 +28,7 @@ from .config import FLATMATES_GROUP_ID, FLATMATES_TOPIC, FLATMATES_VIEW, OWNER_I
 
 log = logging.getLogger("jarvis.flatmates")
 QUEUE = VAR / "flatmates_out"
+EDITS = VAR / "flatmates_edits"   # corrections to Jarvis's own messages in the group, kept apart: a post must never be read as one
 CHAT = STATE / "flatmates_chat.jsonl"
 CHAT_KEEP = 500
 NAMED = re.compile(r"jarvis|джарвис|жарвис", re.I)
@@ -94,6 +95,46 @@ def drop(text: str, photos=(), viewing: bool = False, key: str = "", link: str =
     tmp.write_text(json.dumps({"text": text, "photos": [str(p) for p in photos], "viewing": viewing, "key": key, "link": link,
                                 "first": first}, ensure_ascii=False))
     tmp.rename(QUEUE / f"{name}.json")               # appears complete, never half-written
+
+
+def drop_edit(message_id: int, text: str) -> None:
+    """Queue a correction of one of Jarvis's own messages in the group (ticket 9b4b65d9). Workers can't touch its session."""
+    EDITS.mkdir(parents=True, exist_ok=True)
+    tmp = EDITS / f"{message_id}.tmp"
+    tmp.write_text(json.dumps({"id": message_id, "text": text}, ensure_ascii=False))
+    tmp.rename(EDITS / f"{message_id}.json")
+
+
+def _corrected(message_id: int, text: str) -> None:
+    """The chat memory has the new text too, or the model would keep reading the wrong one."""
+    rows = _chat()
+    for r in rows:
+        if r.get("id") == message_id:
+            r["text"] = text[:500]
+    tmp = CHAT.with_suffix(".tmp")
+    tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+    tmp.replace(CHAT)
+
+
+async def apply_edits(tg, owner_id: int) -> None:
+    """Sanjar hears when it's done, or why it couldn't be. Telegram only lets Jarvis edit its own messages."""
+    from telethon.errors import MessageNotModifiedError
+    for f in sorted(EDITS.glob("*.json")) if EDITS.exists() else ():
+        note = json.loads(f.read_text())
+        try:
+            try:
+                await tg.edit_message(FLATMATES_GROUP_ID, note["id"], note["text"], link_preview=False)
+            except MessageNotModifiedError:
+                pass
+            _corrected(note["id"], note["text"])
+            log.info("edited message %s in Flatmates: %r", note["id"], note["text"][:300])
+            told = f"I corrected my answer in the Flatmates group. It now says:\n{note['text']}"
+        except Exception as e:
+            log.warning("can't edit message %s in Flatmates: %r", note["id"], e)
+            told = f"I couldn't correct my answer in the Flatmates group: {e}"
+        f.unlink(missing_ok=True)
+        with contextlib.suppress(Exception):
+            await tg.send_message(owner_id, told, link_preview=False)
 
 
 def _same(title: str) -> str:
@@ -234,6 +275,7 @@ async def run(tg, owner_id: int) -> None:
         log.warning("can't read the Flatmates chat: %r", e)
     while True:
         wait = POLL
+        await apply_edits(tg, owner_id)
         for f in sorted(QUEUE.glob("*.json")):
             try:
                 await post(tg, json.loads(f.read_text()))
