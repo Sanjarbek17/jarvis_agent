@@ -15,6 +15,7 @@ def clean(tmp_path, monkeypatch):
     monkeypatch.setattr(f, "_viewing_topic", 0)
     monkeypatch.setattr(f, "CHAT", tmp_path / "chat.jsonl")
     monkeypatch.setattr(f, "POSTS", tmp_path / "posts.json")
+    monkeypatch.setattr(f, "EDITS", tmp_path / "edits")
     monkeypatch.setattr(f, "_told", 0.0)
     monkeypatch.setattr(f, "_answering", asyncio.Lock())
 
@@ -385,3 +386,52 @@ def test_the_exchange_is_logged_in_full(monkeypatch, caplog):
     with caplog.at_level("INFO", "jarvis.flatmates"):
         asyncio.run(f.on_message(event("How do you know", NS(message="Skip this one", out=True), client=Group(), replies=[]), "Sanjar"))
     assert "How do you know" in caplog.text and "Skip this one" in caplog.text and "The owner said it's taken." in caplog.text
+
+
+# --- correcting its own message --------------------------------------------------------------------------------------
+
+class Editor(Group):
+    def __init__(self, error=None):
+        super().__init__()
+        self.error, self.edits, self.told = error, [], []
+
+    async def edit_message(self, chat, message_id, text, **kw):
+        if self.error:
+            raise self.error
+        self.edits.append((chat, message_id, text))
+
+    async def send_message(self, to, text, **kw):
+        if to == 1:
+            self.told.append(text)
+            return NS(id=1)
+        return await super().send_message(to, text, **kw)
+
+
+def test_a_wrong_answer_is_edited_not_posted_again():
+    f.remember("Jarvis", "Got it. Flat 4 is marked.", 253)
+    f.drop_edit(253, "The owner wrote: Одам олдик")
+    tg = Editor()
+    asyncio.run(f.apply_edits(tg, 1))
+    assert tg.edits == [(f.FLATMATES_GROUP_ID, 253, "The owner wrote: Одам олдик")] and tg.sent == []
+    assert f.history() == ["Jarvis: The owner wrote: Одам олдик"] and not list(f.EDITS.glob("*.json"))
+    assert "It now says" in tg.told[0]
+
+
+def test_the_post_queue_never_sees_a_correction():
+    f.drop_edit(253, "x")
+    assert not f.QUEUE.exists() or not list(f.QUEUE.glob("*"))
+
+
+def test_a_failed_edit_is_told_and_not_retried_forever():
+    f.drop_edit(253, "x")
+    tg = Editor(ValueError("MESSAGE_AUTHOR_REQUIRED"))
+    asyncio.run(f.apply_edits(tg, 1))
+    assert tg.sent == [] and "couldn't correct" in tg.told[0] and not list(f.EDITS.glob("*.json"))
+
+
+def test_the_same_text_counts_as_done():
+    from telethon.errors import MessageNotModifiedError
+    f.drop_edit(253, "x")
+    tg = Editor(MessageNotModifiedError(None))
+    asyncio.run(f.apply_edits(tg, 1))
+    assert "It now says" in tg.told[0]
