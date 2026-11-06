@@ -14,6 +14,7 @@ def clean(tmp_path, monkeypatch):
     monkeypatch.setattr(f, "_topic", 0)
     monkeypatch.setattr(f, "_viewing_topic", 0)
     monkeypatch.setattr(f, "CHAT", tmp_path / "chat.jsonl")
+    monkeypatch.setattr(f, "POSTS", tmp_path / "posts.json")
     monkeypatch.setattr(f, "_told", 0.0)
     monkeypatch.setattr(f, "_history", f.deque(maxlen=f.HISTORY))
     monkeypatch.setattr(f, "_answering", asyncio.Lock())
@@ -130,17 +131,17 @@ def answered(monkeypatch, reply, fail=False):
 def test_a_question_gets_the_models_answer_and_it_sees_the_flats(monkeypatch):
     f.FLATMATES_VIEW.write_text(json.dumps([{"place": "2 rooms, Panjob, $240", "status": "open", "owner_said": "Free now."}]))
     seen = answered(monkeypatch, {"reply": "Panjob, $240."})
-    assert asyncio.run(f.answer("Ali", "qancha?")) == "Panjob, $240."
+    assert asyncio.run(f.answer("Ali", "qancha?")) == ("Panjob, $240.", 0)
     assert "2 rooms, Panjob, $240" in seen["prompt"] and "Ali: qancha?" in seen["prompt"] and "Free now." in seen["prompt"]
 
 
 def test_other_chat_and_failures_are_silence(monkeypatch):
     answered(monkeypatch, {"reply": ""})
-    assert asyncio.run(f.answer("Ali", "tushlik qildingmi?")) == ""
+    assert asyncio.run(f.answer("Ali", "tushlik qildingmi?")) == ("", 0)
     answered(monkeypatch, {"reply": "NO_REPLY"})
-    assert asyncio.run(f.answer("Ali", "hello")) == ""
+    assert asyncio.run(f.answer("Ali", "hello")) == ("", 0)
     answered(monkeypatch, {}, fail=True)
-    assert asyncio.run(f.answer("Ali", "qancha?")) == ""
+    assert asyncio.run(f.answer("Ali", "qancha?")) == ("", 0)
 
 
 def test_the_answer_model_has_nothing_but_the_flats_and_chat(monkeypatch):
@@ -175,7 +176,10 @@ def test_a_reply_goes_to_the_message_and_into_the_history(monkeypatch):
     async def reply(text, **kw):
         replies.append(text)
 
-    asyncio.run(f.on_message(NS(get_sender=sender, raw_text="qayerda?", reply=reply), "Ali"))
+    async def nothing():
+        return None
+
+    asyncio.run(f.on_message(NS(get_sender=sender, raw_text="qayerda?", reply=reply, get_reply_message=nothing), "Ali"))
     assert replies == ["Panjob."] and "Jarvis: Panjob." in f._history
 
 
@@ -207,3 +211,125 @@ def test_the_chat_file_stays_small(monkeypatch):
 def test_booked_viewings_are_in_the_flat_list():
     f.FLATMATES_VIEW.write_text(json.dumps([{"place": "2 rooms", "status": "open", "viewing": "Sat 7 Nov, 17:00, Gagarin 12"}]))
     assert "Viewing booked: Sat 7 Nov, 17:00, Gagarin 12" in f.flats()
+
+
+# --- replies to a flat's post ------------------------------------------------------------------------------------
+
+class Group(Tg):
+    def __init__(self, history=(), fail_reply_to=0, **kw):
+        super().__init__(**kw)
+        self.history, self.fail_reply_to, self.next_id = list(history), fail_reply_to, 500
+
+    async def send_message(self, to, text, **kw):
+        if kw.get("reply_to") == self.fail_reply_to:
+            raise ValueError("REPLY_MESSAGE_ID_INVALID")
+        await super().send_message(to, text, **kw)
+        self.next_id += 1
+        return NS(id=self.next_id)
+
+    async def send_file(self, to, files, caption="", **kw):
+        await super().send_file(to, files, caption=caption, **kw)
+        self.next_id += 1
+        return [NS(id=self.next_id), NS(id=self.next_id + 1)]
+
+    async def iter_messages(self, chat, limit=0):
+        for m in self.history:
+            yield m
+
+
+def test_a_follow_up_replies_to_the_flats_post():
+    tg = Group()
+    asyncio.run(f.post(tg, {"text": "🏠 flat", "key": "@o", "link": "https://t.me/g/1", "first": True}))
+    asyncio.run(f.post(tg, {"text": "Skip this one", "key": "@o", "link": "https://t.me/g/1"}))
+    assert tg.sent[0][3]["reply_to"] == 11 and tg.sent[1][3]["reply_to"] == 501
+
+
+def test_an_album_is_remembered_by_its_first_message(tmp_path):
+    photo = tmp_path / "1.jpg"
+    photo.write_bytes(b"x")
+    tg = Group()
+    asyncio.run(f.post(tg, {"text": "🏠", "photos": [str(photo)], "key": "@o", "first": True}))
+    assert f._posts() == {"@o": 501}
+
+
+def test_a_flat_posted_before_this_is_found_by_its_link():
+    history = [NS(id=90, out=True, message="📅 Viewing https://t.me/g/1"), NS(id=70, out=True, message="🏠 flat https://t.me/g/1"),
+               NS(id=60, out=False, message="look https://t.me/g/1"), NS(id=50, out=True, message="🏠 other")]
+    tg = Group(history)
+    asyncio.run(f.post(tg, {"text": "Skip this one", "key": "@o", "link": "https://t.me/g/1"}))
+    assert tg.sent[0][3]["reply_to"] == 70 and f._posts() == {"@o": 70}
+
+
+def test_with_no_post_found_it_goes_to_the_topic():
+    tg = Group()
+    asyncio.run(f.post(tg, {"text": "Skip this one", "key": "@o", "link": "https://t.me/g/1"}))
+    assert tg.sent[0][3]["reply_to"] == 11
+
+
+def test_a_deleted_post_doesnt_block_the_queue():
+    f._keep_post("@o", 70)
+    tg = Group(fail_reply_to=70)
+    asyncio.run(f.post(tg, {"text": "Skip this one", "key": "@o"}))
+    assert tg.sent[0][3]["reply_to"] == 11
+
+
+def event(raw, earlier=None, client=None, replies=None):
+    async def sender():
+        return NS(bot=False)
+
+    async def reply(text, **kw):
+        replies.append(text)
+
+    async def get_reply():
+        return earlier
+
+    return NS(get_sender=sender, raw_text=raw, reply=reply, get_reply_message=get_reply, client=client, chat_id=f.FLATMATES_GROUP_ID)
+
+
+def test_the_model_sees_what_a_member_replied_to(monkeypatch):
+    seen = answered(monkeypatch, {"reply": "The owner told us."})
+    replies = []
+    asyncio.run(f.on_message(event("How do you know?", NS(message="Skip this one, they don't rent to boys", out=True), replies=replies), "Ikrom"))
+    assert "replies to your message" in seen["prompt"] and "don't rent to boys" in seen["prompt"]
+    assert "Ikrom: How do you know?" in seen["prompt"] and replies == ["The owner told us."]
+
+
+def test_a_topics_first_message_isnt_a_reply(monkeypatch):
+    seen = answered(monkeypatch, {"reply": ""})
+    asyncio.run(f.on_message(event("salom", NS(message="", out=False), replies=[]), "Ali"))
+    assert "replies to" not in seen["prompt"].split("--- end ---")[1].split("Look at")[0]
+
+
+def test_a_question_about_one_flat_is_answered_under_its_post(monkeypatch):
+    f.FLATMATES_VIEW.write_text(json.dumps([{"place": "2 rooms", "key": "@o", "link": "https://t.me/g/1"}]))
+    f._keep_post("@o", 70)
+    answered(monkeypatch, {"reply": "$240.", "flat": 1})
+    tg, replies = Group(), []
+    asyncio.run(f.on_message(event("Panjob qancha?", client=tg, replies=replies), "Ali"))
+    assert replies == [] and tg.sent[0][2] == "$240." and tg.sent[0][3]["reply_to"] == 70
+
+
+def test_a_member_who_replied_gets_the_answer_under_their_message(monkeypatch):
+    f.FLATMATES_VIEW.write_text(json.dumps([{"place": "2 rooms", "key": "@o"}]))
+    f._keep_post("@o", 70)
+    answered(monkeypatch, {"reply": "$240.", "flat": 1})
+    tg, replies = Group(), []
+    asyncio.run(f.on_message(event("qancha?", NS(message="🏠 2 rooms", out=True), client=tg, replies=replies), "Ali"))
+    assert replies == ["$240."] and tg.sent == []
+
+
+def test_nonsense_flat_numbers_are_ignored(monkeypatch):
+    answered(monkeypatch, {"reply": "Hm.", "flat": 9})
+    replies = []
+    asyncio.run(f.on_message(event("nima?", client=Group(), replies=replies), "Ali"))
+    assert replies == ["Hm."]
+
+
+def test_a_message_meant_for_jarvis_must_get_an_answer(monkeypatch):
+    seen = answered(monkeypatch, {"reply": "x"})
+    asyncio.run(f.answer("Ali", "How do you know?", "Skip this one", True))
+    assert f.TO_YOU in seen["prompt"] and "or empty" not in seen["prompt"]
+    asyncio.run(f.answer("Ali", "Jarvis, qaysi biri yaxshi?"))
+    assert f.TO_YOU in seen["prompt"]
+    asyncio.run(f.answer("Ali", "tushlik qildingmi?"))
+    assert f.TO_ANYONE in seen["prompt"] and f.TO_YOU not in seen["prompt"]
