@@ -44,7 +44,7 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.types import InputPeerChannel, MessageActionGroupCall
 
-from core import appserver, board, contacts, coremem, guard, memory, origin, outbox, selfcheck, tgfmt, tools
+from core import appserver, board, contacts, coremem, flatmates, guard, memory, origin, outbox, selfcheck, tgfmt, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, WATCHED_GROUP_IDS, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
@@ -955,14 +955,18 @@ async def on_group_message(event):
     """Follow the whole group conversation (read-only). Jarvis keeps the recent messages so it has
     the full thread, but only speaks up when it's addressed by name or a meeting is being arranged
     (e.g. "Jarvis, schedule it"). It answers in the language the group is using.
-    Only the watched group ("Taxi loyiha"); every other group is ignored."""
+    Only the watched group ("Taxi loyiha") and Flatmates, which has its own rules; every other group is ignored."""
     title = getattr(await event.get_chat(), "title", "") or ""
-    if not watched_group(event.chat_id, title):
+    in_flatmates = flatmates.is_flatmates(event.chat_id)
+    if not (in_flatmates or watched_group(event.chat_id, title)):
         return
     text = (event.raw_text or "").strip()
     sender = await event.get_sender()
     name = "Sanjar" if event.sender_id == OWNER_ID else (
         contacts.name_of(sender) if hasattr(sender, "first_name") else getattr(sender, "title", "someone"))
+    if in_flatmates:                 # apartments only, and it answers without being named
+        await flatmates.on_message(event, name)
+        return
     hist = group_history.setdefault(event.chat_id, deque(maxlen=40))
     hist.append(f"{name}: {text}")
 
@@ -1131,6 +1135,7 @@ async def main():
     asyncio.create_task(appserver.serve())
     asyncio.create_task(send_format_samples())
     asyncio.create_task(outbox.run(tg, OWNER_ID, appserver.push_file))   # scripts send Sanjar things through us
+    asyncio.create_task(flatmates.run(tg, OWNER_ID))                     # found apartments, into the Flatmates group
     if "--call" in sys.argv and CALL_SANJAR:
         try:
             await start_call(OWNER_ID)
