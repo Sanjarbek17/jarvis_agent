@@ -17,9 +17,10 @@
     "local": true
   },
   "Theater": {
-    "about": "Theater project (formerly called Madaniyat): portal with FastAPI backend + Flutter frontend",
+    "about": "Theater project (formerly called Madaniyat): theatre hall monitoring. frontend/Design system pills is the main frontend, the HTML portal (GitHub bhgroupai/madaniyat-portal, live at madaniyat.bhgroup.uz). backend/madaniyat_backend is the FastAPI backend (the server's folder ~/dev/madaniyat_backend_v2, port 8227). frontend/madaniyat_frontend is the older Flutter web app, still live at theatre.bhgroup.uz: its build sits in the backend's web/ folder",
     "folders": [
       "backend/madaniyat_backend",
+      "frontend/Design system pills",
       "frontend/madaniyat_frontend"
     ],
     "board": "7f3380537c0d48d094bbc43c5418a047",
