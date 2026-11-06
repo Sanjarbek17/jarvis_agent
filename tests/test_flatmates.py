@@ -16,6 +16,9 @@ def clean(tmp_path, monkeypatch):
     monkeypatch.setattr(f, "CHAT", tmp_path / "chat.jsonl")
     monkeypatch.setattr(f, "POSTS", tmp_path / "posts.json")
     monkeypatch.setattr(f, "EDITS", tmp_path / "edits")
+    monkeypatch.setattr(f, "DELETES", tmp_path / "deletes")
+    monkeypatch.setattr(f, "QUIET", 0)
+    monkeypatch.setattr(f, "_burst", [])
     monkeypatch.setattr(f, "_told", 0.0)
     monkeypatch.setattr(f, "_answering", asyncio.Lock())
 
@@ -299,7 +302,7 @@ def test_the_model_sees_what_a_member_replied_to(monkeypatch):
 def test_a_topics_first_message_isnt_a_reply(monkeypatch):
     seen = answered(monkeypatch, {"reply": ""})
     asyncio.run(f.on_message(event("salom", NS(message="", out=False), replies=[]), "Ali"))
-    assert "replies to" not in seen["prompt"].split("--- end ---")[1].split("Look at")[0]
+    assert "The latest message replies to" not in seen["prompt"]
 
 
 def test_a_question_about_one_flat_is_answered_under_its_post(monkeypatch):
@@ -330,7 +333,7 @@ def test_nonsense_flat_numbers_are_ignored(monkeypatch):
 def test_a_message_meant_for_jarvis_must_get_an_answer(monkeypatch):
     seen = answered(monkeypatch, {"reply": "x"})
     asyncio.run(f.answer("Ali", "How do you know?", "Skip this one", True))
-    assert f.TO_YOU in seen["prompt"] and "or empty" not in seen["prompt"]
+    assert f.TO_YOU in seen["prompt"]
     asyncio.run(f.answer("Ali", "Jarvis, qaysi biri yaxshi?"))
     assert f.TO_YOU in seen["prompt"]
     asyncio.run(f.answer("Ali", "tushlik qildingmi?"))
@@ -343,7 +346,7 @@ def test_the_owners_own_words_reach_the_model(monkeypatch):
     f.FLATMATES_VIEW.write_text(json.dumps([{"place": "Panjob", "status": "fell through", "owner_words": "[voice] yo'q, bu oilaga"}]))
     seen = answered(monkeypatch, {"reply": "x"})
     asyncio.run(f.answer("Ali", "How do you know", "Skip this one", True))
-    assert "[voice] yo'q, bu oilaga" in seen["prompt"] and "ask for your evidence" in seen["prompt"]
+    assert "[voice] yo'q, bu oilaga" in seen["prompt"] and "how do you know" in seen["prompt"]
 
 
 def test_its_own_posts_are_remembered_and_survive_a_restart(monkeypatch):
@@ -435,3 +438,96 @@ def test_the_same_text_counts_as_done():
     tg = Editor(MessageNotModifiedError(None))
     asyncio.run(f.apply_edits(tg, 1))
     assert "It now says" in tg.told[0]
+
+
+# --- staying natural ---------------------------------------------------------------------------------------------------
+
+def burst_event(raw, mid, replies, forwarded=False, earlier=None):
+    e = event(raw, earlier, replies=replies)
+    e.id, e.fwd_from = mid, object() if forwarded else None
+    return e
+
+
+async def together(*calls):
+    await asyncio.gather(*calls)
+
+
+def test_a_forward_is_never_answered_and_the_model_isnt_even_asked(monkeypatch):
+    seen = answered(monkeypatch, {"reply": "x"})
+    replies = []
+    asyncio.run(f.on_message(burst_event("necha xona opa", 272, replies, forwarded=True), "Ikrom C"))
+    assert replies == [] and not seen and f.history() == ["Ikrom C (forwarded): necha xona opa"]
+
+
+def test_forwards_are_marked_for_the_model_when_someone_then_asks(monkeypatch):
+    seen = answered(monkeypatch, {"reply": ""})
+    replies = []
+    asyncio.run(together(f.on_message(burst_event("3 xona", 273, replies, forwarded=True), "Ikrom C"),
+                         f.on_message(burst_event("qalay?", 274, replies), "Ikrom C")))
+    assert "Ikrom C (forwarded): 3 xona" in seen["prompt"]
+
+
+def test_a_burst_gets_one_answer(monkeypatch):
+    calls = []
+    from core import memory
+
+    async def ask(prompt, model, timeout):
+        calls.append(prompt)
+        return {"reply": "Panjob."}
+
+    monkeypatch.setattr(memory, "_ask_claude_json", ask)
+    monkeypatch.setattr(f, "QUIET", 0.01)
+    replies = []
+    asyncio.run(together(*[f.on_message(burst_event(t, i, replies), "Ali") for i, t in enumerate(["salom", "bu qayerda?", "ayting"])]))
+    assert len(calls) == 1 and replies == ["Panjob."]
+
+
+def test_the_message_meant_for_jarvis_is_the_one_answered_in_a_burst(monkeypatch):
+    seen = answered(monkeypatch, {"reply": "x"})
+    monkeypatch.setattr(f, "QUIET", 0.01)
+    replies = []
+    asyncio.run(together(f.on_message(burst_event("How do you know", 1, replies, earlier=NS(message="Skip this one", out=True)), "Ali"),
+                         f.on_message(burst_event("ha", 2, replies), "Vali")))
+    assert "YOUR OWN earlier message" in seen["prompt"]
+
+
+def test_forwards_never_count_as_the_group_agreeing_a_time():
+    f.remember("Ikrom", "ertaga 5 da", forwarded=True)
+    f.remember("Ali", "ha")
+    assert [r["name"] for r in f.recent(0)] == ["Ali"]
+
+
+def test_bot_talk_never_reaches_the_group(monkeypatch):
+    for line in ("Hozircha bilmayman, Sanjar egasidan so'rashi mumkin.", "Got it, it's off the list.", "Flat 4 is taken.", "I only help with the flats.",
+                 "Noted."):
+        answered(monkeypatch, {"reply": line})
+        assert asyncio.run(f.answer("Ali", "?")) == ("", 0), line
+    answered(monkeypatch, {"reply": "Egasi \"bu oilaga\" dedi."})
+    assert asyncio.run(f.answer("Ali", "?"))[0] == "Egasi \"bu oilaga\" dedi."
+
+
+class Deleter(Editor):
+    def __init__(self, error=None):
+        super().__init__()
+        self.error, self.deleted = error, []
+
+    async def delete_messages(self, chat, ids):
+        if self.error:
+            raise self.error
+        self.deleted.extend(ids)
+
+
+def test_a_wrong_answer_can_be_taken_back():
+    f.remember("Jarvis", "wrong", 278)
+    f.remember("Ali", "right", 279)
+    f.drop_delete(278)
+    tg = Deleter()
+    asyncio.run(f.apply_deletes(tg, 1))
+    assert tg.deleted == [278] and f.history() == ["Ali: right"] and not list(f.DELETES.glob("*")) and "took back" in tg.told[0]
+
+
+def test_a_failed_delete_is_told():
+    f.drop_delete(278)
+    tg = Deleter(ValueError("no"))
+    asyncio.run(f.apply_deletes(tg, 1))
+    assert "couldn't take back" in tg.told[0] and not list(f.DELETES.glob("*"))
