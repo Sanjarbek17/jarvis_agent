@@ -146,7 +146,7 @@
     "board": "7f4f5b38da9a40f48b7f6ed60dc42ca8"
   },
   "Apartment Search": {
-    "about": "worker that looks for a home in Samarkand for 5 people around $250 for Sanjar: every 30 min it reads public rental groups with the +7 906 job account, takes only places that accept boys (they are 5 young men), writes to posters (5 new people a day, three fixed messages) and reports offers and owners' answers with photos to his Jarvis app chat. Change the price, people or limits in side_project/projects/apartment_search/config.json; when he says to stop or he found a place, set \"active\": false there",
+    "about": "worker that looks for a home in Samarkand for 5 people around $250 for Sanjar: every 30 min it reads public rental groups with the +7 906 job account, takes only places that accept boys and fit 5 young men by rooms, size and beds, writes to posters (5 new people a day, three fixed messages; it never tells them how many we are) and reports offers and owners' answers with photos to his Jarvis app chat. Change the price, people or limits in side_project/projects/apartment_search/config.json; when he says to stop or he found a place, set \"active\": false there",
     "folders": [
       "side_project/projects/apartment_search"
     ],
