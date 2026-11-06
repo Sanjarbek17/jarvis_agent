@@ -152,6 +152,7 @@ Notion. The website and app show every board (Board in a project's chat list; `/
 search, queue, take off the queue, done, drop, and for boards on the Mac also edit and status. Workers and skills use
 `scripts/board.py` (show, list, add, edit, log). Move a board with `scripts/notion_to_local.py <project> --switch`
 (it refuses while a ticket is Working); Notion isn't changed and the "board" id stays in projects.json as the way back.
+Every night `scripts/backup_boards.py` copies those boards to the private repo `Sanjarbek17/jarvis-boards` as readable JSON (launchd: `com.sanjar.jarvis-board-backup`, log in `var/logs/board-backup.log`). Anything shaped like a key or password is hidden first. `--restore <folder> <new.db>` rebuilds a board file from a clone.
 Images and files stay on the old Notion page, which each copied ticket links to.
 
 Notion reads: each board is read in full at most once a minute (`CACHE_SECONDS` in core/board.py) and filtered
