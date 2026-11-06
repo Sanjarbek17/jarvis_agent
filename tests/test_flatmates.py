@@ -16,7 +16,6 @@ def clean(tmp_path, monkeypatch):
     monkeypatch.setattr(f, "CHAT", tmp_path / "chat.jsonl")
     monkeypatch.setattr(f, "POSTS", tmp_path / "posts.json")
     monkeypatch.setattr(f, "_told", 0.0)
-    monkeypatch.setattr(f, "_history", f.deque(maxlen=f.HISTORY))
     monkeypatch.setattr(f, "_answering", asyncio.Lock())
 
 
@@ -34,11 +33,13 @@ class Tg:
         if self.fail:
             raise self.fail
         self.sent.append(("text", to, text, kw))
+        return NS(id=1)
 
     async def send_file(self, to, files, caption="", **kw):
         if self.fail:
             raise self.fail
         self.sent.append(("file", to, files, caption, kw))
+        return NS(id=2)
 
 
 def test_only_the_flatmates_group_counts():
@@ -180,7 +181,7 @@ def test_a_reply_goes_to_the_message_and_into_the_history(monkeypatch):
         return None
 
     asyncio.run(f.on_message(NS(get_sender=sender, raw_text="qayerda?", reply=reply, get_reply_message=nothing), "Ali"))
-    assert replies == ["Panjob."] and "Jarvis: Panjob." in f._history
+    assert replies == ["Panjob."] and f.history()[-2:] == ["Ali: qayerda?", "Jarvis: Panjob."]
 
 
 def test_viewing_posts_use_a_viewing_topic_if_there_is_one():
@@ -290,7 +291,7 @@ def test_the_model_sees_what_a_member_replied_to(monkeypatch):
     seen = answered(monkeypatch, {"reply": "The owner told us."})
     replies = []
     asyncio.run(f.on_message(event("How do you know?", NS(message="Skip this one, they don't rent to boys", out=True), replies=replies), "Ikrom"))
-    assert "replies to your message" in seen["prompt"] and "don't rent to boys" in seen["prompt"]
+    assert "YOUR OWN earlier message" in seen["prompt"] and "don't rent to boys" in seen["prompt"]
     assert "Ikrom: How do you know?" in seen["prompt"] and replies == ["The owner told us."]
 
 
@@ -333,3 +334,54 @@ def test_a_message_meant_for_jarvis_must_get_an_answer(monkeypatch):
     assert f.TO_YOU in seen["prompt"]
     asyncio.run(f.answer("Ali", "tushlik qildingmi?"))
     assert f.TO_ANYONE in seen["prompt"] and f.TO_YOU not in seen["prompt"]
+
+
+# --- evidence and memory -----------------------------------------------------------------------------------------
+
+def test_the_owners_own_words_reach_the_model(monkeypatch):
+    f.FLATMATES_VIEW.write_text(json.dumps([{"place": "Panjob", "status": "fell through", "owner_words": "[voice] yo'q, bu oilaga"}]))
+    seen = answered(monkeypatch, {"reply": "x"})
+    asyncio.run(f.answer("Ali", "How do you know", "Skip this one", True))
+    assert "[voice] yo'q, bu oilaga" in seen["prompt"] and "ask for your evidence" in seen["prompt"]
+
+
+def test_its_own_posts_are_remembered_and_survive_a_restart(monkeypatch):
+    tg = Group()
+    asyncio.run(f.post(tg, {"text": "Skip this one, it's taken: Vagzal", "key": "@o"}))
+    seen = answered(monkeypatch, {"reply": "x"})                      # nothing in memory but the file
+    asyncio.run(f.answer("Sanjar", "How do you know"))
+    assert "Jarvis: Skip this one, it's taken: Vagzal" in seen["prompt"]
+
+
+def test_the_search_doesnt_read_jarviss_posts_as_a_members_answer():
+    f.remember("Jarvis", "#1 tomorrow at 17:00")
+    f.remember("Ali", "ertaga")
+    assert [r["name"] for r in f.recent(0)] == ["Ali"]
+
+
+def group_message(mid, text, out=False, reply_to=None, sender_id=5, first_name="Ikrom"):
+    async def get_sender():
+        return NS(first_name=first_name)
+
+    return NS(id=mid, message=text, out=out, reply_to=NS(reply_to_msg_id=reply_to) if reply_to else None, sender_id=sender_id,
+              get_sender=get_sender, date=NS(timestamp=lambda: 1000.0 + mid))
+
+
+def test_a_start_fills_in_the_chat_from_the_group():
+    f.remember("Sanjar", "already here", 3)
+    tg = Group([group_message(4, "The owner said so", out=True, reply_to=2), group_message(3, "already here"),
+                group_message(2, "How do you know?", reply_to=1), group_message(1, "Skip this one", out=True)])
+    asyncio.run(f.seed(tg))
+    rows = f._chat()
+    assert sum(r["id"] == 3 for r in rows) == 1
+    said = {r["id"]: r for r in rows}
+    assert said[1]["name"] == "Jarvis" and said[2]["name"] == "Ikrom" and said[2]["replied"] == "Skip this one" and said[4]["name"] == "Jarvis"
+    asyncio.run(f.seed(tg))
+    assert len(f._chat()) == len(rows)
+
+
+def test_the_exchange_is_logged_in_full(monkeypatch, caplog):
+    answered(monkeypatch, {"reply": "The owner said it's taken."})
+    with caplog.at_level("INFO", "jarvis.flatmates"):
+        asyncio.run(f.on_message(event("How do you know", NS(message="Skip this one", out=True), client=Group(), replies=[]), "Sanjar"))
+    assert "How do you know" in caplog.text and "Skip this one" in caplog.text and "The owner said it's taken." in caplog.text
