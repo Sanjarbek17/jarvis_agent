@@ -12,6 +12,8 @@ def clean(tmp_path, monkeypatch):
     monkeypatch.setattr(f, "QUEUE", tmp_path / "out")
     monkeypatch.setattr(f, "FLATMATES_VIEW", tmp_path / "view.json")
     monkeypatch.setattr(f, "_topic", 0)
+    monkeypatch.setattr(f, "_viewing_topic", 0)
+    monkeypatch.setattr(f, "CHAT", tmp_path / "chat.jsonl")
     monkeypatch.setattr(f, "_told", 0.0)
     monkeypatch.setattr(f, "_history", f.deque(maxlen=f.HISTORY))
     monkeypatch.setattr(f, "_answering", asyncio.Lock())
@@ -175,3 +177,33 @@ def test_a_reply_goes_to_the_message_and_into_the_history(monkeypatch):
 
     asyncio.run(f.on_message(NS(get_sender=sender, raw_text="qayerda?", reply=reply), "Ali"))
     assert replies == ["Panjob."] and "Jarvis: Panjob." in f._history
+
+
+def test_viewing_posts_use_a_viewing_topic_if_there_is_one():
+    tg = Tg(topics=("New flat options", "Viewings"))
+    asyncio.run(f.post(tg, {"text": "📅", "viewing": True}))
+    asyncio.run(f.post(tg, {"text": "🏠"}))
+    assert tg.sent[0][3]["reply_to"] == 11 and tg.sent[1][3]["reply_to"] == 10
+
+
+def test_viewing_posts_stay_in_new_flat_options_otherwise():
+    tg = Tg(topics=("General", "new flat options"))
+    asyncio.run(f.post(tg, {"text": "📅", "viewing": True}))
+    assert tg.sent[0][3]["reply_to"] == 11
+
+
+def test_what_members_say_is_kept_for_the_search(monkeypatch):
+    f.remember("Ali", "ertaga 5 da bo'sh man")
+    rows = f.recent(0)
+    assert rows[0]["name"] == "Ali" and "ertaga" in rows[0]["text"] and f.recent(rows[0]["ts"] + 1) == []
+
+
+def test_the_chat_file_stays_small(monkeypatch):
+    for _ in range(1500):
+        f.remember("Ali", "x" * 200)
+    assert len(f.CHAT.read_text().splitlines()) < 1500
+
+
+def test_booked_viewings_are_in_the_flat_list():
+    f.FLATMATES_VIEW.write_text(json.dumps([{"place": "2 rooms", "status": "open", "viewing": "Sat 7 Nov, 17:00, Gagarin 12"}]))
+    assert "Viewing booked: Sat 7 Nov, 17:00, Gagarin 12" in f.flats()

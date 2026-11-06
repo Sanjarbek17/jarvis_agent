@@ -19,7 +19,8 @@
   voice chats only there. Every other group is ignored completely.
 - One exception (Sanjar, 2026-11-06): the "Flatmates" group, for apartments only. Found apartments
   go to its "new flat options" topic and any member's apartment question gets an answer, named or not.
-  Other talk there gets silence, and it never reveals secrets or other projects.
+  Booked viewings are posted there too, and when a time needs choosing the group is asked; the time
+  it agrees goes to the owner. Other talk there gets silence, and it never reveals secrets or other projects.
 
 ## Find ids, tokens and configs yourself before asking (Sanjar, 2026-11-04)
 - Before any NEEDS ME question about an id, token, key, account or config (his Telegram id, a bot
