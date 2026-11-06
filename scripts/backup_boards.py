@@ -4,17 +4,22 @@
     .venv/bin/python scripts/backup_boards.py                          # export, commit, push
     .venv/bin/python scripts/backup_boards.py --restore <folder> <db>  # rebuild a new boards.db from a clone
 
-Runs from launchd (~/Library/LaunchAgents/com.sanjar.jarvis-board-backup.plist). Anything shaped like a key
-or password is replaced with [hidden] before it leaves the Mac, so those values aren't restored. Git history
-keeps the older nights. If a night fails, the error goes to Sanjar on Telegram.
+Runs from launchd (~/Library/LaunchAgents/com.sanjar.jarvis-board-backup.plist). Before anything leaves the
+Mac, every password and key value from the .env files under ~/dev, and anything shaped like one, becomes
+[hidden], so those values aren't restored. Git history keeps the older nights. If a night fails, the error goes to Sanjar on Telegram.
 """
 import argparse
+import contextlib
+import functools
 import json
+import os
 import re
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+
+from dotenv import dotenv_values
 
 HERE = Path(__file__).parent.parent
 sys.path.insert(0, str(HERE))
@@ -24,6 +29,11 @@ REMOTE = "git@github.com:Sanjarbek17/jarvis-boards.git"
 CLONE = HERE / "var" / "boards-backup"
 FAILED = HERE / "var" / "logs" / "board-backup-failed.txt"
 HIDDEN = "[hidden]"
+ENV_ROOT = Path.home() / "dev"
+SKIP_DIRS = {"node_modules", ".venv", "venv", ".git", "build", "dist", "__pycache__", ".worktrees", ".gradle"}
+TEMPLATES = (".example", ".sample", ".template")
+SECRET_KEY = re.compile(r"(?i)pass|secret|token|api_?key|private")
+PLAIN = {"postgres", "password", "changeme", "localhost"}
 SHAPES = re.compile(
     r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|sk-ant-[\w-]{10,}|\bsk-[A-Za-z0-9]{20,}"
     r"|\b(?:secret_|ntn_)[A-Za-z0-9]{20,}|\b\d{8,10}:[A-Za-z0-9_-]{30,}|AKIA[0-9A-Z]{16}|AIza[\w-]{30,}"
@@ -33,8 +43,28 @@ NAMED = re.compile(r"(?i)\b(password|passwd|parol|secret|api[_ -]?key|token)(\s*
 URL_LOGIN = re.compile(r"(\b[a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s/@]+@")
 
 
+@functools.lru_cache(maxsize=1)
+def secret_values() -> tuple[str, ...]:
+    """The real passwords and keys from every .env under ~/dev: tickets quote them, and shapes can't catch those."""
+    found = set()
+    for folder, dirs, files in os.walk(ENV_ROOT):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        for name in files:
+            if name == ".env" or (name.startswith(".env.") and not name.endswith(TEMPLATES)):
+                with contextlib.suppress(OSError):
+                    for key, value in dotenv_values(Path(folder) / name).items():
+                        if SECRET_KEY.search(key) and value and len(value) >= 6 and value.lower() not in PLAIN:
+                            found.add(value)
+    if not found:
+        raise RuntimeError(f"found no secrets to hide under {ENV_ROOT}, not sending anything")
+    return tuple(sorted(found, key=len, reverse=True))
+
+
 def mask(text: str) -> str:
-    text = SHAPES.sub(HIDDEN, text or "")
+    text = text or ""
+    for value in secret_values():
+        text = text.replace(value, HIDDEN)
+    text = SHAPES.sub(HIDDEN, text)
     text = URL_LOGIN.sub(rf"\g<1>{HIDDEN}@", text)
     return NAMED.sub(rf"\g<1>\g<2>{HIDDEN}", text)
 
