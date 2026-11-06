@@ -91,6 +91,11 @@ WATCHED_GROUP_TITLES = {"taxi loyiha"}
 
 def watched_group(chat_id: int, title: str = "") -> bool:
     return chat_id in WATCHED_GROUP_IDS or title.strip().lower() in WATCHED_GROUP_TITLES
+# Sanjar, 2026-11-06: found apartments go to the Flatmates group and members' apartment questions get answers
+# (core/flatmates.py). Apartments only: no voice chats or meeting alerts, so it isn't in WATCHED_GROUP_IDS.
+FLATMATES_GROUP_ID = -1004352387104
+FLATMATES_TOPIC = "new flat options"
+FLATMATES_VIEW = Path.home() / "dev/side_project/projects/apartment_search/data/group_view.json"
 CALL_ON = {"needs_me", "failed"}  # runner results worth a phone call (done ones only go to Telegram)
 DAILY_CALL_AT = (20, 0)           # daily summary call, Mac local time
 SOFT_SKILLS_REMINDER_AT = (16, 0) # daily Telegram nudge to continue soft skills, Mac local time
