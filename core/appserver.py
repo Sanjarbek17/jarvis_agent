@@ -19,10 +19,12 @@ WebSocket. Two kinds (ticket 31ed52a7):
     POST /api/chats {project, title?}        a new chat
     POST /api/chats/{id}/move {project}      moves it to another project; messages and conversation stay
     GET  /api/chats/{id}/messages            [{role: "me"|"jarvis", text, ts, voice?}]
-    POST /api/chats/{id}/messages {text, images?}  Jarvis's reply (waits for it); images: names from /api/uploads
+    POST /api/chats/{id}/messages {text, images?, reply_to?}  Jarvis's reply (waits for it); images: names from
+                                             /api/uploads; reply_to: the "ts" of the message he's answering (ticket
+                                             256550ce): Jarvis sees it quoted, the message keeps {"reply": quote}
     POST /api/uploads  (image body)          {name}: a photo Sanjar attaches (JPEG/PNG/WebP/HEIC/GIF, up to 20 MB),
                                              shrunk to IMAGE_MAX_PX JPEG; refused if it isn't an image
-    POST /api/chats/{id}/voice  (audio body) {heard, reply}: transcribed like a Telegram voice note
+    POST /api/chats/{id}/voice?reply_to=ts (audio body) {heard, reply}: transcribed like a Telegram voice note
     GET  /api/images/{name}                  an image named in a message's "images" list (JPEG/PNG)
     GET  /api/files/{name}                   a file from a message's "files" list [{name, title, size}]
     GET  /api/notifications?after=<ts>       {chat, items}: what Jarvis wrote first (ticket news, "needs
@@ -394,19 +396,53 @@ def _brain(chat: dict) -> Brain:
     return brain
 
 
-async def ask(chat: dict, text: str, voice: bool = False, images: list[str] = ()) -> dict:
+def find_message(chat: dict, ts) -> dict | None:
+    """The message of this chat sent at `ts` (its id in the app and website)."""
+    try:
+        ts = float(ts)
+    except (TypeError, ValueError):
+        return None
+    return next((m for m in reversed(chat["messages"]) if abs(m.get("ts", 0) - ts) < 1e-6), None)
+
+
+def quote(m: dict) -> dict:
+    """What a reply keeps of the message it answers: enough to show it and jump back to it."""
+    q = {"role": m.get("role", "jarvis"), "text": (m.get("text") or "")[:300], "ts": m["ts"]}
+    if m.get("images"):
+        q["images"] = len(m["images"])
+    if m.get("files"):
+        q["files"] = [f.get("title", "") for f in m["files"]][:3]
+    return q
+
+
+def reply_context(m: dict) -> str:
+    """The quoted message for the brain, like a Telegram reply (jarvis.reply_context)."""
+    who = "you (Jarvis)" if m.get("role") == "jarvis" else "Sanjar"
+    body = (m.get("text") or "").strip()
+    if m.get("images"):
+        body += "\n[images in it, on the Mac: " + ", ".join(str(IMAGES / n) for n in m["images"]) + "]"
+    if m.get("files"):
+        body += "\n[files in it: " + ", ".join(f.get("title", "") for f in m["files"]) + "]"
+    return f"[Replying to this earlier message from {who}:\n{(body.strip() or '[no text]')[:3000]}\n]\n\n"
+
+
+async def ask(chat: dict, text: str, voice: bool = False, images: list[str] = (), reply_to=None) -> dict:
     """Sanjar says `text` in this chat; returns Jarvis's message (both are saved). images: names of
-    photos he attached (from save_upload); the brain gets their paths and looks at them itself."""
+    photos he attached (from save_upload); the brain gets their paths and looks at them itself.
+    reply_to: the ts of the message he's answering; an unknown one is ignored (the message still goes)."""
     earlier = _unseen_pushes(chat)
     chat["seen_pushes"] = time.time()
+    answered = find_message(chat, reply_to) if reply_to is not None else None
     chat["messages"].append({"role": "me", "text": text, "ts": time.time(), **({"voice": True} if voice else {}),
-                             **({"images": list(images)} if images else {})})
+                             **({"images": list(images)} if images else {}),
+                             **({"reply": quote(answered)} if answered else {})})
     if chat["title"] == "New chat":
         chat["title"] = (text[:40] + ("…" if len(text) > 40 else "")) if text else "Image"
     save_chat(chat)
     shared = _shared(chat)
     if shared:
-        await _to_telegram(f"From the website: {text}" + (f" (+{len(images)} image{'s' * (len(images) > 1)})" if images else ""))
+        await _to_telegram(f"From the website: {text}" + (f" (+{len(images)} image{'s' * (len(images) > 1)})" if images else "")
+                           + (f"\n(replying to: {(answered.get('text') or '[image]')[:200]})" if answered else ""))
     attached = ""
     if images:
         paths = ", ".join(str(IMAGES / n) for n in images)
@@ -414,7 +450,8 @@ async def ask(chat: dict, text: str, voice: bool = False, images: list[str] = ()
                     f"{paths}. Look at {'them' if len(images) > 1 else 'it'} with Read before answering.]\n")
     brain = _brain(chat)
     try:
-        reply = await brain.reply(f"{context_line(chat['project'])}\n{earlier}{attached}{text}")
+        replying = reply_context(answered) if answered else ""
+        reply = await brain.reply(f"{context_line(chat['project'])}\n{earlier}{replying}{attached}{text}")
     except Exception:
         log.exception("app chat %s: brain failed", chat["id"])
         reply = "Sorry, something went wrong on my side. Try again?"
@@ -628,7 +665,7 @@ async def messages(req: Request):
             return JSONResponse({"error": "Those images aren't on the Mac. Attach them again."}, status_code=400)
         if not text and not images:
             return JSONResponse({"error": "empty"}, status_code=400)
-        return JSONResponse(await ask(chat, text, images=images))
+        return JSONResponse(await ask(chat, text, images=images, reply_to=body.get("reply_to")))
     recent = chat["messages"][-200:]
     return JSONResponse(_with_project(recent) if chat["id"] == UPDATES else recent)
 
@@ -670,7 +707,8 @@ async def voice(req: Request):
     if not heard:
         return JSONResponse({"heard": "", "reply": {"role": "jarvis", "text": "I couldn't make out that voice message.",
                                                      "ts": time.time()}})
-    return JSONResponse({"heard": heard, "reply": await ask(chat, heard, voice=True)})
+    return JSONResponse({"heard": heard, "reply": await ask(chat, heard, voice=True,
+                                                           reply_to=req.query_params.get("reply_to"))})
 
 
 async def call(ws: WebSocket):
