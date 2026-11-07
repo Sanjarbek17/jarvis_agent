@@ -600,12 +600,14 @@ now: 1-2 plain lines with what happened, why, and the fix or what you are doing 
 thing he has to do). NO_REPLY is not allowed here."""
 
 
-async def relay(report: str, photos: list[Path] = (), label: str = "", must: bool = False, app_chat: str = ""):
+async def relay(report: str, photos: list[Path] = (), label: str = "", must: bool = False, app_chat: str = "",
+                project_chat: str = ""):
     """A worker/runner message goes to Jarvis's brain, never straight to Sanjar; he gets 1-2 plain lines
     only when it matters to him (and the screenshots with them). must=True: something he's waiting on
     failed or needs him: he is told, enforced here in code even if the brain says NO_REPLY (ticket 35ec396e).
     app_chat: he asked for it in that Jarvis app chat, so the answer goes there, not to Telegram (ticket
-    799dda33), screenshots included (ticket 546d965e)."""
+    799dda33), screenshots included (ticket 546d965e). project_chat: asked on Telegram, so it goes there,
+    and the app's copy goes into that project's chat instead of only Updates (ticket f4f11c38)."""
     if app_chat and not appserver.load_chat(app_chat):
         app_chat = ""                          # that chat is gone: Telegram as before
     fallback = report.splitlines()[0][:200] + "\n" + "\n".join(report.splitlines()[1:3])[:300]
@@ -621,7 +623,7 @@ async def relay(report: str, photos: list[Path] = (), label: str = "", must: boo
         app_push(reply, app_chat, list(photos)[:10])
     elif reply and not is_silent(reply):
         await tgfmt.send(tg, OWNER_ID, tgfmt.md(reply), link_preview=False)
-        app_push(reply, "", list(photos)[:10])      # the app's Updates chat shows them too
+        app_push(reply, project_chat, list(photos)[:10])   # the app shows it too, in the project's chat
         if photos:
             await send_photos(list(photos)[:10], label)
     else:
@@ -638,9 +640,18 @@ async def notify(card: Ticket, kind: str, text: str, photos: list[Path]):
     # enforced in code: a question that reached this point needs him (Jarvis's answerer couldn't take
     # it), and a failure of something he asked for himself is never kept from him
     must = kind == "needs_me" or (kind == "failed" and runner.from_sanjar(card.ref))
+    # it goes to that project's chat in the app, even if he asked in General (ticket f4f11c38); asked on
+    # Telegram, it still goes to Telegram too
+    asked = origin.get(card.ref).get("chat", "")
+    asked = "" if asked == appserver.UPDATES else asked      # Updates is the Telegram conversation
+    try:
+        where = appserver.project_chat(card.project, asked)
+    except Exception:
+        log.exception("finding %s's chat failed", card.project)
+        where = asked
     asyncio.create_task(relay(f"Ticket {card.ref} [{card.project}] \"{card.title}\" is {kind.replace('_', ' ')}.\n"
                               f"{text}", photos, f"{card.title[:60]}", must=must,
-                              app_chat=origin.get(card.ref).get("chat", "")))
+                              app_chat=where if asked else "", project_chat="" if asked else where))
 
 
 async def guard_alert(text: str):

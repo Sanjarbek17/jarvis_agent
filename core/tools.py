@@ -104,6 +104,15 @@ async def show_photos(photos: list[Path], label: str, ctx=None) -> str:
     return "sent to Telegram"
 
 
+def _followed(o: dict, project: str) -> str:
+    """A General app chat about one project moves into it when he files a ticket there (ticket f4f11c38)."""
+    if o.get("channel") != "app":
+        return ""
+    from . import appserver
+    moved = appserver.follow_ticket(o["chat"], project)
+    return f" This chat is about {moved} now, so it moved under {moved} in the app." if moved else ""
+
+
 def make_server(source: str) -> MCPServer:
     server = MCPServer("jarvis")
 
@@ -165,7 +174,7 @@ def make_server(source: str) -> MCPServer:
         o = origin.from_ctx(ctx)
         t = await board.add_ticket(project, task, my_words, origin.label(o, source))
         origin.set(t.ref, o)              # its result goes back where he asked (the app chat or Telegram)
-        return f"Added ticket {t.ref} to the {project} board and queued it: {task}"
+        return f"Added ticket {t.ref} to the {project} board and queued it: {task}" + _followed(o, project)
 
     @server.tool()
     async def queue_ticket(project: str, ticket: str, ctx: Context = None) -> str:
@@ -183,7 +192,7 @@ def make_server(source: str) -> MCPServer:
         o = origin.from_ctx(ctx)
         await board.update(t, jarvis="Queued", note=f"queued from {origin.label(o, source)}")
         origin.set(t.ref, o)
-        return f"Queued {t.ref}: {t.title}"
+        return f"Queued {t.ref}: {t.title}" + _followed(o, project)
 
     @server.tool()
     async def move_chat(project: str, when_created: bool = False, ctx: Context = None) -> str:
