@@ -146,6 +146,9 @@ async def apply_deletes(tg, owner_id: int) -> None:
             tmp = CHAT.with_suffix(".tmp")
             tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
             tmp.replace(CHAT)
+            posts = {k: v for k, v in _posts().items() if v != message_id}   # later news about that flat goes to the topic
+            POSTS.parent.mkdir(parents=True, exist_ok=True)
+            POSTS.write_text(json.dumps(posts))
             log.info("took back message %s in Flatmates", message_id)
             told = "I took back my wrong answer in the Flatmates group."
         except Exception as e:
