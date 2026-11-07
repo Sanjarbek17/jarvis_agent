@@ -501,7 +501,7 @@ function drawMessages(chat) {
   }
   if (wait) {
     const arrived = chat.msgs.some(m => m.role === "me" && m.ts > wait.since);
-    if (!arrived) out.push(bubble({ role: "me", text: wait.text, voice: wait.voice }, before === "jarvis"));
+    if (!arrived) out.push(bubble({ role: "me", text: wait.text, voice: wait.voice, reply: wait.reply }, before === "jarvis"));
     out.push(h("div", { class: "bubble gap typing", text: "Jarvis is working on it…" }));
   }
   if (!out.length) {
@@ -548,8 +548,38 @@ async function openFile(file, button) {
   button.textContent = label;
 }
 
+/** A short line for a quoted message (ticket 256550ce). */
+function snippet(m) {
+  const text = (m.text || "").replace(/\s+/g, " ").trim();
+  if (text) return text.length > 120 ? `${text.slice(0, 120)}…` : text;
+  if (m.images) return "📷 Image";
+  if (m.files?.length) return `📎 ${m.files[0].title || m.files[0]}`;
+  return "…";
+}
+
+function quoteOf(m) {
+  return { role: m.role, text: m.text || "", ts: m.ts, ...(m.images?.length ? { images: m.images.length } : {}),
+           ...(m.files?.length ? { files: m.files.map(f => f.title || f) } : {}) };
+}
+
+/** Tap a quote: scroll to the message it answers, and flash it. */
+function jumpTo(ts) {
+  const el = document.querySelector(`#messages .bubble[data-ts="${CSS.escape(String(ts))}"]`);
+  if (!el) return toast("That message is too far back to show.");
+  if (open) open.pinned = false;
+  el.scrollIntoView({ block: "center", behavior: "smooth" });
+  el.classList.remove("flash");
+  void el.offsetWidth;
+  el.classList.add("flash");
+}
+
 function bubble(m, gap) {
   const el = h("div", { class: `bubble ${m.role === "me" ? "me" : ""} ${gap ? "gap" : ""}` });
+  if (m.ts) el.dataset.ts = String(m.ts);
+  if (m.reply) {
+    el.append(h("button", { class: "quote", title: "Show that message", onclick: () => jumpTo(m.reply.ts) },
+      h("b", { text: m.reply.role === "me" ? "You" : "Jarvis" }), h("span", { text: snippet(m.reply) })));
+  }
   for (const name of m.images || []) {
     const pic = h("img", { class: "pic", alt: "Image from Jarvis", onclick: () => lightbox(pic.src) });
     pic.addEventListener("load", () => { if (open?.pinned) toBottom(); });    // images arrive late and push the end down
@@ -563,7 +593,9 @@ function bubble(m, gap) {
   }
   const from = m.chat_title ? `from ${m.chat_title}` : "";
   const meta = [m.voice ? "voice" : "", m.ts ? clock(m.ts) : "sending"].filter(Boolean).join(" · ");
-  el.append(h("div", { class: "meta" }, from && m.chat_project ? h("a", { href: chatLink(m.chat_project, m.chat), text: from }) : from,
+  const replyBtn = m.ts ? h("button", { class: "reply-btn", title: "Reply to this message", "aria-label": "Reply to this message",
+    text: "↩ Reply", onclick: () => open?.startReply?.(m) }) : null;
+  el.append(h("div", { class: "meta" }, replyBtn, from && m.chat_project ? h("a", { href: chatLink(m.chat_project, m.chat), text: from }) : from,
     from ? " · " : "", meta));
   return el;
 }
@@ -684,7 +716,7 @@ function composer(chat) {
     }
     text.value = "";
     refresh();
-    send(chat, value, null, images);
+    send(chat, value, null, images, chat.takeReply());
   };
 
   text.value = drafts.get(chat.id) || "";
@@ -698,22 +730,37 @@ function composer(chat) {
   sendBtn.addEventListener("click", submit);
   micBtn.addEventListener("click", () => record(chat, form, text));
   queueMicrotask(refresh);
-  const box = h("div", { class: "composer-box" }, tray, form);
+  // replying to one message (ticket 256550ce): a bar above the input until it's sent or closed
+  const replyBar = h("div", { class: "reply-bar hide" });
+  const showReply = () => {
+    const m = chat.replyTo;
+    replyBar.classList.toggle("hide", !m);
+    if (!m) return replyBar.replaceChildren();
+    replyBar.replaceChildren(
+      h("button", { class: "grow quote", title: "Show that message", onclick: () => jumpTo(m.ts) },
+        h("b", { text: `Replying to ${m.role === "me" ? "yourself" : "Jarvis"}` }), h("span", { text: snippet(m) })),
+      h("button", { class: "round", title: "Cancel reply", "aria-label": "Cancel reply", onclick: () => { chat.replyTo = null; showReply(); } }, icon("close")));
+  };
+  chat.startReply = m => { chat.replyTo = quoteOf(m); showReply(); text.focus(); };
+  chat.takeReply = () => { const m = chat.replyTo; chat.replyTo = null; showReply(); return m; };
+  text.addEventListener("keydown", e => { if (e.key === "Escape" && chat.replyTo) { chat.replyTo = null; showReply(); } });
+  const box = h("div", { class: "composer-box" }, replyBar, tray, form);
   return box;
 }
 
-async function send(chat, text, audio, images = []) {
+async function send(chat, text, audio, images = [], reply = null) {
   const known = open?.id === chat.id ? open.msgs : chat.msgs;
   const since = known[known.length - 1]?.ts || 0;
   const shown = text || (images.length > 1 ? `${images.length} images` : "Image");
-  const wait = { since, text: audio ? "Voice message" : shown, voice: !!audio, lost: false, at: Date.now() };
+  const wait = { since, text: audio ? "Voice message" : shown, voice: !!audio, lost: false, at: Date.now(), reply };
   waiting.set(chat.id, wait);
   drawMessages(chat);
   const path = `/api/chats/${encodeURIComponent(chat.id)}`;
   try {
     const res = audio
-      ? await api(`${path}/voice`, { method: "POST", raw: audio })
-      : await api(`${path}/messages`, { method: "POST", json: images.length ? { text, images } : { text } });
+      ? await api(`${path}/voice${reply ? `?reply_to=${reply.ts}` : ""}`, { method: "POST", raw: audio })
+      : await api(`${path}/messages`, { method: "POST", json: {
+          text, ...(images.length ? { images } : {}), ...(reply ? { reply_to: reply.ts } : {}) } });
     waiting.delete(chat.id);
     if (audio && !res.heard) toast("Jarvis couldn't make out that voice message.");
     followChat(chat, res.chat_project || res.reply?.chat_project);
@@ -763,7 +810,7 @@ async function record(chat, form, text) {
     form.replaceChildren(...saved);
     text.focus();
     const audio = new Blob(parts, { type: recorder.mimeType || type || "audio/webm" });
-    if (!cancelled && audio.size) send(chat, "", audio);
+    if (!cancelled && audio.size) send(chat, "", audio, [], chat.takeReply?.());
   };
   recorder.start();
 }
