@@ -566,3 +566,11 @@ def test_the_picture_goes_as_a_reply_to_the_member():
     tg = Group()
     asyncio.run(f.post(tg, {"text": "Mana:", "key": "@o", "reply_to": 77}))
     assert tg.sent[0][3]["reply_to"] == 77
+
+
+def test_a_taken_back_post_is_forgotten_as_the_flats_post():
+    f._keep_post("@o", 335)
+    f._keep_post("@b", 300)
+    f.drop_delete(335)
+    asyncio.run(f.apply_deletes(Deleter(), 1))
+    assert f._posts() == {"@b": 300}
