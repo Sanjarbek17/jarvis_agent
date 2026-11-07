@@ -12,6 +12,7 @@ const COLORS = ["#2f6fed", "#30a46c", "#d6409f", "#f76b15", "#8e4ec6", "#0090ff"
 const ICONS = {
   mic: "M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 0 0-7 0v6A3.5 3.5 0 0 0 12 15Zm6.5-3.5a1 1 0 1 0-2 0 4.5 4.5 0 0 1-9 0 1 1 0 1 0-2 0 6.5 6.5 0 0 0 5.5 6.4V20H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.1a6.5 6.5 0 0 0 5.5-6.4Z",
   send: "M3.4 20.6 22 12 3.4 3.4 3.4 10l12 2-12 2z",
+  clip: "M16.5 6.5v10a4.5 4.5 0 0 1-9 0V5a3 3 0 0 1 6 0v10.5a1.5 1.5 0 0 1-3 0V6.5H9v9a3 3 0 0 0 6 0V5a4.5 4.5 0 0 0-9 0v11.5a6 6 0 0 0 12 0v-10z",
   phone: "M6.6 10.8a15 15 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25 11 11 0 0 0 3.6.6 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1 11 11 0 0 0 .6 3.6 1 1 0 0 1-.25 1z",
   move: "M3 6a2 2 0 0 1 2-2h4.6a2 2 0 0 1 1.4.6L12.4 6H19a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zm9.3 4.3a1 1 0 0 0 0 1.4l.3.3H8a1 1 0 1 0 0 2h4.6l-.3.3a1 1 0 0 0 1.4 1.4l2-2a1 1 0 0 0 0-1.4l-2-2a1 1 0 0 0-1.4 0z",
   close: "M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 0 0-1.4 1.4l4.9 4.9-4.9 4.9a1 1 0 1 0 1.4 1.4l4.9-4.9 4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z",
@@ -610,23 +611,80 @@ function composer(chat) {
   });
   const sendBtn = h("button", { class: "round primary", title: "Send", "aria-label": "Send" }, icon("send"));
   const micBtn = h("button", { class: "round", title: "Voice message", "aria-label": "Voice message" }, icon("mic"));
-  const form = h("div", { class: "composer" }, text, micBtn, sendBtn);
+  // photos (ticket 5d5a2c64): the clip button, pasting, or dropping them on the chat
+  const picker = h("input", { type: "file", accept: "image/*", multiple: true, class: "hide" });
+  const clipBtn = h("button", { class: "round", title: "Attach images", "aria-label": "Attach images", onclick: () => picker.click() }, icon("clip"));
+  const tray = h("div", { class: "tray", "aria-label": "Images to send" });
+  const form = h("div", { class: "composer" }, clipBtn, picker, text, micBtn, sendBtn);
+  const pending = [];          // [{file, url}] waiting to be sent
+
+  const attach = files => {
+    for (const file of files) {
+      if (!file.type.startsWith("image/")) continue;
+      if (file.size > 20e6) { toast(`${file.name || "That image"} is too big (20 MB at most).`); continue; }
+      if (pending.length >= 10) { toast("Ten images at a time."); break; }
+      const item = { file, url: URL.createObjectURL(file) };
+      pending.push(item);
+      tray.append(h("div", { class: "thumb" }, h("img", { src: item.url, alt: "" }),
+        h("button", { "aria-label": "Remove image", text: "×", onclick: e => {
+          pending.splice(pending.indexOf(item), 1);
+          URL.revokeObjectURL(item.url);
+          e.currentTarget.parentElement.remove();
+          refresh();
+        } })));
+    }
+    refresh();
+    text.focus();
+  };
+  picker.addEventListener("change", () => { attach([...picker.files]); picker.value = ""; });
+  text.addEventListener("paste", e => {
+    const files = [...(e.clipboardData?.files || [])].filter(f => f.type.startsWith("image/"));
+    if (files.length) { e.preventDefault(); attach(files); }
+  });
+  const onDrop = e => {
+    if (![...(e.dataTransfer?.types || [])].includes("Files")) return;
+    e.preventDefault();
+    if (e.type === "drop") attach([...e.dataTransfer.files]);
+  };
+  queueMicrotask(() => {
+    for (const el of [document.getElementById("messages"), box]) {
+      el?.addEventListener("dragover", onDrop);
+      el?.addEventListener("drop", onDrop);
+    }
+  });
 
   const refresh = () => {
     text.style.height = "auto";
     text.style.height = `${Math.min(text.scrollHeight + 2, 180)}px`;
-    sendBtn.classList.toggle("hide", !text.value.trim());
-    micBtn.classList.toggle("hide", !!text.value.trim());
+    const ready = !!text.value.trim() || pending.length > 0;
+    sendBtn.classList.toggle("hide", !ready);
+    micBtn.classList.toggle("hide", ready);
     if (text.value) drafts.set(chat.id, text.value);
     else drafts.delete(chat.id);
   };
-  const submit = () => {
+  const submit = async () => {
     const value = text.value.trim();
-    if (!value) return;
+    if (!value && !pending.length) return;
     if (waiting.has(chat.id)) return toast("Jarvis is still answering the last one.");
+    if (sendBtn.disabled) return;
+    let images = [];
+    if (pending.length) {
+      sendBtn.disabled = true;
+      try {
+        for (const item of pending) images.push((await api("/api/uploads", { method: "POST", raw: item.file })).name);
+      } catch (e) {
+        sendBtn.disabled = false;
+        if (e.status !== 401) toast(e.message);
+        return;                          // the images stay in the tray to try again
+      }
+      sendBtn.disabled = false;
+      for (const item of pending) URL.revokeObjectURL(item.url);
+      pending.length = 0;
+      tray.replaceChildren();
+    }
     text.value = "";
     refresh();
-    send(chat, value);
+    send(chat, value, null, images);
   };
 
   text.value = drafts.get(chat.id) || "";
@@ -640,20 +698,22 @@ function composer(chat) {
   sendBtn.addEventListener("click", submit);
   micBtn.addEventListener("click", () => record(chat, form, text));
   queueMicrotask(refresh);
-  return form;
+  const box = h("div", { class: "composer-box" }, tray, form);
+  return box;
 }
 
-async function send(chat, text, audio) {
+async function send(chat, text, audio, images = []) {
   const known = open?.id === chat.id ? open.msgs : chat.msgs;
   const since = known[known.length - 1]?.ts || 0;
-  const wait = { since, text: audio ? "Voice message" : text, voice: !!audio, lost: false, at: Date.now() };
+  const shown = text || (images.length > 1 ? `${images.length} images` : "Image");
+  const wait = { since, text: audio ? "Voice message" : shown, voice: !!audio, lost: false, at: Date.now() };
   waiting.set(chat.id, wait);
   drawMessages(chat);
   const path = `/api/chats/${encodeURIComponent(chat.id)}`;
   try {
     const res = audio
       ? await api(`${path}/voice`, { method: "POST", raw: audio })
-      : await api(`${path}/messages`, { method: "POST", json: { text } });
+      : await api(`${path}/messages`, { method: "POST", json: images.length ? { text, images } : { text } });
     waiting.delete(chat.id);
     if (audio && !res.heard) toast("Jarvis couldn't make out that voice message.");
     followChat(chat, res.chat_project || res.reply?.chat_project);
