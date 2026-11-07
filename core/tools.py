@@ -423,6 +423,16 @@ def make_server(source: str) -> MCPServer:
         log.info("google_drive: %s", task[:200])
         return await drive.run(task, sanjar_words, share)
 
+    @server.tool()
+    async def google_slides(title: str, slides: list[dict], subtitle: str = "") -> str:
+        """Make a NEW picture-heavy Google Slides deck in his Drive (sanjarsaidov173@gmail.com), no sign-in needed.
+        slides: one per step/point, in order: {"icon": "one emoji as the picture", "title": "short heading",
+        "short": "1-2 words for the overview", "lines": ["up to 4 short lines"]}. Adds a title slide with every
+        icon and a recap slide with the icons joined by arrows. Takes 1-5 minutes; returns the link."""
+        from . import drive
+        log.info("google_slides: %s (%d slides)", title, len(slides))
+        return await drive.upload_slides({"title": title, "subtitle": subtitle, "slides": slides[:12]})
+
     async def _google(fn, *args) -> str:
         from . import google
         try:

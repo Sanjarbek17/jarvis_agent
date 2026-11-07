@@ -125,6 +125,12 @@ move, comment. Never trash; sharing only when he asked. It can't change the text
 (the connector has no such tool). The helper may use ToolSearch, which waits for a connector that's still connecting,
 and is tried once more if the Drive tools still weren't there (ticket c270b9ef).
 
+New slide decks with content (ticket 917f6c5a, `core/slides.py`, tool `google_slides`): the connector can't fill a
+deck, but it uploads a file that Google turns into Google Slides. Jarvis draws the deck as a tiny .odp (a title slide
+with every step's emoji, one slide per step with a big emoji picture, heading and a few lines, and a recap with arrows;
+~3,400 base64 characters, scaled to Google's 27.94 cm page) and the Drive helper copies it into `create_file`, then
+reads the deck back to check every slide title arrived. A .pptx was 24,000 characters and got miscopied.
+
 Jarvis's own Google sign-in (ticket c270b9ef, `core/google.py`), for editing inside Docs and Slides and for any of his
 Google accounts: `google_sign_in` gives a link (OAuth with PKCE, the OAuth client of `~/dev/server/gdrive_uploader`,
 `GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` in `.env`). Signed in on the Mac, a small server on 127.0.0.1:8791 finishes it by
