@@ -13,7 +13,8 @@ def flag(cmd, name):
 def test_helper_gets_drive_tools_only_and_never_trash():
     cmd = drive.command("read my lesson deck", "read the deck")
     assert flag(cmd, "--setting-sources") == "user"                       # the claude.ai connectors come with these
-    assert flag(cmd, "--tools") == "" and flag(cmd, "--allowedTools") == "mcp__claude_ai_Google_Drive__*"
+    assert flag(cmd, "--tools") == "ToolSearch"                            # only the tool that waits for a connector
+    assert flag(cmd, "--allowedTools") == "mcp__claude_ai_Google_Drive__*,ToolSearch"
     assert json.loads(flag(cmd, "--settings")) == {"outputStyle": "default"}
     blocked = cmd[cmd.index("--disallowedTools") + 1:cmd.index("--no-session-persistence")]
     assert "mcp__claude_ai_Google_Drive__trash_file" in blocked and "mcp__claude_ai_Google_Drive__share_file" in blocked
@@ -64,3 +65,18 @@ def test_tool_is_there_for_chat_and_calls_not_guests():
         return {t.name for t in asyncio.run(tools.make_server(source).list_tools())}
     assert "google_drive" in names("Telegram") and "google_drive" in names("Call")
     assert "google_drive" not in names("Guest") and "google_drive" not in names("Group")
+
+
+def test_a_connector_still_connecting_gets_one_more_try(monkeypatch):
+    answers = ["I don't have any Google Drive tools available; the connector is still connecting.", "Found: deck X"]
+
+    async def once(*a):
+        return answers.pop(0)
+
+    async def no_wait(s):
+        pass
+
+    monkeypatch.setattr(drive, "_run_once", once)
+    monkeypatch.setattr(drive.asyncio, "sleep", no_wait)
+    assert asyncio.run(drive.run("x")) == "Found: deck X" and answers == []
+    assert not drive.not_ready("Found the deck in your Drive; I didn't change anything.")

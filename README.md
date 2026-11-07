@@ -122,7 +122,15 @@ Google Drive (ticket e6199929, `core/drive.py`): the `google_drive` tool hands a
 that loads Sanjar's user settings (so it gets the Google Drive connector of his Claude account, on
 sanjarsaidov173@gmail.com) but may use only the Drive tools: search, read Docs / Sheets / Slides, create, copy, rename,
 move, comment. Never trash; sharing only when he asked. It can't change the text inside an existing Doc or deck
-(the connector has no such tool): Jarvis offers an edited copy, or does it in Chrome with mac_task.
+(the connector has no such tool). The helper may use ToolSearch, which waits for a connector that's still connecting,
+and is tried once more if the Drive tools still weren't there (ticket c270b9ef).
+
+Jarvis's own Google sign-in (ticket c270b9ef, `core/google.py`), for editing inside Docs and Slides and for any of his
+Google accounts: `google_sign_in` gives a link (OAuth with PKCE, the OAuth client of `~/dev/server/gdrive_uploader`,
+`GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` in `.env`). Signed in on the Mac, a small server on 127.0.0.1:8791 finishes it by
+itself; on his phone the last page can't load, so he sends its address and `google_sign_in_finish` takes it.
+Refresh tokens per account in `var/state/google_tokens.json`. Tools: `google_files`, `google_file_text`,
+`google_replace_text` (Docs and Slides), `google_add_text` (Docs).
 
 Reading files: Jarvis can look things up itself (read-only: Read, Glob, Grep) anywhere under
 `~/dev`, e.g. "what port does the taxi backend use", and Sanjar's global skills in `~/.claude/skills`

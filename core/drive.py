@@ -30,6 +30,7 @@ Google Drive tools (they cover Drive files and Google Docs, Sheets and Slides): 
 
 His own words: {words}
 
+- If the Google Drive tools aren't listed yet, use ToolSearch to load them (it waits for the connector).
 - Find files by searching their names and contents; if several could be meant, use the most recently
   changed one and say which you used.
 - Change only what the task asks. Never delete or trash anything.{share}
@@ -47,14 +48,34 @@ def command(task: str, words: str = "", share: bool = False) -> list[str]:
             "--setting-sources", "user",                       # the claude.ai connectors come with these
             "--settings", json.dumps({"outputStyle": "default"}),  # not his chat style: this is for Jarvis
             "--mcp-config", json.dumps({"mcpServers": {}}),
-            "--tools", "",                                     # no shell, no files: Drive only
-            "--allowedTools", TOOLS,
+            "--tools", "ToolSearch",                           # no shell, no files; ToolSearch waits for a
+            "--allowedTools", f"{TOOLS},ToolSearch",           # connector that's still connecting (c270b9ef)
             "--disallowedTools", *(NEVER + ([] if share else SHARING)),
             "--no-session-persistence", "--output-format", "json"]
 
 
+NOT_READY = ("still connecting", "not connected", "don't have", "do not have", "no google drive tools", "aren't available",
+             "are not available", "isn't available", "unavailable")
+
+
+def not_ready(text: str) -> bool:
+    """The helper says the Drive tools weren't there (the connector hadn't finished connecting)."""
+    low = text.lower()
+    return "drive" in low and any(p in low for p in NOT_READY)
+
+
 async def run(task: str, words: str = "", share: bool = False, timeout: float = TIMEOUT) -> str:
-    """Do one Drive job; returns what the helper says (or why it couldn't)."""
+    """Do one Drive job; once more if the connector wasn't ready (ticket c270b9ef)."""
+    text = await _run_once(task, words, share, timeout)
+    if not_ready(text):
+        log.warning("drive connector wasn't ready, trying again: %s", text[:200])
+        await asyncio.sleep(10)
+        text = await _run_once(task, words, share, timeout)
+    log.info("drive helper: %s", text[:200].replace("\n", " "))
+    return text
+
+
+async def _run_once(task: str, words: str, share: bool, timeout: float) -> str:
     proc = await asyncio.create_subprocess_exec(*command(task, words, share), stdin=asyncio.subprocess.DEVNULL,
                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
     try:
