@@ -19,7 +19,9 @@ WebSocket. Two kinds (ticket 31ed52a7):
     POST /api/chats {project, title?}        a new chat
     POST /api/chats/{id}/move {project}      moves it to another project; messages and conversation stay
     GET  /api/chats/{id}/messages            [{role: "me"|"jarvis", text, ts, voice?}]
-    POST /api/chats/{id}/messages {text}     Jarvis's reply (waits for it)
+    POST /api/chats/{id}/messages {text, images?}  Jarvis's reply (waits for it); images: names from /api/uploads
+    POST /api/uploads  (image body)          {name}: a photo Sanjar attaches (JPEG/PNG/WebP/HEIC/GIF, up to 20 MB),
+                                             shrunk to IMAGE_MAX_PX JPEG; refused if it isn't an image
     POST /api/chats/{id}/voice  (audio body) {heard, reply}: transcribed like a Telegram voice note
     GET  /api/images/{name}                  an image named in a message's "images" list (JPEG/PNG)
     GET  /api/files/{name}                   a file from a message's "files" list [{name, title, size}]
@@ -85,6 +87,8 @@ FILES = STATE / "app_files"            # copies of what send_file.py sends, for 
 FILE_MAX = 500_000_000                 # bigger ones stay on Telegram only
 FILE_KEEP = 30 * 86400
 _FILE_NAME = re.compile(r"^[0-9a-f]{16}(\.[A-Za-z0-9]{1,8})?$")
+UPLOAD_MAX = 20_000_000                # an attached photo (ticket 5d5a2c64)
+UPLOADS_PER_MESSAGE = 10
 IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".webp", ".heic"}
 SESSIONS = STATE / "app_sessions.json"
 CODE_TTL = 5 * 60                      # a login code works this long
@@ -361,20 +365,27 @@ def _brain(chat: dict) -> Brain:
     return brain
 
 
-async def ask(chat: dict, text: str, voice: bool = False) -> dict:
-    """Sanjar says `text` in this chat; returns Jarvis's message (both are saved)."""
+async def ask(chat: dict, text: str, voice: bool = False, images: list[str] = ()) -> dict:
+    """Sanjar says `text` in this chat; returns Jarvis's message (both are saved). images: names of
+    photos he attached (from save_upload); the brain gets their paths and looks at them itself."""
     earlier = _unseen_pushes(chat)
     chat["seen_pushes"] = time.time()
-    chat["messages"].append({"role": "me", "text": text, "ts": time.time(), **({"voice": True} if voice else {})})
+    chat["messages"].append({"role": "me", "text": text, "ts": time.time(), **({"voice": True} if voice else {}),
+                             **({"images": list(images)} if images else {})})
     if chat["title"] == "New chat":
-        chat["title"] = text[:40] + ("…" if len(text) > 40 else "")
+        chat["title"] = (text[:40] + ("…" if len(text) > 40 else "")) if text else "Image"
     save_chat(chat)
     shared = _shared(chat)
     if shared:
-        await _to_telegram(f"From the website: {text}")
+        await _to_telegram(f"From the website: {text}" + (f" (+{len(images)} image{'s' * (len(images) > 1)})" if images else ""))
+    attached = ""
+    if images:
+        paths = ", ".join(str(IMAGES / n) for n in images)
+        attached = (f"[Sanjar attached {len(images)} image{'s' * (len(images) > 1)} in the app, saved on the Mac: "
+                    f"{paths}. Look at {'them' if len(images) > 1 else 'it'} with Read before answering.]\n")
     brain = _brain(chat)
     try:
-        reply = await brain.reply(f"{context_line(chat['project'])}\n{earlier}{text}")
+        reply = await brain.reply(f"{context_line(chat['project'])}\n{earlier}{attached}{text}")
     except Exception:
         log.exception("app chat %s: brain failed", chat["id"])
         reply = "Sorry, something went wrong on my side. Try again?"
@@ -410,6 +421,32 @@ def save_images(paths) -> list[str]:
             shutil.copyfile(src, IMAGES / name)
         names.append(name)
     return names
+
+
+def _is_image(data: bytes) -> bool:
+    return (data[:3] == b"\xff\xd8\xff" or data[:8] == b"\x89PNG\r\n\x1a\n" or data[:4] == b"GIF8"
+            or (data[:4] == b"RIFF" and data[8:12] == b"WEBP")
+            or (data[4:8] == b"ftyp" and data[8:12] in (b"heic", b"heix", b"mif1", b"msf1", b"hevc", b"avif")))
+
+
+def save_upload(data: bytes) -> str | None:
+    """A photo Sanjar attached in the app or website: kept as a JPEG in IMAGES (shown in the chat, read
+    by the brain). None if it isn't an image or macOS can't convert it: only real pictures are kept."""
+    if not data or len(data) > UPLOAD_MAX or not _is_image(data):
+        return None
+    IMAGES.mkdir(parents=True, exist_ok=True)
+    name = uuid.uuid4().hex[:16] + ".jpg"
+    tmp = IMAGES / f".upload-{name}.bin"
+    tmp.write_bytes(data)
+    try:
+        subprocess.run(["sips", "-Z", str(IMAGE_MAX_PX), "-s", "format", "jpeg", "-s", "formatOptions", "85",
+                        str(tmp), "--out", str(IMAGES / name)], capture_output=True, timeout=60, check=True)
+    except Exception:
+        (IMAGES / name).unlink(missing_ok=True)
+        return None
+    finally:
+        tmp.unlink(missing_ok=True)
+    return name if (IMAGES / name).is_file() else None
 
 
 def save_file(src) -> dict | None:
@@ -554,12 +591,30 @@ async def messages(req: Request):
     if not chat:
         return JSONResponse({"error": "no such chat"}, status_code=404)
     if req.method == "POST":
-        text = str((await req.json()).get("text") or "").strip()
-        if not text:
+        body = await _json(req)
+        text = str(body.get("text") or "").strip()
+        images = body.get("images") or []
+        if not isinstance(images, list) or len(images) > UPLOADS_PER_MESSAGE or not all(
+                isinstance(n, str) and _IMAGE_NAME.match(n) and (IMAGES / n).is_file() for n in images):
+            return JSONResponse({"error": "Those images aren't on the Mac. Attach them again."}, status_code=400)
+        if not text and not images:
             return JSONResponse({"error": "empty"}, status_code=400)
-        return JSONResponse(await ask(chat, text))
+        return JSONResponse(await ask(chat, text, images=images))
     recent = chat["messages"][-200:]
     return JSONResponse(_with_project(recent) if chat["id"] == UPDATES else recent)
+
+
+async def upload(req: Request):
+    """POST /api/uploads: one attached photo as the raw body; {name} to send with a message."""
+    if not _authorized(req):
+        return _deny()
+    data = await req.body()
+    if len(data) > UPLOAD_MAX:
+        return JSONResponse({"error": "That image is too big (20 MB at most)."}, status_code=413)
+    name = await asyncio.to_thread(save_upload, data)
+    if not name:
+        return JSONResponse({"error": "That isn't an image Jarvis can open."}, status_code=400)
+    return JSONResponse({"name": name})
 
 
 async def move(req: Request):
@@ -745,6 +800,7 @@ app = Starlette(routes=[
     Route("/api/chats/{chat}/move", move, methods=["POST"]),
     Route("/api/chats/{chat}/voice", voice, methods=["POST"]),
     Route("/api/images/{name}", image),
+    Route("/api/uploads", upload, methods=["POST"]),
     Route("/api/files/{name}", file_),
     Route("/api/notifications", notifications),
     Route("/api/board", board_view, methods=["GET", "POST"]),
