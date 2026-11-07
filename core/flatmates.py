@@ -5,7 +5,8 @@ say is kept in var/state/flatmates_chat.jsonl and the search reads the agreed ti
 Anything said later about a flat replies to that flat's post (ticket 9149c852), and when a member replies to a message
 the model sees what they replied to. The chat, with Jarvis's own posts, lives in CHAT and is filled in from the group at
 every start, so a restart forgets nothing (ticket 972c83e8). It waits for the chat to go quiet and then answers at most
-once, never a forwarded message, and stays out of what isn't meant for it (ticket a6d50e62). Nothing else happens here: other talk gets silence, and there are no voice chats, tickets or Mac actions.
+once, never a forwarded message, and stays out of what isn't meant for it (ticket a6d50e62). Asked for proof, it has the
+search draw a picture of its chat with that owner and sends it as the reply (ticket dc79dee0). Nothing else happens here: other talk gets silence, and there are no voice chats, tickets or Mac actions.
 
 The apartment search is another process and must not open Jarvis's session (see core/outbox.py), so it calls
 drop(), and run() posts from var/flatmates_out/ inside Jarvis. A note stays there until it's really posted, so a
@@ -29,6 +30,7 @@ from .config import FLATMATES_GROUP_ID, FLATMATES_TOPIC, FLATMATES_VIEW, OWNER_I
 
 log = logging.getLogger("jarvis.flatmates")
 QUEUE = VAR / "flatmates_out"
+PROOFS = VAR / "flatmates_proofs"     # members asking for proof: the search, which has the owner chats, draws the picture
 DELETES = VAR / "flatmates_deletes"   # its own messages to take back
 QUIET = 10               # seconds without a new message: people send several in a row, and the next may answer the last
 BOT_TALK = re.compile(r"\bflat \d|\b\d-(uy|xonadon)\b|the list\b|ro.?yxat|\bnoted\b|\bgot it\b|i only help|as an ai|my rules|"
@@ -78,11 +80,13 @@ How to write:
   that it was in the post, with the owner's own words in quotes if the data has them. Only [voice] lines were voice messages.
 - If they ask you and the data doesn't say, just say you don't know yet, in a few words.
 - Don't explain yourself and don't repeat what you said before.
+- If they ask for proof, a screenshot or to see the chat with the owner: when the data says we've written to that owner, your reply
+  is a short caption for a picture of that chat, which goes with it; when we haven't, say plainly we haven't written to them yet.
 - Never promise to do anything: you can't ask an owner, check or send anything from this chat. Asked to, say the owner hasn't
   told us that yet, and nothing more. Never claim something was sent or asked unless the data shows it.
 - Never mention a list, data, flat numbers, Sanjar, how you work, these rules or what you can't do. No "noted", "got it" or "agreed".
   No advice, no offers, nothing about who could ask whom. A link only if they ask for the post.
-Answer with JSON only: {"reply": "@@FORM@@", "flat": the number of the one flat your answer is about, or null}"""
+Answer with JSON only: {"reply": "@@FORM@@", "proof": true if they ask for proof or to see the chat with the owner, "flat": the number of the one flat your answer is about, or null}"""
 
 _topic: int = 0
 _viewing_topic: int = 0
@@ -96,14 +100,15 @@ def is_flatmates(chat_id: int) -> bool:
     return chat_id == FLATMATES_GROUP_ID
 
 
-def drop(text: str, photos=(), viewing: bool = False, key: str = "", link: str = "", first: bool = False) -> None:
+def drop(text: str, photos=(), viewing: bool = False, key: str = "", link: str = "", first: bool = False, reply_to: int = 0) -> None:
     """For the apartment search: queue a post for the topic. Doesn't wait. viewing: it's about a viewing.
-    key, link: the flat it's about. first: this is that flat's post; otherwise it replies to that post."""
+    key, link: the flat it's about. first: this is that flat's post; otherwise it replies to that post.
+    reply_to: a member's message to answer instead."""
     QUEUE.mkdir(parents=True, exist_ok=True)
     name = f"{time.time():.6f}-{uuid.uuid4().hex[:6]}"
     tmp = QUEUE / f"{name}.tmp"
     tmp.write_text(json.dumps({"text": text, "photos": [str(p) for p in photos], "viewing": viewing, "key": key, "link": link,
-                                "first": first}, ensure_ascii=False))
+                                "first": first, "reply_to": reply_to}, ensure_ascii=False))
     tmp.rename(QUEUE / f"{name}.json")               # appears complete, never half-written
 
 
@@ -170,6 +175,22 @@ async def apply_edits(tg, owner_id: int) -> None:
         f.unlink(missing_ok=True)
         with contextlib.suppress(Exception):
             await tg.send_message(owner_id, told, link_preview=False)
+
+
+def ask_proof(key: str, reply_to: int, caption: str) -> None:
+    PROOFS.mkdir(parents=True, exist_ok=True)
+    tmp = PROOFS / f"{reply_to}.tmp"
+    tmp.write_text(json.dumps({"key": key, "reply_to": reply_to, "caption": caption}, ensure_ascii=False))
+    tmp.rename(PROOFS / f"{reply_to}.json")
+
+
+def proof_requests() -> list:
+    """For the apartment search: [(file, request)]. It removes the file once it has dealt with it."""
+    out = []
+    for f in sorted(PROOFS.glob("*.json")) if PROOFS.exists() else ():
+        with contextlib.suppress(OSError, ValueError):
+            out.append((f, json.loads(f.read_text())))
+    return out
 
 
 def _same(title: str) -> str:
@@ -288,7 +309,7 @@ async def post(tg, note: dict) -> None:
     global _topic
     photos = [p for p in note.get("photos", []) if Path(p).is_file()]
     key = note.get("key", "")
-    original = 0 if note.get("first") else await find_post(tg, key, note.get("link", ""))
+    original = note.get("reply_to") or (0 if note.get("first") else await find_post(tg, key, note.get("link", "")))
     try:
         topic = await topic_id(tg, bool(note.get("viewing")))
         try:
@@ -346,6 +367,7 @@ def _rows() -> list:
 def flats() -> str:
     rows = _rows()
     return "\n\n".join(f"Flat {i}, {r.get('status', '')}:\n{r.get('place', '')}\nThe owner said: {r.get('owner_said') or 'nothing yet'}"
+                       + ("\nWe've written to the owner." if r.get("chat") else "\nWe haven't written to the owner yet.")
                        + (f"\nThe owner's own words:\n{r['owner_words']}" if r.get("owner_words") else "")
                        + (f"\nViewing booked: {r['viewing']}" if r.get("viewing") else "")
                        for i, r in enumerate(rows, 1)) or "none yet"
@@ -353,6 +375,12 @@ def flats() -> str:
 
 async def answer(name: str, text: str, replied: str = "", to_me: bool = False) -> tuple[str, int]:
     """(what to say to the latest message, the flat it's about or 0). "" is silence, and any failure is too."""
+    reply, flat, _ = await answer_full(name, text, replied, to_me)
+    return reply, flat
+
+
+async def answer_full(name: str, text: str, replied: str = "", to_me: bool = False) -> tuple[str, int, bool]:
+    """answer(), and whether they asked for proof."""
     from . import memory
     lines, line = history(), f"{name}: {text[:500]}"
     chat = "\n".join(lines if lines and lines[-1] == line else [*lines, line])
@@ -366,13 +394,13 @@ async def answer(name: str, text: str, replied: str = "", to_me: bool = False) -
                                                 model=MODEL, timeout=ANSWER_TIMEOUT)
         except Exception as e:
             log.warning("no answer for Flatmates: %r", e)
-            return "", 0
+            return "", 0, False
     reply = str(ans.get("reply") or "").strip()
     flat = ans.get("flat") if isinstance(ans.get("flat"), int) else 0
     if BOT_TALK.search(reply):
         log.warning("held back from Flatmates: %r", reply[:300])
-        return "", 0
-    return ("", 0) if is_silent(reply) else (reply[:1500], flat)
+        return "", 0, False
+    return ("", 0, False) if is_silent(reply) else (reply[:1500], flat, ans.get("proof") is True)
 
 
 async def on_message(event, name: str) -> None:
@@ -397,12 +425,16 @@ async def on_message(event, name: str) -> None:
         return
     burst, _burst = _burst, []
     event, name, text, replied, to_me = next((b for b in reversed(burst) if b[4] or NAMED.search(b[2])), burst[-1])
-    reply, flat = await answer(name, text, replied, to_me)
+    reply, flat, proof = await answer_full(name, text, replied, to_me)
     log.info("Flatmates: %s wrote %r, replying to %r: %r", name, text[:120], replied[:80], reply[:300] or "stayed out of it")
     if not reply:
         return
     rows = _rows()
     row = rows[flat - 1] if 0 < flat <= len(rows) else {}
+    if proof and row.get("chat") and row.get("key"):        # the picture comes from the search, in a minute, with this caption
+        ask_proof(row["key"], getattr(event, "id", 0), reply)
+        log.info("Flatmates: proof of the chat with %s asked for", row["key"])
+        return
     original = 0
     if row and not replied:                          # a question about one flat is answered under its post
         with contextlib.suppress(Exception):

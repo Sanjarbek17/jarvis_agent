@@ -17,6 +17,7 @@ def clean(tmp_path, monkeypatch):
     monkeypatch.setattr(f, "POSTS", tmp_path / "posts.json")
     monkeypatch.setattr(f, "EDITS", tmp_path / "edits")
     monkeypatch.setattr(f, "DELETES", tmp_path / "deletes")
+    monkeypatch.setattr(f, "PROOFS", tmp_path / "proofs")
     monkeypatch.setattr(f, "QUIET", 0)
     monkeypatch.setattr(f, "_burst", [])
     monkeypatch.setattr(f, "_told", 0.0)
@@ -537,3 +538,31 @@ def test_it_never_promises_what_it_cant_do(monkeypatch):
     for line in ("Okay, I'll ask them the price too.", "I'll check.", "So'rayman.", "Спрошу у хозяина."):
         answered(monkeypatch, {"reply": line})
         assert asyncio.run(f.answer("Ali", "?")) == ("", 0), line
+
+
+# --- proof ---------------------------------------------------------------------------------------------------------------
+
+def test_asked_for_proof_the_search_is_asked_for_a_picture(monkeypatch):
+    f.FLATMATES_VIEW.write_text(json.dumps([{"place": "Panjob", "key": "@o", "chat": True}]))
+    seen = answered(monkeypatch, {"reply": "Mana, egasi bilan yozishma:", "flat": 1, "proof": True})
+    replies = []
+    e = event("skrin tashla", NS(message="🏠 Panjob", out=True), client=Group(), replies=replies)
+    e.id = 77
+    asyncio.run(f.on_message(e, "Ikrom"))
+    reqs = f.proof_requests()
+    assert replies == [] and reqs[0][1] == {"key": "@o", "reply_to": 77, "caption": "Mana, egasi bilan yozishma:"}
+    assert "We've written to the owner." in seen["prompt"]
+
+
+def test_no_chat_yet_is_said_plainly(monkeypatch):
+    f.FLATMATES_VIEW.write_text(json.dumps([{"place": "Panjob", "key": "@o", "chat": False}]))
+    seen = answered(monkeypatch, {"reply": "Egasiga hali yozmadik.", "flat": 1, "proof": True})
+    replies = []
+    asyncio.run(f.on_message(event("isbot?", NS(message="🏠 Panjob", out=True), client=Group(), replies=replies), "Ikrom"))
+    assert replies == ["Egasiga hali yozmadik."] and f.proof_requests() == [] and "We haven't written to the owner yet." in seen["prompt"]
+
+
+def test_the_picture_goes_as_a_reply_to_the_member():
+    tg = Group()
+    asyncio.run(f.post(tg, {"text": "Mana:", "key": "@o", "reply_to": 77}))
+    assert tg.sent[0][3]["reply_to"] == 77
