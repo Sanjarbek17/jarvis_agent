@@ -574,3 +574,10 @@ def test_a_taken_back_post_is_forgotten_as_the_flats_post():
     f.drop_delete(335)
     asyncio.run(f.apply_deletes(Deleter(), 1))
     assert f._posts() == {"@b": 300}
+
+
+def test_where_the_photos_came_from_is_in_the_data(monkeypatch):
+    f.FLATMATES_VIEW.write_text(json.dumps([{"place": "SamGASI", "chat": True, "photos": "the owner sent them after we wrote to them"}]))
+    seen = answered(monkeypatch, {"reply": "x"})
+    asyncio.run(f.answer("Ikrom", "where did you get these?", "📷 More photos: SamGASI", True))
+    assert "The photos: the owner sent them after we wrote to them." in seen["prompt"] and "Where did you get these?" in seen["prompt"]

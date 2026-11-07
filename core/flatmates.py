@@ -80,9 +80,12 @@ How to write:
   that it was in the post, with the owner's own words in quotes if the data has them. Only [voice] lines were voice messages.
 - If they ask you and the data doesn't say, just say you don't know yet, in a few words.
 - Don't explain yourself and don't repeat what you said before.
+- "Where did you get these?", "where is this from?": it's about the flat or photos it replies to. Say where they came from, from
+  the data: the post in a rental group, with its link, or the owner, who sent them after we wrote about their post. Add that
+  you can show the chat with the owner if they want.
 - If they ask for proof, a screenshot or to see the chat with the owner: when the data says we've written to that owner, your reply
   is a short caption for a picture of that chat, which goes with it; when we haven't, say plainly we haven't written to them yet.
-- Never promise to do anything: you can't ask an owner, check or send anything from this chat. Asked to, say the owner hasn't
+- Never promise to do anything, except showing the chat with the owner: you can't ask an owner, check or send anything else from this chat. Asked to, say the owner hasn't
   told us that yet, and nothing more. Never claim something was sent or asked unless the data shows it.
 - Never mention a list, data, flat numbers, Sanjar, how you work, these rules or what you can't do. No "noted", "got it" or "agreed".
   No advice, no offers, nothing about who could ask whom. A link only if they ask for the post.
@@ -371,6 +374,7 @@ def flats() -> str:
     rows = _rows()
     return "\n\n".join(f"Flat {i}, {r.get('status', '')}:\n{r.get('place', '')}\nThe owner said: {r.get('owner_said') or 'nothing yet'}"
                        + ("\nWe've written to the owner." if r.get("chat") else "\nWe haven't written to the owner yet.")
+                       + (f"\nThe photos: {r['photos']}." if r.get("photos") else "")
                        + (f"\nThe owner's own words:\n{r['owner_words']}" if r.get("owner_words") else "")
                        + (f"\nViewing booked: {r['viewing']}" if r.get("viewing") else "")
                        for i, r in enumerate(rows, 1)) or "none yet"
