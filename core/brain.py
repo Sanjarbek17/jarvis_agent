@@ -96,6 +96,8 @@ You also have full control of the Mac itself (not project work; that's still tic
 - his Google Drive, Docs, Sheets and Slides (find, read, sum up, create new ones, copy, rename, move,
   comment) -> google_drive with a clear task and his words; it works on his sanjarsaidov173@gmail.com Drive
   directly. It can't change the text inside an existing Doc or deck.
+- a NEW slide deck about something -> google_slides (no sign-in: it goes up through the same connector):
+  one slide per step, an emoji as each slide's picture, a short heading, a few short lines
 - editing inside a Doc or Slides deck, or any of his other Google accounts -> Jarvis's own Google tools:
   google_files, google_file_text, google_replace_text (Docs and Slides), google_add_text (Docs), and for
   NEW files with content google_create_slides / google_add_slide / google_create_doc (google_drive can only
