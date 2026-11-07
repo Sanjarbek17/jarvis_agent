@@ -492,6 +492,26 @@ def make_server(source: str) -> MCPServer:
         return await _google(lambda: google.add_text(google.which(account), google.file_id(file), text))
 
     @server.tool()
+    async def google_create_slides(account: str, title: str, slides: list[dict], subtitle: str = "") -> str:
+        """Make a NEW Google Slides deck with content in a signed-in account: a title slide, then one slide
+        per item {"title": "...", "body": "line 1\\nline 2", "image_url": "https://... (optional, public)"}.
+        Keep slides short: a heading and 2-4 short lines."""
+        from . import google
+        return await _google(lambda: google.create_slides(google.which(account), title, slides, subtitle))
+
+    @server.tool()
+    async def google_add_slide(account: str, file: str, title: str, body: str = "", image_url: str = "") -> str:
+        """Add one slide (heading, body lines, optional public picture link) at the end of a Slides deck."""
+        from . import google
+        return await _google(lambda: google.add_slide(google.which(account), google.file_id(file), title, body, image_url))
+
+    @server.tool()
+    async def google_create_doc(account: str, title: str, sections: list[dict]) -> str:
+        """Make a NEW Google Doc with content in a signed-in account: sections [{"heading": "...", "text": "..."}]."""
+        from . import google
+        return await _google(lambda: google.create_doc(google.which(account), title, sections))
+
+    @server.tool()
     async def mac_progress() -> str:
         """What the Mac worker is doing now, or did last: its task, last steps and result."""
         return hooks.mac.progress()

@@ -254,3 +254,85 @@ async def add_text(email: str, fid: str, text: str) -> str:
     await api(email, "POST", f"https://docs.googleapis.com/v1/documents/{fid}:batchUpdate",
               json={"requests": [{"insertText": {"endOfSegmentLocation": {}, "text": "\n" + text}}]})
     return f"Added the text at the end of {name}."
+
+
+# --- making new Slides and Docs with content (ticket 7ce4c9a5) ------------------------------
+# The Claude Drive connector can only make an empty deck; these use the Slides and Docs APIs.
+
+SLIDES = "https://slides.googleapis.com/v1/presentations"
+DOCS = "https://docs.googleapis.com/v1/documents"
+
+
+def slide_requests(n: int, title: str, body: str = "", image_url: str = "") -> list[dict]:
+    """Requests that add slide number n (title and body layout) with its text and an optional picture."""
+    sid, tid, bid = f"jv_s{n}", f"jv_t{n}", f"jv_b{n}"
+    reqs = [{"createSlide": {"objectId": sid, "slideLayoutReference": {"predefinedLayout": "TITLE_AND_BODY"},
+                             "placeholderIdMappings": [{"layoutPlaceholder": {"type": "TITLE"}, "objectId": tid},
+                                                       {"layoutPlaceholder": {"type": "BODY"}, "objectId": bid}]}},
+            {"insertText": {"objectId": tid, "text": title or " "}}]
+    if body.strip():
+        reqs.append({"insertText": {"objectId": bid, "text": body.strip()}})
+    if image_url:                      # on the right half; Google fetches it, so it must be a public link
+        reqs.append({"createImage": {"url": image_url, "elementProperties": {
+            "pageObjectId": sid, "size": {"width": {"magnitude": 3_600_000, "unit": "EMU"},
+                                          "height": {"magnitude": 2_700_000, "unit": "EMU"}},
+            "transform": {"scaleX": 1, "scaleY": 1, "translateX": 5_200_000, "translateY": 1_500_000, "unit": "EMU"}}}})
+    return reqs
+
+
+def _with_unique_ids(reqs: list[dict], tag: str) -> list[dict]:
+    """Object ids must be unique in a deck: tag them for this batch."""
+    return json.loads(json.dumps(reqs).replace('"jv_', f'"jv{tag}_'))
+
+
+async def create_slides(email: str, title: str, slides: list[dict], subtitle: str = "") -> str:
+    """A new Google Slides deck: a title slide, then one slide per {"title", "body", "image_url"}."""
+    deck = await api(email, "POST", SLIDES, json={"title": title})
+    pid, first = deck["presentationId"], deck["slides"][0]
+    reqs = []
+    for el in first.get("pageElements", []):        # the blank deck's title slide: fill its two boxes
+        kind_ = (el.get("shape", {}).get("placeholder") or {}).get("type")
+        if kind_ in ("CENTERED_TITLE", "TITLE"):
+            reqs.append({"insertText": {"objectId": el["objectId"], "text": title}})
+        elif kind_ == "SUBTITLE" and subtitle:
+            reqs.append({"insertText": {"objectId": el["objectId"], "text": subtitle}})
+    for n, s in enumerate(slides, 1):
+        reqs += slide_requests(n, s.get("title", ""), s.get("body", ""), s.get("image_url", ""))
+    if reqs:
+        await api(email, "POST", f"{SLIDES}/{pid}:batchUpdate", json={"requests": _with_unique_ids(reqs, secrets.token_hex(3))})
+    return f"Made the deck \"{title}\" with {len(slides) + 1} slides: https://docs.google.com/presentation/d/{pid}/edit"
+
+
+async def add_slide(email: str, fid: str, title: str, body: str = "", image_url: str = "") -> str:
+    what, name = await kind(email, fid)
+    if what != "slides":
+        raise GoogleError(f"{name} isn't a Slides deck")
+    await api(email, "POST", f"{SLIDES}/{fid}:batchUpdate",
+              json={"requests": _with_unique_ids(slide_requests(1, title, body, image_url), secrets.token_hex(3))})
+    return f"Added the slide \"{title}\" at the end of {name}."
+
+
+def doc_requests(sections: list[dict]) -> list[dict]:
+    """Text of {"heading", "text"} sections, written in order with headings styled; Docs counts from 1."""
+    reqs, at = [], 1
+    for s in sections:
+        for part, style in ((s.get("heading", ""), "HEADING_2"), (s.get("text", ""), "NORMAL_TEXT")):
+            part = part.strip()
+            if not part:
+                continue
+            text = part + "\n"
+            size = len(text.encode("utf-16-le")) // 2      # Docs counts UTF-16 units: an emoji is 2
+            reqs.append({"insertText": {"location": {"index": at}, "text": text}})
+            reqs.append({"updateParagraphStyle": {"range": {"startIndex": at, "endIndex": at + size},
+                                                  "paragraphStyle": {"namedStyleType": style}, "fields": "namedStyleType"}})
+            at += size
+    return reqs
+
+
+async def create_doc(email: str, title: str, sections: list[dict]) -> str:
+    """A new Google Doc with {"heading", "text"} sections."""
+    doc = await api(email, "POST", DOCS, json={"title": title})
+    did = doc["documentId"]
+    if reqs := doc_requests(sections):
+        await api(email, "POST", f"{DOCS}/{did}:batchUpdate", json={"requests": reqs})
+    return f"Made the doc \"{title}\": https://docs.google.com/document/d/{did}/edit"
