@@ -37,7 +37,7 @@ const waiting = new Map(); // chat id -> {since, text, voice, lost, at}: a messa
 const drafts = new Map();
 const images = new Map();  // image name -> a promise of its blob: URL
 const boards = new Map();  // project -> the last /api/board answer, so a board opens at once
-let boardOn = null;        // the board on screen: {project, show: "open"|"done"|"all", find, adding}
+let boardOn = null;        // the board on screen: {project, find, adding}
 
 // --- small helpers ---------------------------------------------------------------------------
 
@@ -941,7 +941,7 @@ function pill(jarvis) {
 
 function showBoard(project) {
   open = null;
-  if (boardOn?.project !== project) boardOn = { project, show: "open", find: "", adding: false };
+  if (boardOn?.project !== project) boardOn = { project, find: "", adding: false };
   const back = h("button", { class: "back", "aria-label": "Back to chats", text: "‹", onclick: () => { location.hash = projectLink(project); } });
   document.getElementById("main").replaceChildren(
     h("header", { class: "top" }, back,
@@ -949,8 +949,7 @@ function showBoard(project) {
       h("button", { class: "new", title: "New ticket", "aria-label": "New ticket", text: "+", onclick: () => { boardOn.adding = !boardOn.adding; drawBoardForm(); } })),
     h("div", { class: "board-bar" },
       h("input", { class: "field", type: "search", placeholder: "Find a ticket", "aria-label": "Find a ticket", value: boardOn.find,
-        oninput: e => { boardOn.find = e.target.value; drawBoard(); } }),
-      h("div", { class: "seg", id: "board-seg" })),
+        oninput: e => { boardOn.find = e.target.value; drawBoard(); } })),
     h("div", { id: "board-form" }),
     h("div", { class: "board", id: "board" }));
   drawBoardForm();
@@ -973,27 +972,30 @@ function drawBoard() {
   const box = document.getElementById("board");
   if (!box) return;
   const data = boards.get(boardOn.project);
-  const seg = document.getElementById("board-seg");
-  seg.replaceChildren(...[["open", "Open"], ["done", "Finished"], ["all", "All"]].map(([key, label]) =>
-    h("button", { class: boardOn.show === key ? "on" : "", text: label, "aria-pressed": String(boardOn.show === key), onclick: () => { boardOn.show = key; drawBoard(); } })));
   if (!data) { if (!box.firstChild) box.append(h("p", { class: "empty", text: "Loading…" })); return; }
   const open_ = data.tickets.filter(t => !CLOSED.test(t.status)).length;
   document.getElementById("board-sub").textContent = `${open_} open of ${data.tickets.length}${data.local ? "" : " · still on Notion"}`;
   const words = boardOn.find.toLowerCase().split(/\s+/).filter(Boolean);
-  const shown = data.tickets.filter(t => {
-    const closed = CLOSED.test(t.status);
-    if (boardOn.show === "open" ? closed : boardOn.show === "done" && !closed) return false;
-    const text = `${t.title} ${t.ref} ${t.sprint}`.toLowerCase();
-    return words.every(w => text.includes(w));
-  });
-  const groups = data.columns.map(name => [name, shown.filter(t => (t.status || "No status") === name)]).filter(([, rows]) => rows.length);
+  const shown = data.tickets.filter(t => words.every(w => `${t.title} ${t.ref} ${t.sprint}`.toLowerCase().includes(w)));
+  // a section per open status, then one "Closed" for the finished ones, folded at first (ticket ad3f2a0c)
+  const closedCols = data.columns.filter(c => CLOSED.test(c));
+  const sections = [...data.columns.filter(c => !CLOSED.test(c)).map(c => [c, [c]]), ...(closedCols.length ? [["Closed", closedCols]] : [])];
+  const groups = sections.map(([name, cols]) => [name, cols, shown.filter(t => cols.includes(t.status || "No status"))]).filter(([, , rows]) => rows.length);
+  const folds = JSON.parse(store.get(`jarvis.folds.${boardOn.project}`) || "{}");
   const top = box.scrollTop;
-  box.replaceChildren(...(groups.length ? groups.map(([name, rows]) => h("section", { class: "column" },
-    h("h3", {}, h("span", { text: name }), h("span", { class: "muted", text: String(rows.length) })),
-    ...rows.map(t => h("a", { class: "card", href: ticketLink(boardOn.project, t.ref) },
-      h("div", { class: "title", text: t.title || "Untitled" }),
-      h("div", { class: "meta" }, pill(t.jarvis), h("span", { class: "muted", text: [t.sprint, t.due && `due ${t.due.slice(0, 10)}`, t.ref].filter(Boolean).join(" · ") })))))) :
-    [h("p", { class: "empty", text: words.length ? "No ticket matches that." : "No tickets here." })]));
+  box.replaceChildren(...(groups.length ? groups.map(([name, cols, rows]) => {
+    const section = h("details", { class: "column", open: words.length > 0 || !(folds[name] ?? name === "Closed") },
+      h("summary", {}, h("span", { text: name }), h("span", { class: "muted", text: String(rows.length) })),
+      ...rows.map(t => h("a", { class: "card", href: ticketLink(boardOn.project, t.ref) },
+        h("div", { class: "title", text: t.title || "Untitled" }),
+        h("div", { class: "meta" }, pill(t.jarvis), h("span", { class: "muted", text: [cols.length > 1 && t.status, t.sprint, t.due && `due ${t.due.slice(0, 10)}`, t.ref].filter(Boolean).join(" · ") })))));
+    section.addEventListener("toggle", () => {
+      if (words.length) return;                        // opened by a search: not his choice
+      folds[name] = !section.open;
+      store.set(`jarvis.folds.${boardOn.project}`, JSON.stringify(folds));
+    });
+    return section;
+  }) : [h("p", { class: "empty", text: words.length ? "No ticket matches that." : "No tickets here." })]));
   box.scrollTop = top;
 }
 
