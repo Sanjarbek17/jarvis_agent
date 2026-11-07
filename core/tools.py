@@ -423,6 +423,74 @@ def make_server(source: str) -> MCPServer:
         log.info("google_drive: %s", task[:200])
         return await drive.run(task, sanjar_words, share)
 
+    async def _google(fn, *args) -> str:
+        from . import google
+        try:
+            return await fn(*args)
+        except google.GoogleError as e:
+            return str(e)
+        except Exception as e:
+            log.exception("google tool failed")
+            return f"Google failed: {e}"
+
+    @server.tool()
+    async def google_sign_in(account: str = "") -> str:
+        """A link that signs one of Sanjar's Google accounts in for Jarvis's own Google tools (editing inside
+        Docs and Slides, any of his accounts). account: its email, to pre-fill. Send him the link and what the
+        answer says."""
+        from . import google
+        try:
+            link = google.sign_in_link(account)
+        except google.GoogleError as e:
+            return str(e)
+        return (f"Sign-in link (works for 30 min): {link}\n\nTell him: open it, pick the account, press Allow (if "
+                "Google warns the app isn't verified: Advanced, then go on). On the Mac it finishes by itself. On his "
+                "phone the last page won't load: he copies that page's address (it starts with http://127.0.0.1:8791) "
+                "and sends it to you; then call google_sign_in_finish with it. One account per link.")
+
+    @server.tool()
+    async def google_sign_in_finish(address: str) -> str:
+        """Finish a Google sign-in with the address of the page Google sent him to (http://127.0.0.1:8791/?code=...)."""
+        from . import google
+        return await _google(google.finish, address)
+
+    @server.tool()
+    async def google_files(account: str = "", search: str = "") -> str:
+        """Files in one of his signed-in Google accounts, newest first. account: email (or part); empty if only
+        one is signed in. search: words in the name or text. Also lists which accounts are signed in."""
+        from . import google
+
+        async def go():
+            email = google.which(account)
+            files = await google.list_files(email, search)
+            rows = [f"- {f['name']} ({google.MIME.get(f['mimeType'], f['mimeType'].split('.')[-1])}, "
+                    f"{f['modifiedTime'][:10]}) {f.get('webViewLink', '')}" for f in files]
+            return f"{email}:\n" + ("\n".join(rows) or "nothing found")
+        if not google.accounts():
+            return "No Google account is signed in for Jarvis's own tools yet: use google_sign_in."
+        return await _google(go)
+
+    @server.tool()
+    async def google_file_text(account: str, file: str) -> str:
+        """The text of a Google Doc, Sheet (as CSV) or Slides deck in a signed-in account. file: link or id."""
+        from . import google
+        return await _google(lambda: google.read_text(google.which(account), google.file_id(file)))
+
+    @server.tool()
+    async def google_replace_text(account: str, file: str, find: str, replace: str) -> str:
+        """Edit inside a Google Doc or Slides deck: replace every `find` (exact, case-sensitive) with `replace`.
+        Read the file first (google_file_text) so `find` matches exactly. Say back a big change and wait for his yes."""
+        from . import google
+        log.info("google_replace_text in %s: %r -> %r", file, find[:60], replace[:60])
+        return await _google(lambda: google.replace_text(google.which(account), google.file_id(file), find, replace))
+
+    @server.tool()
+    async def google_add_text(account: str, file: str, text: str) -> str:
+        """Add text at the end of a Google Doc in a signed-in account. file: link or id."""
+        from . import google
+        log.info("google_add_text to %s", file)
+        return await _google(lambda: google.add_text(google.which(account), google.file_id(file), text))
+
     @server.tool()
     async def mac_progress() -> str:
         """What the Mac worker is doing now, or did last: its task, last steps and result."""

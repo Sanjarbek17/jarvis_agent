@@ -44,7 +44,7 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.types import InputPeerChannel, MessageActionGroupCall
 
-from core import appserver, board, contacts, coremem, flatmates, guard, memory, origin, outbox, selfcheck, tgfmt, tools
+from core import appserver, board, contacts, coremem, flatmates, google, guard, memory, origin, outbox, selfcheck, tgfmt, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, WATCHED_GROUP_IDS, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
@@ -1128,6 +1128,7 @@ async def main():
                   asyncio.create_task(daily_call()), asyncio.create_task(daily_reminder()),
                   asyncio.create_task(daily_at((3, 0), coremem.consolidate)),   # nightly core-memory pass
                   asyncio.create_task(tools.hooks.guard.run_forever()),
+                  asyncio.create_task(google.serve_callback()),      # Google sign-ins done on this Mac
                   asyncio.create_task(selfcheck.run_forever(
                       runner, lambda: not runner_task["t"].done(), restart_runner, chat.reply,
                       lambda text: tgfmt.send(tg, OWNER_ID, "🔎 " + tgfmt.md(text), silent=True)))]
