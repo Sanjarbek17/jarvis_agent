@@ -171,5 +171,12 @@
       "side_project/projects/apartment_search"
     ],
     "local": true
+  },
+  "Creating Slides": {
+    "about": "Google Slides presentations made for Sanjar (for example a Present Simple English lesson deck). New decks: the google_slides tool (picture-heavy, through the Claude Google Drive connector, his sanjarsaidov173@gmail.com Drive). Material for decks lives in this folder, one subfolder per deck",
+    "folders": [
+      "side_project/projects/creating_slides"
+    ],
+    "local": true
   }
 }
