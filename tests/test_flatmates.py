@@ -531,3 +531,9 @@ def test_a_failed_delete_is_told():
     tg = Deleter(ValueError("no"))
     asyncio.run(f.apply_deletes(tg, 1))
     assert "couldn't take back" in tg.told[0] and not list(f.DELETES.glob("*"))
+
+
+def test_it_never_promises_what_it_cant_do(monkeypatch):
+    for line in ("Okay, I'll ask them the price too.", "I'll check.", "So'rayman.", "Спрошу у хозяина."):
+        answered(monkeypatch, {"reply": line})
+        assert asyncio.run(f.answer("Ali", "?")) == ("", 0), line

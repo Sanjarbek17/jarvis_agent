@@ -32,7 +32,8 @@ QUEUE = VAR / "flatmates_out"
 DELETES = VAR / "flatmates_deletes"   # its own messages to take back
 QUIET = 10               # seconds without a new message: people send several in a row, and the next may answer the last
 BOT_TALK = re.compile(r"\bflat \d|\b\d-(uy|xonadon)\b|the list\b|ro.?yxat|\bnoted\b|\bgot it\b|i only help|as an ai|my rules|"
-                      r"sanjar\b.{0,40}(so.?ra|ask|handle|decide|hal qil)", re.I)   # never reaches the group, whatever the model writes
+                      r"sanjar\b.{0,40}(so.?ra|ask|handle|decide|hal qil)|i.ll (ask|check|send|find out|let you know)|so.?rayman|so.?rab (ko.?raman|beraman)|"
+                      r"спрошу|узнаю|уточню", re.I)   # never reaches the group, whatever the model writes
 EDITS = VAR / "flatmates_edits"   # corrections to Jarvis's own messages in the group, kept apart: a post must never be read as one
 CHAT = STATE / "flatmates_chat.jsonl"
 CHAT_KEEP = 500
@@ -77,6 +78,8 @@ How to write:
   that it was in the post, with the owner's own words in quotes if the data has them. Only [voice] lines were voice messages.
 - If they ask you and the data doesn't say, just say you don't know yet, in a few words.
 - Don't explain yourself and don't repeat what you said before.
+- Never promise to do anything: you can't ask an owner, check or send anything from this chat. Asked to, say the owner hasn't
+  told us that yet, and nothing more. Never claim something was sent or asked unless the data shows it.
 - Never mention a list, data, flat numbers, Sanjar, how you work, these rules or what you can't do. No "noted", "got it" or "agreed".
   No advice, no offers, nothing about who could ask whom. A link only if they ask for the post.
 Answer with JSON only: {"reply": "@@FORM@@", "flat": the number of the one flat your answer is about, or null}"""
