@@ -414,6 +414,16 @@ def make_server(source: str) -> MCPServer:
         return hooks.guard.status()
 
     @server.tool()
+    async def google_drive(task: str, sanjar_words: str, share: bool = False) -> str:
+        """Read, search, create or edit Sanjar's Google Drive files, Google Docs, Sheets and Slides (his
+        sanjarsaidov173@gmail.com Drive) through a helper that has the Drive tools. task: what to do,
+        clearly (which file, what to read or change). sanjar_words: what he actually said. share=True
+        only if he asked to share a file or change who can see it. Never deletes. Takes ~10-60 s."""
+        from . import drive
+        log.info("google_drive: %s", task[:200])
+        return await drive.run(task, sanjar_words, share)
+
+    @server.tool()
     async def mac_progress() -> str:
         """What the Mac worker is doing now, or did last: its task, last steps and result."""
         return hooks.mac.progress()

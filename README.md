@@ -118,6 +118,12 @@ Reliability: messages sent while Jarvis is busy join the next turn together (no 
 worker failure on a ticket Sanjar asked for, or any Needs-me, is always sent to him, with the report's
 own lines if the brain stays silent or fails (`relay(..., must=True)`).
 
+Google Drive (ticket e6199929, `core/drive.py`): the `google_drive` tool hands a Drive job to a short `claude -p` helper
+that loads Sanjar's user settings (so it gets the Google Drive connector of his Claude account, on
+sanjarsaidov173@gmail.com) but may use only the Drive tools: search, read Docs / Sheets / Slides, create, copy, rename,
+move, comment. Never trash; sharing only when he asked. It can't change the text inside an existing Doc or deck
+(the connector has no such tool): Jarvis offers an edited copy, or does it in Chrome with mac_task.
+
 Reading files: Jarvis can look things up itself (read-only: Read, Glob, Grep) anywhere under
 `~/dev`, e.g. "what port does the taxi backend use", and Sanjar's global skills in `~/.claude/skills`
 (e.g. taxi-server). `.env` files too (since 2026-11-04, to find ids/tokens before asking Sanjar; values are never repeated); nothing else outside `~/dev`
