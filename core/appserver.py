@@ -306,6 +306,35 @@ def move_chat(chat_id: str, project: str, when_created: bool = False) -> dict | 
     return chat
 
 
+def project_chat(project: str, prefer: str = "") -> str:
+    """The app chat where news about `project` goes (ticket f4f11c38: asked about Code Learning in General, its
+    ticket messages stayed in General): `prefer` (the chat he asked in) if it's that project's, else the
+    project's latest chat, else a new "<project> updates" chat. General stays with `prefer`."""
+    name = find_project(project)
+    if not name or name == GENERAL:
+        return prefer
+    asked = load_chat(prefer) if prefer else None
+    if asked and asked["project"] == name:
+        return prefer
+    latest = chats_of(name)
+    return latest[0]["id"] if latest else new_chat(name, f"{name} updates")["id"]
+
+
+def follow_ticket(chat_id: str, project: str) -> str:
+    """A ticket for `project` was filed from this app chat: a General chat that has only been about this
+    project moves there. Returns the project it moved to, or ""."""
+    chat = load_chat(chat_id)
+    name = find_project(project)
+    if not chat or chat_id == UPDATES or not name or name == GENERAL:
+        return ""
+    filed = set(chat.get("ticket_projects", [])) | {name}
+    chat["ticket_projects"] = sorted(filed)
+    save_chat(chat)
+    if chat["project"] != GENERAL or len(filed) > 1:     # mixed projects stay in General
+        return ""
+    return name if move_chat(chat_id, name) else ""
+
+
 def finish_moves() -> None:
     """Chats waiting for a new project go there once it's on the list."""
     for f in CHATS.glob("*.json") if CHATS.exists() else []:

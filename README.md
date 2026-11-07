@@ -67,6 +67,10 @@ Telegram voice notes) and live calls over a WebSocket (same ears / brain / voice
 Away from home the app reaches it over Tailscale: LaunchAgent `com.sanjar.jarvis-tailscale` runs `tailscaled` in
 userspace mode (no root, no system network changes; state in `~/.local/share/jarvis-tailscale`), device name
 `jarvis-mac`. CLI: `scripts/ts.sh status`.
+Ticket news goes to its project's chat (ticket f4f11c38, `appserver.project_chat`): asked in General or in Updates, a
+ticket's result lands in that project's chat in the app (the chat he asked in if it's that project's, else its latest
+one, else a new "<project> updates" chat); asked on Telegram, it still goes to Telegram too. A General app chat in which
+he files tickets for one project moves under that project (`follow_ticket`); one about several projects stays.
 Answers go back where Sanjar asked (ticket 799dda33, `core/origin.py`): each app chat's brain sends
 `X-Jarvis-Origin: app:<chat id>` on its tool calls; add_task / queue_ticket / answer_task remember it per ticket
 (`var/state/ticket_origin.json`, note "added from the app"), and that ticket's result is written into the same
