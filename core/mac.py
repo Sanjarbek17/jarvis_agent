@@ -8,6 +8,7 @@ the brain; a slow one keeps running and its result comes later via `notify`.
 import asyncio
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Awaitable, Callable

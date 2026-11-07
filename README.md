@@ -130,7 +130,9 @@ Google accounts: `google_sign_in` gives a link (OAuth with PKCE, the OAuth clien
 `GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` in `.env`). Signed in on the Mac, a small server on 127.0.0.1:8791 finishes it by
 itself; on his phone the last page can't load, so he sends its address and `google_sign_in_finish` takes it.
 Refresh tokens per account in `var/state/google_tokens.json`. Tools: `google_files`, `google_file_text`,
-`google_replace_text` (Docs and Slides), `google_add_text` (Docs).
+`google_replace_text` (Docs and Slides), `google_add_text` (Docs). New files with content (ticket 7ce4c9a5; the connector can
+only make an empty deck): `google_create_slides` (title slide plus one slide per heading / lines / optional
+picture), `google_add_slide`, `google_create_doc` (headings and text).
 
 Reading files: Jarvis can look things up itself (read-only: Read, Glob, Grep) anywhere under
 `~/dev`, e.g. "what port does the taxi backend use", and Sanjar's global skills in `~/.claude/skills`

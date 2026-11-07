@@ -44,6 +44,12 @@ class FakeGoogle:
         if url.startswith(f"{google.DRIVE}/files"):
             return httpx.Response(200, json={"files": [{"id": "DOC1", "name": "Lesson", "mimeType": "application/vnd.google-apps.document",
                                                         "modifiedTime": "2026-11-07T10:00:00Z", "webViewLink": "https://docs.google.com/d/DOC1"}]})
+        if url == google.SLIDES and request.method == "POST":
+            return httpx.Response(200, json={"presentationId": "P1", "slides": [{"pageElements": [
+                {"objectId": "t0", "shape": {"placeholder": {"type": "CENTERED_TITLE"}}},
+                {"objectId": "s0", "shape": {"placeholder": {"type": "SUBTITLE"}}}]}]})
+        if url == google.DOCS and request.method == "POST":
+            return httpx.Response(200, json={"documentId": "D1"})
         if ":batchUpdate" in url:
             req = json.loads(body)["requests"][0]
             if "replaceAllText" in req:
@@ -171,3 +177,44 @@ def test_tools_through_the_server(g):
     assert "Replaced 2" in call("google_replace_text", {"account": "", "file": "https://docs.google.com/document/d/DOC1" + "x" * 20 + "/edit",
                                                         "find": "Hello", "replace": "Hi"})
     assert "isn't signed in" in call("google_add_text", {"account": "saidov", "file": "x", "text": "y"})
+
+
+def test_a_new_deck_gets_real_slides(g):
+    signed_in(g)
+    out = asyncio.run(google.create_slides("sanjarbek200217@gmail.com", "How a ticket gets done",
+                                           [{"title": "1. He asks", "body": "In the app\nor Telegram"},
+                                            {"title": "2. A worker builds it", "body": "Tests, then dev",
+                                             "image_url": "https://example.com/a.png"}], subtitle="Jarvis test"))
+    assert out == "Made the deck \"How a ticket gets done\" with 3 slides: https://docs.google.com/presentation/d/P1/edit"
+    method, url, body = g.calls[-1]
+    reqs = json.loads(body)["requests"]
+    kinds = [next(iter(r)) for r in reqs]
+    assert url.endswith("/P1:batchUpdate")
+    assert kinds.count("createSlide") == 2 and kinds.count("createImage") == 1
+    texts = [r["insertText"]["text"] for r in reqs if "insertText" in r]
+    assert texts[:2] == ["How a ticket gets done", "Jarvis test"] and "In the app\nor Telegram" in texts
+    ids = [r["createSlide"]["objectId"] for r in reqs if "createSlide" in r]
+    assert len(set(ids)) == 2 and all(5 <= len(i) <= 50 for i in ids)      # Slides wants unique 5-50 char ids
+
+
+def test_adding_a_slide_twice_uses_new_ids(g):
+    signed_in(g)
+    deck = "DECK" + "x" * 20
+    asyncio.run(google.add_slide("sanjarbek200217@gmail.com", deck, "More"))
+    first = json.loads(g.calls[-1][2])["requests"][0]["createSlide"]["objectId"]
+    asyncio.run(google.add_slide("sanjarbek200217@gmail.com", deck, "Again"))
+    assert json.loads(g.calls[-1][2])["requests"][0]["createSlide"]["objectId"] != first
+    with pytest.raises(google.GoogleError, match="isn't a Slides deck"):
+        asyncio.run(google.add_slide("sanjarbek200217@gmail.com", "DOC1" + "x" * 20, "x"))
+
+
+def test_a_new_doc_gets_headings_and_text_in_order(g):
+    signed_in(g)
+    out = asyncio.run(google.create_doc("sanjarbek200217@gmail.com", "Notes", [
+        {"heading": "Plan 🙂", "text": "Step one"}, {"heading": "Next", "text": "Step two"}]))
+    assert out.endswith("/document/d/D1/edit")
+    reqs = json.loads(g.calls[-1][2])["requests"]
+    inserts = [(r["insertText"]["location"]["index"], r["insertText"]["text"]) for r in reqs if "insertText" in r]
+    assert inserts == [(1, "Plan 🙂\n"), (9, "Step one\n"), (18, "Next\n"), (23, "Step two\n")]   # 🙂 counts 2
+    styles = [r["updateParagraphStyle"]["paragraphStyle"]["namedStyleType"] for r in reqs if "updateParagraphStyle" in r]
+    assert styles == ["HEADING_2", "NORMAL_TEXT", "HEADING_2", "NORMAL_TEXT"]
