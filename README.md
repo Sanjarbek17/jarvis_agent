@@ -147,6 +147,10 @@ check. Check photos and PDFs are read by a small model once per message (`var/st
 money the same person wrote down within a day counts once (ticket 4eb67dbf). When he asks, `flatmates_post_expenses` posts it in that
 topic: a short summary split between the five, who pays and who gets, and a text file with every line (ticket 32abbb65).
 
+Talking over Jarvis on a call (ticket ea6c257f, `Interrupter` in `core/voice.py`): the sound level on the line pauses
+Jarvis in about 0.2 s, with no network. Words from the transcription confirm it and drop the rest of the reply; with no words
+it carries on and that sound won't pause it again. Its own echo is learned in its first 0.4 s of sound.
+
 Reading files: Jarvis can look things up itself (read-only: Read, Glob, Grep) anywhere under
 `~/dev`, e.g. "what port does the taxi backend use", and Sanjar's global skills in `~/.claude/skills`
 (e.g. taxi-server). `.env` files too (since 2026-11-04, to find ids/tokens before asking Sanjar; values are never repeated); nothing else outside `~/dev`

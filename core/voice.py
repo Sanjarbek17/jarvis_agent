@@ -31,6 +31,131 @@ def to_48k(pcm24: bytes) -> bytes:
     return np.repeat(np.frombuffer(pcm24, dtype=np.int16), 4).tobytes()
 
 
+class VoiceDetector:
+    """Is someone talking on the incoming audio? Decided here from the sound level, in about 0.2 s, with no network: waiting
+    for the transcription took seconds. A level has to stand out from what's been coming in (line noise, or Jarvis's own voice
+    echoing back from a phone on speaker) and last, so a click doesn't count."""
+    MIN_LEVEL = 300            # 16-bit RMS: quieter than this is never a voice
+    RATIO = 3.0                # this many times the usual level
+    ONSET = 0.2                # seconds of it before it counts as talking
+    QUIET = 0.5                # seconds below it before talking has stopped
+    SETTLE = 1.0               # seconds the usual level takes to follow the line
+    MAX_ECHO = 2500            # the most a false alarm may raise the bar: he must still get through
+
+    def __init__(self, rate: int = 48000):
+        self.rate = rate
+        self.usual = 0.0
+        self.echo = 0.0        # loudest thing that turned out not to be him: stays for the call
+        self.loud = 0.0        # seconds above the threshold
+        self.silent = 0.0      # seconds below it since talking began
+        self.peak = 0.0
+        self.talking = False
+
+    def threshold(self) -> float:
+        return max(self.MIN_LEVEL, self.usual * self.RATIO, self.echo * 1.3)
+
+    def feed(self, pcm: bytes) -> bool:
+        s = np.frombuffer(pcm[: len(pcm) // 2 * 2], dtype=np.int16)
+        if not len(s):
+            return self.talking
+        level, dt = float(np.sqrt(np.mean(s.astype(np.float32) ** 2))), len(s) / self.rate
+        if level > self.threshold():
+            if not self.loud and not self.talking:
+                self.peak = 0.0        # a new sound begins
+            self.loud += dt
+            self.silent = 0.0
+            self.peak = max(self.peak, level)
+            if self.loud >= self.ONSET:
+                self.talking = True
+        else:
+            self.loud = max(0.0, self.loud - dt)
+            self.usual += (level - self.usual) * min(1.0, dt / self.SETTLE)
+            if self.talking:
+                self.silent += dt
+                if self.silent >= self.QUIET:
+                    self.talking, self.loud = False, 0.0
+        return self.talking
+
+    def learn(self, pcm: bytes) -> None:
+        """This is Jarvis's own voice coming back: its level is the new usual, not someone talking."""
+        s = np.frombuffer(pcm[: len(pcm) // 2 * 2], dtype=np.int16)
+        if len(s):
+            self.usual = max(self.usual, float(np.sqrt(np.mean(s.astype(np.float32) ** 2))))
+        self.talking, self.loud, self.silent = False, 0.0, 0.0
+
+    def false_alarm(self) -> None:
+        """That was no voice (it paused Jarvis and no words came): it mustn't set this off again this call."""
+        self.echo = max(self.echo, min(self.peak, self.MAX_ECHO))   # a door slam mustn't make it deaf to him
+        self.talking, self.loud, self.silent, self.peak = False, 0.0, 0.0, 0.0
+
+
+class Interrupter:
+    """Stops Jarvis as soon as the other side talks (ticket ea6c257f: "When I talk, you stop").
+
+    A voice on the line pauses Jarvis at once, keeping what's left to say. Words from the transcription then confirm it was
+    someone talking, and the rest of the reply is dropped. If no words come and the line goes quiet, it was a noise or an echo:
+    Jarvis carries on from where it paused, and that sound won't pause it again."""
+    ARM_AFTER = 0.4            # Jarvis's own first sound comes back at once: the detector learns its level first
+    RESUME_AFTER = 0.8         # quiet this long with no words: carry on
+    MAX_PAUSE = 6.0            # a sound that never stops and never turns into words (a TV, say)
+    SHORT = 3                  # words needed while Jarvis is audible: a speakerphone sends bits of its voice back
+    LATE = 0.3                 # words this soon after pausing were spoken before it
+
+    def __init__(self, mouth, stop: Callable[[], None]):
+        self.mouth, self.stop = mouth, stop
+        self.vad = VoiceDetector()
+        self.playing_since = None
+        self.paused_at = self.voice_at = 0.0
+
+    def heard(self, pcm: bytes, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        if self.mouth.paused:
+            if self.vad.feed(pcm):
+                self.voice_at = now
+            return
+        if not self.mouth.playing:
+            self.playing_since = None
+        elif self.playing_since is None:
+            self.playing_since = now
+        if self.mouth.playing and now - self.playing_since < self.ARM_AFTER:
+            self.vad.learn(pcm)
+            return
+        talking = self.vad.feed(pcm)
+        if talking and self.mouth.playing:
+            self.mouth.pause()
+            self.paused_at = self.voice_at = now
+            log.info("voice on the line (level %.0f, usual %.0f): pausing", self.vad.peak, self.vad.usual)
+
+    def tick(self, now: float | None = None) -> None:
+        """Called all the time from the playing loop: no audio at all may arrive once he mutes."""
+        if not self.mouth.paused:
+            return
+        now = time.monotonic() if now is None else now
+        if now - self.voice_at >= self.RESUME_AFTER or now - self.paused_at >= self.MAX_PAUSE:
+            log.info("no words came (level %.0f): carrying on", self.vad.peak)
+            self.vad.false_alarm()
+            self.mouth.resume()
+
+    def words(self, text: str, now: float | None = None) -> None:
+        """What he's saying so far, from the transcription."""
+        now = time.monotonic() if now is None else now
+        count = len(text.split())
+        if self.mouth.paused:
+            if now - self.paused_at >= self.LATE and count >= 2:
+                self.stop()
+        elif self.mouth.playing and count >= self.SHORT:
+            self.stop()
+
+    def sentence(self, text: str) -> bool:
+        """A finished sentence. False: it's only a bit of Jarvis's own voice coming back. Otherwise whatever Jarvis was
+        still saying stops, so it doesn't talk over him and then answer on top of itself."""
+        if self.mouth.playing and not self.mouth.paused and len(text.split()) < self.SHORT:
+            return False
+        if self.mouth.busy:
+            self.stop()
+        return True
+
+
 class Ears:
     """Streams my call audio to Gemini; calls back while I speak and when I finish a sentence."""
 
@@ -171,6 +296,7 @@ class Mouth:
 
     def __init__(self):
         self.out = bytearray()              # 48 kHz stereo audio waiting to be played
+        self.paused = False                 # someone may be talking: hold the audio, keep it for if they weren't
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._pending = 0                   # texts sent but not fully spoken yet
         self._spoken = 0                    # bytes of audio for the current text
@@ -188,6 +314,12 @@ class Mouth:
         `busy`, to tell Sanjar's voice from Jarvis's own echo: a pending-but-silent turn isn't echo."""
         return bool(self.out)
 
+    def pause(self):
+        self.paused = True
+
+    def resume(self):
+        self.paused = False
+
     def say(self, text: str):
         if text.strip():
             self._queue.put_nowait(text.strip())
@@ -203,6 +335,7 @@ class Mouth:
 
     def _restart(self):
         """Drop everything queued/pending and reconnect with a fresh TTS session."""
+        self.paused = False
         while not self._queue.empty():
             self._queue.get_nowait()
         self.out.clear()
