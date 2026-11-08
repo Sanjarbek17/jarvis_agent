@@ -36,6 +36,7 @@ class Hooks:
     mac: MacWorker
     mac_late: Callable[..., Awaitable[None]]   # result after MAC_WAIT
     guard: object = None                       # core/guard.py's Guard
+    expenses: Callable[[], Awaitable[str]] = None   # the Flatmates expense topic, read with Jarvis's own Telegram
     runner: "Runner"                                                    # core.runner.Runner
 
 
@@ -520,6 +521,16 @@ def make_server(source: str) -> MCPServer:
         """Make a NEW Google Doc with content in a signed-in account: sections [{"heading": "...", "text": "..."}]."""
         from . import google
         return await _google(lambda: google.create_doc(google.which(account), title, sections))
+
+    @server.tool()
+    async def flatmates_expenses() -> str:
+        """Who spent how much: reads the expense topic of the Flatmates group as it is now and adds it up per person,
+        with each person's lines and the ones it couldn't count. For Sanjar only; never post it in the group."""
+        try:
+            return await hooks.expenses()
+        except Exception as e:
+            log.exception("expenses failed")
+            return f"Couldn't read the expense topic: {e}"
 
     @server.tool()
     async def mac_progress() -> str:
