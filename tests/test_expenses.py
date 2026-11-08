@@ -111,3 +111,13 @@ def test_tool_is_for_him_not_for_guests_or_the_group(monkeypatch):
     monkeypatch.setattr(tools.hooks, "expenses", fake, raising=False)
     r = asyncio.run(tools.make_server("Telegram").call_tool("flatmates_expenses", {}))
     assert r.content[0].text == "Sanjar: 10 000"
+
+
+@pytest.mark.parametrize("title", ["Expences", "Expenses", "expense", "Expanses", "Xarajatlar", "Расходы"])
+def test_the_topic_is_found_however_it_is_spelled(title):
+    tg = FakeTg([], topics=("New flat options", title, "General"))             # his group's real topics
+    assert asyncio.run(expenses.find_topic(tg)) == (11, title)
+
+
+def test_other_topics_are_not_taken_for_it():
+    assert not any(expenses.TOPIC.search(t) for t in ("New flat options", "General", "Viewings"))
