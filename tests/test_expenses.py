@@ -13,7 +13,7 @@ from core import expenses, tools
     ("150 go'sht", [150_000]), ("25000 non", [25_000]), ("25 000 non", [25_000]), ("25,000", [25_000]),
     ("25k", [25_000]), ("25 ming non", [25_000]), ("3 mln kvartira", [3_000_000]), ("1.5 mln", [1_500_000]),
     ("2 ta non 30", [30_000]),                                                # "2 ta" is a count
-    ("10 tok 15 suv", [10_000, 15_000]),                                      # two amounts: listed, not guessed
+    ("10 tok 15 suv", [10_000, 15_000]), ("14, 10", [14_000, 10_000]), ("26, 15", [26_000, 15_000]),   # all count
     ("non oldim", []), ("ertaga pul beraman", []), ("0", []),
 ])
 def test_amounts(line, want):
@@ -27,16 +27,17 @@ ROWS = [{"name": "Sanjar", "text": "10 tok", "ts": 1794100000}, {"name": "Bahodi
 
 def test_totals_per_person_and_unclear_lines_are_not_counted():
     s = expenses.summarize(ROWS)
-    assert s["people"]["Sanjar"]["total"] == 30_000 and s["people"]["Bahodir"]["total"] == 15_000
-    assert s["people"]["Abdumannon"]["total"] == 63_000 and s["total"] == 108_000 and s["counted"] == 4
-    assert s["unclear"] == ["Bahodir: non oldim", "Sanjar: 10 tok 5 suv"]
+    assert s["people"]["Sanjar"]["total"] == 45_000 and s["people"]["Bahodir"]["total"] == 15_000
+    assert s["people"]["Abdumannon"]["total"] == 63_000 and s["total"] == 123_000 and s["counted"] == 5
+    assert s["unclear"] == ["Bahodir: non oldim"]
+    assert "10 tok 5 suv = 15 000" in s["people"]["Sanjar"]["lines"]
 
 
 def test_report_lists_biggest_first_with_each_line_and_what_to_check():
     out = expenses.report(ROWS, "Expenses")
-    assert out.index("Abdumannon: 63 000") < out.index("Sanjar: 30 000") < out.index("Bahodir: 15 000")
-    assert "  10 tok" in out and "Total: 108 000 so'm" in out
-    assert "Not counted, please check (2):" in out and "  Bahodir: non oldim" in out
+    assert out.index("Abdumannon: 63 000") < out.index("Sanjar: 45 000") < out.index("Bahodir: 15 000")
+    assert "  10 tok" in out and "Total: 123 000 so'm" in out
+    assert "Not counted, please check (1):" in out and "  Bahodir: non oldim" in out
     assert "no messages" in expenses.report([], "Expenses")
 
 
@@ -60,11 +61,11 @@ class FakeTg:
         self.sent.append((to, text))
 
 
-def msg(text, sender_id=5, name="Bahodir", out=False, fwd=None, day=8):
+def msg(text, sender_id=5, name="Bahodir", out=False, fwd=None, day=8, id=1, **media):
     async def get_sender():
         return NS(first_name=name)
-    return NS(message=text, sender_id=sender_id, out=out, fwd_from=fwd, get_sender=get_sender,
-              date=datetime(2026, 11, day, tzinfo=timezone.utc))
+    return NS(message=text, sender_id=sender_id, out=out, fwd_from=fwd, get_sender=get_sender, id=id,
+              date=datetime(2026, 11, day, tzinfo=timezone.utc), **media)
 
 
 def test_reads_only_that_topic_from_people_oldest_first():
@@ -121,3 +122,102 @@ def test_the_topic_is_found_however_it_is_spelled(title):
 
 def test_other_topics_are_not_taken_for_it():
     assert not any(expenses.TOPIC.search(t) for t in ("New flat options", "General", "Viewings"))
+
+
+# --- checks: photos and files ---------------------------------------------------------------------------
+
+DAY = 86400
+T = 1794100000
+
+
+def test_a_check_counts_for_who_posted_it():
+    s = expenses.summarize([{"name": "Ikrom", "text": "", "ts": T, "check": {"total": 57_900, "what": "Korzinka"}}])
+    assert s["total"] == 57_900 and s["people"]["Ikrom"]["lines"] == ["check 57 900 Korzinka"] and s["unclear"] == []
+
+
+@pytest.mark.parametrize("check_first", [True, False])
+def test_a_check_for_money_already_written_counts_once(check_first):
+    line = {"name": "Ikrom", "text": "58", "ts": T + 60}
+    check = {"name": "Ikrom", "text": "", "ts": T, "check": {"total": 57_900, "what": ""}}
+    s = expenses.summarize([check, line] if check_first else [line, check])
+    assert s["total"] == 58_000 and s["people"]["Ikrom"]["total"] == 58_000
+    assert any("counted once" in l for l in s["people"]["Ikrom"]["lines"])
+
+
+def test_same_money_from_someone_else_or_another_day_is_separate():
+    check = {"name": "Ikrom", "text": "", "ts": T, "check": {"total": 58_000, "what": ""}}
+    assert expenses.summarize([{"name": "Bahodir", "text": "58", "ts": T}, check])["total"] == 116_000
+    assert expenses.summarize([{"name": "Ikrom", "text": "58", "ts": T + 3 * DAY}, check])["total"] == 116_000
+
+
+def test_one_written_line_only_cancels_one_check():
+    check = {"name": "Ikrom", "text": "", "ts": T, "check": {"total": 58_000, "what": ""}}
+    assert expenses.summarize([{"name": "Ikrom", "text": "58", "ts": T}, check, dict(check)])["total"] == 116_000
+
+
+def test_unreadable_files_are_listed_not_counted():
+    s = expenses.summarize([{"name": "Ikrom", "text": "bozor", "ts": T, "unread": "a check I couldn't read just now"}])
+    assert s["total"] == 0 and s["unclear"] == ["Ikrom: a check I couldn't read just now (bozor)"]
+
+
+@pytest.fixture
+def checks(tmp_path, monkeypatch):
+    monkeypatch.setattr(expenses, "CHECKS", tmp_path / "checks.json")
+    monkeypatch.setattr(expenses, "FILES", tmp_path / "files")
+    calls = []
+
+    async def model(path):
+        calls.append(path.name)
+        return {"check": True, "total_som": 57900, "what": "Korzinka"}
+
+    monkeypatch.setattr(expenses, "ask_model", model)
+    return calls
+
+
+class Downloads(FakeTg):
+    async def download_media(self, m, file=None):
+        open(file, "wb").write(b"x")
+        return file
+
+
+PDF = NS(mime_type="application/pdf", size=1000, attributes=[NS(file_name="check.pdf")])
+SHEET = NS(mime_type="application/vnd.ms-excel", size=1000, attributes=[NS(file_name="list.xls")])
+
+
+def test_photos_and_pdfs_are_read_once_and_remembered(checks):
+    tg = Downloads([msg("", id=2, photo=object()), msg("", id=3, document=PDF)])
+    rows, _ = asyncio.run(expenses.read(tg))
+    assert [r["check"]["total"] for r in rows] == [57_900, 57_900] and sorted(checks) == ["2.jpg", "3.pdf"]
+    asyncio.run(expenses.read(tg))
+    assert len(checks) == 2                                                  # the second report doesn't read them again
+
+
+def test_a_forwarded_check_counts_a_forwarded_line_doesnt(checks):
+    rows, _ = asyncio.run(expenses.read(Downloads([msg("", id=2, photo=object(), fwd=object()), msg("99 x", id=3, fwd=object())])))
+    assert len(rows) == 1 and rows[0]["check"]["total"] == 57_900
+
+
+def test_a_number_in_the_caption_wins_and_the_picture_isnt_read(checks):
+    rows, _ = asyncio.run(expenses.read(Downloads([msg("35 gaz", id=2, photo=object())])))
+    assert checks == [] and "check" not in rows[0] and expenses.summarize(rows)["total"] == 35_000
+
+
+def test_other_files_and_stickers(checks):
+    rows, _ = asyncio.run(expenses.read(Downloads([msg("", id=2, document=SHEET), msg("", id=3, document=PDF, sticker=object())])))
+    assert len(rows) == 1 and rows[0]["unread"] == "a file I can't read: list.xls" and checks == []
+
+
+def test_not_a_check_is_listed_and_a_failure_is_tried_again(tmp_path, monkeypatch, checks):
+    async def not_check(path):
+        return {"check": False, "total_som": None, "what": ""}
+
+    monkeypatch.setattr(expenses, "ask_model", not_check)
+    rows, _ = asyncio.run(expenses.read(Downloads([msg("", id=2, photo=object())])))
+    assert "isn't a check" in rows[0]["unread"]
+
+    async def limit(path):
+        raise RuntimeError("usage limit")
+
+    monkeypatch.setattr(expenses, "ask_model", limit)
+    rows, _ = asyncio.run(expenses.read(Downloads([msg("", id=9, photo=object())])))
+    assert "couldn't read just now" in rows[0]["unread"] and "9" not in expenses._kept()
