@@ -140,6 +140,10 @@ Refresh tokens per account in `var/state/google_tokens.json`. Tools: `google_fil
 only make an empty deck): `google_create_slides` (title slide plus one slide per heading / lines / optional
 picture), `google_add_slide`, `google_create_doc` (headings and text).
 
+Flatmates expenses (ticket d59ccf5e, `core/expenses.py`): the `flatmates_expenses` tool reads the group's expense topic
+with Jarvis's own Telegram and adds it up per person for Sanjar only, nothing goes in the group. A short number means
+thousands ("10 tok" is 10,000); a line with no number or several is listed to check, not counted.
+
 Reading files: Jarvis can look things up itself (read-only: Read, Glob, Grep) anywhere under
 `~/dev`, e.g. "what port does the taxi backend use", and Sanjar's global skills in `~/.claude/skills`
 (e.g. taxi-server). `.env` files too (since 2026-11-04, to find ids/tokens before asking Sanjar; values are never repeated); nothing else outside `~/dev`

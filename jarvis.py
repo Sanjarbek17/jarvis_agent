@@ -44,7 +44,7 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.types import InputPeerChannel, MessageActionGroupCall
 
-from core import appserver, board, contacts, coremem, flatmates, google, guard, memory, origin, outbox, selfcheck, tgfmt, tools
+from core import appserver, board, contacts, coremem, expenses, flatmates, google, guard, memory, origin, outbox, selfcheck, tgfmt, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, WATCHED_GROUP_IDS, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
@@ -1117,6 +1117,7 @@ async def main():
     tools.hooks.mac = mac
     tools.hooks.runner = runner
     tools.hooks.mac_late = mac_late
+    tools.hooks.expenses = lambda: expenses.text(tg)
     tools.hooks.guard = guard.Guard(guard_alert, guard_photos, tools.take_screenshot,
                                     busy=lambda: bool(tools.hooks.mac.current))
     runner_task = {"t": asyncio.create_task(runner.run_forever(), name="runner")}
@@ -1147,6 +1148,7 @@ async def main():
     asyncio.create_task(appserver.serve())
     asyncio.create_task(send_format_samples())
     asyncio.create_task(outbox.run(tg, OWNER_ID, appserver.push_file))   # scripts send Sanjar things through us
+    asyncio.create_task(expenses.send_if_asked(tg, OWNER_ID, app_push))
     asyncio.create_task(flatmates.run(tg, OWNER_ID))                     # found apartments, into the Flatmates group
     if "--call" in sys.argv and CALL_SANJAR:
         try:
