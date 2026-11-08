@@ -16,7 +16,7 @@ from collections import defaultdict
 from .config import FLATMATES_GROUP_ID, OWNER_ID, VAR
 
 log = logging.getLogger("jarvis.expenses")
-TOPIC = re.compile(r"expens|xarajat|harajat|xarj|rasxod|расход|затрат|chiqim", re.I)
+TOPIC = re.compile(r"exp[ae]n[sc]|xarajat|harajat|xarj|rasxod|расход|затрат|chiqim", re.I)
 REQUEST = VAR / "flatmates_expenses_request"      # exists: send him the report once, at the next start
 LIMIT = 2000
 _NOT_MONEY = re.compile(r"\b\d+\s*(ta|dona|шт|kishi|xona|qavat|etaj|kun|soat)\b", re.I)
