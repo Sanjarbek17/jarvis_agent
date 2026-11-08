@@ -1118,6 +1118,7 @@ async def main():
     tools.hooks.runner = runner
     tools.hooks.mac_late = mac_late
     tools.hooks.expenses = lambda: expenses.text(tg)
+    tools.hooks.post_expenses = lambda: expenses.post(tg)
     tools.hooks.guard = guard.Guard(guard_alert, guard_photos, tools.take_screenshot,
                                     busy=lambda: bool(tools.hooks.mac.current))
     runner_task = {"t": asyncio.create_task(runner.run_forever(), name="runner")}

@@ -6,7 +6,8 @@ Anything said later about a flat replies to that flat's post (ticket 9149c852), 
 the model sees what they replied to. The chat, with Jarvis's own posts, lives in CHAT and is filled in from the group at
 every start, so a restart forgets nothing (ticket 972c83e8). It waits for the chat to go quiet and then answers at most
 once, never a forwarded message, and stays out of what isn't meant for it (ticket a6d50e62). Asked for proof, it has the
-search draw a picture of its chat with that owner and sends it as the reply (ticket dc79dee0). Nothing else happens here: other talk gets silence, and there are no voice chats, tickets or Mac actions.
+search draw a picture of its chat with that owner and sends it as the reply (ticket dc79dee0). Nothing else happens here: other talk gets silence, and there are no voice chats, tickets or Mac actions. The one other
+thing posted is the expense report, only when Sanjar asks for it (core/expenses.py, ticket 32abbb65).
 
 The apartment search is another process and must not open Jarvis's session (see core/outbox.py), so it calls
 drop(), and run() posts from var/flatmates_out/ inside Jarvis. A note stays there until it's really posted, so a

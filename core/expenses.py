@@ -1,5 +1,6 @@
-"""Who spent how much, from the expense topic of the Flatmates group (ticket d59ccf5e). Only Sanjar sees this: it's a
-tool for his chat and a one-off report, and nothing is ever posted in the group.
+"""Who spent how much, from the expense topic of the Flatmates group (ticket d59ccf5e). A report for Sanjar, and when he
+asks (ticket 32abbb65) a post in that topic: a short summary split between the five flatmates, who pays and who gets,
+with all the data in a text file. Never posted unless he asked, and held back if a check couldn't be read just now.
 
 People write short lines there, like "10 tok", "15 suv non" or "kv 63": a short number means thousands of so'm, so
 10 is 10,000. A number of 1,000 or more is taken as written, and "3 mln" as 3,000,000. "2 ta" is a count, not money.
@@ -24,11 +25,15 @@ from .config import FLATMATES_GROUP_ID, OWNER_ID, STATE, VAR
 log = logging.getLogger("jarvis.expenses")
 TOPIC = re.compile(r"exp[ae]n[sc]|xarajat|harajat|xarj|rasxod|расход|затрат|chiqim", re.I)
 REQUEST = VAR / "flatmates_expenses_request"      # exists: send him the report once, at the next start
+POST_REQUEST = VAR / "flatmates_expenses_post"    # exists: post it in the group once, at the next start
+PEOPLE = 5                                        # the flatmates sharing the costs
+NOT_NOW = "a check I couldn't read just now"
 LIMIT = 2000
 CHECKS = STATE / "expense_checks.json"            # message id -> what its check said, so each is read only once
 FILES = STATE / "expense_files"
 MODEL = "claude-sonnet-5-5"                       # a wrong digit is real money between friends
 CHECK_TIMEOUT = 120
+CAPTION = 1000                                    # Telegram's limit for a file's caption is about this
 MAX_FILE = 20_000_000
 SAME_WITHIN = 86400                               # a check and a written line this close in time can be the same money
 SAME_BY = 1000                                    # "58" for a check of 57 900
@@ -114,6 +119,46 @@ def report(rows: list[dict], title: str = "") -> str:
     return "\n".join(out)
 
 
+def split(s: dict, people: int = PEOPLE) -> dict:
+    """The total shared equally: {"share", "balances": [(name, spent, what they get, negative = pay)], "pay": [(from, to, sum)]}.
+    Someone who wrote nothing isn't in the data but still owes a share, shown as "the others"."""
+    spent = {name: p["total"] for name, p in s["people"].items()}
+    missing = max(0, people - len(spent))
+    share = s["total"] / max(people, len(spent), 1)
+    balances = sorted(((n, v, round(v - share)) for n, v in spent.items()), key=lambda b: -b[2])
+    owed = [[n, b] for n, _, b in balances if b > 0]
+    owing = [[n, -b] for n, _, b in reversed(balances) if b < 0]
+    for i in range(missing):
+        owing.append([f"another flatmate ({i + 1})" if missing > 1 else "the fifth flatmate", round(share)])
+    pay = []
+    for who in sorted(owing, key=lambda o: -o[1]):       # biggest first, so as few payments as possible
+        for to in owed:
+            amount = min(who[1], to[1])
+            if amount >= 100:                            # rounding leftovers aren't worth a transfer
+                pay.append((who[0], to[0], amount))
+                who[1] -= amount
+                to[1] -= amount
+    return {"share": round(share), "balances": balances, "pay": pay, "missing": missing}
+
+
+def summary(rows: list[dict]) -> str:
+    """The short message for the group."""
+    s = summarize(rows)
+    d = split(s)
+    day = lambda ts: time.strftime("%d %b", time.localtime(ts))
+    out = [f"💰 Expenses, {day(rows[0]['ts'])} to {day(rows[-1]['ts'])}",
+           f"Total {money(s['total'])} so'm, {money(d['share'])} each ({max(PEOPLE, len(s['people']))} people)", ""]
+    for name, spent, balance in d["balances"]:
+        how = f"gets {money(balance)}" if balance > 0 else f"pays {money(-balance)}" if balance < 0 else "even"
+        out.append(f"{name}: spent {money(spent)}, {how}")
+    if d["missing"]:
+        out.append(f"{d['missing']} more wrote nothing: {money(d['share'])} each to pay")
+    if d["pay"]:
+        out += ["", "Who pays whom:"] + [f"{a} → {b}: {money(n)}" for a, b, n in d["pay"]]
+    out += ["", "Every line is in the file."]
+    return "\n".join(out)
+
+
 async def find_topic(tg) -> tuple[int, str]:
     from telethon.tl.functions.messages import GetForumTopicsRequest
     r = await tg(GetForumTopicsRequest(peer=await tg.get_input_entity(FLATMATES_GROUP_ID), offset_date=None,
@@ -187,7 +232,7 @@ async def read_check(tg, m, ext: str) -> dict:
         got = await ask_model(path)
     except Exception as e:
         log.warning("couldn't read the check in message %s: %r", m.id, e)
-        return {"unread": "a check I couldn't read just now"}
+        return {"unread": NOT_NOW}
     total = got.get("total_som")
     if got.get("check") and isinstance(total, (int, float)) and total > 0:
         out = {"check": {"total": round(total), "what": str(got.get("what") or "")[:40]}}
@@ -231,8 +276,41 @@ async def text(tg) -> str:
     return report(rows, title)
 
 
+async def post(tg) -> str:
+    """Post the summary and the file in the expense topic. Returns what happened, for Sanjar."""
+    rows, title = await read(tg)
+    if not rows:
+        return "The expense topic has no messages, so I posted nothing."
+    if any(r.get("unread") == NOT_NOW for r in rows):
+        return ("I didn't post in the group: a check couldn't be read just now (maybe the usage limit), so the split could be "
+                "wrong. Ask me again in a while.")
+    short = summary(rows)
+    FILES.mkdir(parents=True, exist_ok=True)
+    path = FILES / f"expenses-{time.strftime('%Y-%m-%d')}.txt"
+    path.write_text(short.replace("Every line is in the file.", "").rstrip() + "\n\n\n" + report(rows, title) + "\n", encoding="utf-8")
+    topic, _ = await find_topic(tg)
+    if len(short) <= CAPTION:
+        sent = await tg.send_file(FLATMATES_GROUP_ID, str(path), caption=short, reply_to=topic, force_document=True)
+    else:
+        sent = await tg.send_message(FLATMATES_GROUP_ID, short, reply_to=topic, link_preview=False)
+        await tg.send_file(FLATMATES_GROUP_ID, str(path), reply_to=topic, force_document=True)
+    from . import flatmates
+    flatmates.remember("Jarvis", short, getattr(sent, "id", 0))        # so the group chat knows it said this
+    log.info("posted the expense report in the group")
+    return f"Posted in the group's {title} topic, with the file:\n\n{short}"
+
+
 async def send_if_asked(tg, owner_id: int, also=lambda text: None) -> None:
-    """At start: a report asked for while Jarvis couldn't read the group goes to him once."""
+    """At start: a report or group post asked for while Jarvis couldn't read the group happens once."""
+    if POST_REQUEST.exists():
+        try:
+            done = await post(tg)
+        except Exception as e:
+            log.exception("posting the expense report failed")
+            done = f"I couldn't post the expense report in the group: {e}"
+        POST_REQUEST.unlink(missing_ok=True)
+        await tg.send_message(owner_id, done[:4000], link_preview=False)
+        also(done[:4000])
     if not REQUEST.exists():
         return
     try:

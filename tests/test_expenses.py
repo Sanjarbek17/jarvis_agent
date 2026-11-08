@@ -221,3 +221,130 @@ def test_not_a_check_is_listed_and_a_failure_is_tried_again(tmp_path, monkeypatc
     monkeypatch.setattr(expenses, "ask_model", limit)
     rows, _ = asyncio.run(expenses.read(Downloads([msg("", id=9, photo=object())])))
     assert "couldn't read just now" in rows[0]["unread"] and "9" not in expenses._kept()
+
+
+# --- the split and the group post -------------------------------------------------------------------------
+
+def spent(**people):
+    return {"people": {k: {"total": v, "lines": []} for k, v in people.items()}, "total": sum(people.values())}
+
+
+REAL = spent(Abdumannon=235_000, Javohir=205_000, Bahodir=154_000, Ikrom=146_000, Sanjar=90_000)
+
+
+def test_split_by_five_with_his_real_numbers():
+    d = expenses.split(REAL)
+    assert d["share"] == 166_000
+    assert [(n, b) for n, _, b in d["balances"]] == [("Abdumannon", 69_000), ("Javohir", 39_000), ("Bahodir", -12_000),
+                                                     ("Ikrom", -20_000), ("Sanjar", -76_000)]
+
+
+def settle(s):
+    d = expenses.split(s)
+    have = {n: b for n, _, b in d["balances"]}
+    for a, b, n in d["pay"]:
+        have[a] = have.get(a, 0) + n
+        have[b] -= n
+    return d, have
+
+
+def test_after_the_payments_everyone_is_even():
+    _, have = settle(REAL)
+    assert all(abs(v) < 100 for v in have.values())
+    _, have = settle(spent(A=57_900, B=30_000, C=104_000, D=10_000, E=1_000))     # doesn't divide evenly
+    assert all(abs(v) < 100 for v in have.values())
+
+
+def test_someone_who_wrote_nothing_still_owes_a_share():
+    d = expenses.split(spent(A=100_000, B=100_000, C=100_000, D=100_000))
+    assert d["share"] == 80_000 and d["missing"] == 1
+    assert sum(n for a, _, n in d["pay"] if a == "the fifth flatmate") == 80_000
+
+
+def rows_for_summary():
+    return [{"name": n, "text": f"{v // 1000} x", "ts": T} for n, v in (("Abdumannon", 235_000), ("Sanjar", 90_000), ("Bahodir", 154_000),
+                                                                        ("Ikrom", 146_000), ("Javohir", 205_000))]
+
+
+def test_summary_is_short_and_says_who_pays_and_gets():
+    out = expenses.summary(rows_for_summary())
+    assert "Total 830 000 so'm, 166 000 each (5 people)" in out
+    assert "Abdumannon: spent 235 000, gets 69 000" in out and "Sanjar: spent 90 000, pays 76 000" in out
+    assert "Sanjar → Abdumannon: 69 000" in out and "Every line is in the file." in out
+    assert len(out) < expenses.CAPTION
+
+
+class Posting(Downloads):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.files, self.texts = [], []
+
+    async def send_file(self, to, path, caption="", reply_to=None, force_document=False):
+        self.files.append(dict(to=to, body=open(path).read(), caption=caption, reply_to=reply_to, document=force_document))
+        return NS(id=900)
+
+    async def send_message(self, to, text, reply_to=None, **kw):
+        self.texts.append(dict(to=to, text=text, reply_to=reply_to))
+        return NS(id=901)
+
+
+@pytest.fixture
+def posting(tmp_path, monkeypatch, checks):
+    from core import flatmates
+    monkeypatch.setattr(flatmates, "CHAT", tmp_path / "chat.jsonl")
+    monkeypatch.setattr(expenses, "POST_REQUEST", tmp_path / "post")
+    monkeypatch.setattr(expenses, "REQUEST", tmp_path / "request")
+
+
+def test_post_goes_to_the_expense_topic_with_the_data_in_a_file(posting):
+    tg = Posting([msg("15 suv non", day=8), msg("kv 63", 6, "Abdumannon", day=7, id=2)])
+    out = asyncio.run(expenses.post(tg))
+    f = tg.files[0]
+    assert f["to"] == expenses.FLATMATES_GROUP_ID and f["reply_to"] == 11 and f["document"]      # 11: Xarajatlar
+    assert "Total 78 000 so'm" in f["caption"] and "Who pays whom" in f["caption"]
+    assert "  15 suv non" in f["body"] and "  kv 63" in f["body"] and "Every line" not in f["body"]
+    assert "Posted in the group" in out and "Total 78 000" in out
+
+
+def test_a_long_summary_goes_as_text_then_the_file(posting, monkeypatch):
+    monkeypatch.setattr(expenses, "CAPTION", 20)
+    tg = Posting([msg("15 suv non")])
+    asyncio.run(expenses.post(tg))
+    assert "Total" in tg.texts[0]["text"] and tg.texts[0]["reply_to"] == 11
+    assert tg.files[0]["caption"] == "" and "15 suv non" in tg.files[0]["body"]
+
+
+def test_nothing_goes_to_the_group_while_a_check_cant_be_read(posting, monkeypatch):
+    async def limit(path):
+        raise RuntimeError("usage limit")
+
+    monkeypatch.setattr(expenses, "ask_model", limit)
+    tg = Posting([msg("15 suv non"), msg("", id=7, photo=object())])
+    out = asyncio.run(expenses.post(tg))
+    assert tg.files == [] and tg.texts == [] and "didn't post" in out
+
+
+def test_the_post_request_happens_once_and_he_hears_about_it(posting):
+    tg, copies = Posting([msg("15 suv non")]), []
+    asyncio.run(expenses.send_if_asked(tg, 1, copies.append))
+    assert tg.files == []                                                    # nobody asked
+    expenses.POST_REQUEST.write_text("")
+    asyncio.run(expenses.send_if_asked(tg, 1, copies.append))
+    assert len(tg.files) == 1 and tg.texts[0]["to"] == 1 and "Posted in the group" in copies[0]
+    assert not expenses.POST_REQUEST.exists()
+    asyncio.run(expenses.send_if_asked(tg, 1, copies.append))
+    assert len(tg.files) == 1
+
+
+def test_a_report_never_posts_by_itself(posting):
+    tg = Posting([msg("15 suv non")])
+    expenses.REQUEST.write_text("")
+    asyncio.run(expenses.send_if_asked(tg, 1))
+    assert tg.files == [] and all(t["to"] == 1 for t in tg.texts)
+
+
+def test_the_post_tool_is_only_for_him(monkeypatch):
+    def names(source):
+        return {t.name for t in asyncio.run(tools.make_server(source).list_tools())}
+    assert "flatmates_post_expenses" in names("Telegram")
+    assert "flatmates_post_expenses" not in names("Guest") | names("Group")
