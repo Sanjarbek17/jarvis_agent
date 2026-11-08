@@ -52,7 +52,7 @@ from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watch
                          TG_API_ID)
 from core.mac import MacWorker
 from core.runner import Runner
-from core.voice import Ears, Mouth, split_sentences, transcribe_audio
+from core.voice import Ears, Interrupter, Mouth, split_sentences, transcribe_audio
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s",
                     handlers=[logging.StreamHandler(), logging.FileHandler(LOGS / "jarvis.log")])
@@ -99,6 +99,7 @@ class Call:
         self.brain = Brain("guest", guest_prompt(guest, message)) if guest else Brain("call")
         self.mouth = Mouth()
         self.ears = Ears(self.on_speaking, self.on_sentence)
+        self.interrupt = Interrupter(self.mouth, self.stop_talking)
         self.turns: asyncio.Queue[str] = asyncio.Queue()
         self.turn_id = 0
         self.transcript: list[str] = []
@@ -122,17 +123,20 @@ class Call:
             self.mouth.say("Hi Sanjar, Jarvis here.")
         log.info("on the call%s", f" with {self.guest}" if self.guest else " (Jarvis called)" if reason else "")
 
+    def hear(self, pcm: bytes):
+        """Audio from the other side: to the transcription, and to what stops Jarvis when they talk."""
+        self.ears.hear(pcm)
+        self.interrupt.heard(pcm)
+
+    def stop_talking(self):
+        self.turn_id += 1
+        self.mouth.stop()
+
     async def on_speaking(self, text: str):
-        # the other side talks over Jarvis: stop it. 3+ words, because a phone on speaker sends
-        # bits of Jarvis's own voice back ("hour", "Hello") and that kept cutting it off.
-        # Gate on `playing` (audio actually going out), not `busy`: if a reply is stuck with no
-        # audio, that's not echo and must not swallow Sanjar.
-        if self.mouth.playing and len(text.split()) >= 3:
-            self.turn_id += 1
-            self.mouth.stop()
+        self.interrupt.words(text)
 
     async def on_sentence(self, text: str):
-        if self.mouth.playing and len(text.split()) < 3:
+        if not self.interrupt.sentence(text):
             log.info("ignored while Jarvis talks (likely echo): %s", text)
             return
         self._note(self.guest or "Sanjar", text)
@@ -171,8 +175,9 @@ class Call:
         silence, next_at = bytes(CHUNK), time.monotonic()
         sent, failed, last_report = 0, 0, time.monotonic()
         while not self.ended:
+            self.interrupt.tick()
             out = self.mouth.out
-            if len(out) >= CHUNK:
+            if len(out) >= CHUNK and not self.mouth.paused:
                 frame = bytes(out[:CHUNK])
                 del out[:CHUNK]
                 sent += 1
@@ -470,8 +475,9 @@ class AppCall(Call):
     async def _play(self):
         frame, next_at = CHUNK * 2, time.monotonic()          # 20 ms of 48 kHz stereo
         while not self.ended:
+            self.interrupt.tick()
             out = self.mouth.out
-            if len(out) >= frame:
+            if len(out) >= frame and not self.mouth.paused:
                 chunk = bytes(out[:frame])
                 del out[:frame]
                 with contextlib.suppress(Exception):
@@ -504,7 +510,7 @@ async def app_call(ws, chat: dict):
             if msg.get("type") == "websocket.disconnect":
                 break
             if msg.get("bytes"):
-                this.ears.hear(msg["bytes"])
+                this.hear(msg["bytes"])
     finally:
         if call is this:
             await finish_call()
@@ -1008,7 +1014,7 @@ async def on_group_message(event):
 async def on_audio(_, update: StreamFrames):
     if call and not call.ended and update.chat_id == call.user_id:
         for frame in update.frames:
-            call.ears.hear(frame.frame)
+            call.hear(frame.frame)
     elif group and not group.ended and update.chat_id == group.user_id:
         for frame in update.frames:
             group.hear(frame.ssrc, frame.frame)
