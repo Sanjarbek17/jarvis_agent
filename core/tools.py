@@ -37,6 +37,7 @@ class Hooks:
     mac_late: Callable[..., Awaitable[None]]   # result after MAC_WAIT
     guard: object = None                       # core/guard.py's Guard
     expenses: Callable[[], Awaitable[str]] = None   # the Flatmates expense topic, read with Jarvis's own Telegram
+    post_expenses: Callable[[], Awaitable[str]] = None   # ...and posted there
     runner: "Runner"                                                    # core.runner.Runner
 
 
@@ -525,12 +526,23 @@ def make_server(source: str) -> MCPServer:
     @server.tool()
     async def flatmates_expenses() -> str:
         """Who spent how much: reads the expense topic of the Flatmates group as it is now and adds it up per person,
-        with each person's lines and the ones it couldn't count. For Sanjar only; never post it in the group."""
+        with each person's lines and the ones it couldn't count. This is for Sanjar; it posts nothing."""
         try:
             return await hooks.expenses()
         except Exception as e:
             log.exception("expenses failed")
             return f"Couldn't read the expense topic: {e}"
+
+    @server.tool()
+    async def flatmates_post_expenses() -> str:
+        """Post the expense report in the Flatmates group's expense topic: a short summary split between the five, who
+        pays and who gets, with all the data as a file. ONLY when Sanjar himself asks for it to go to the group: everyone
+        there sees it and it's about their money. Returns what was posted."""
+        try:
+            return await hooks.post_expenses()
+        except Exception as e:
+            log.exception("posting expenses failed")
+            return f"Couldn't post the expense report: {e}"
 
     @server.tool()
     async def mac_progress() -> str:

@@ -141,10 +141,11 @@ only make an empty deck): `google_create_slides` (title slide plus one slide per
 picture), `google_add_slide`, `google_create_doc` (headings and text).
 
 Flatmates expenses (ticket d59ccf5e, `core/expenses.py`): the `flatmates_expenses` tool reads the group's expense topic
-with Jarvis's own Telegram and adds it up per person for Sanjar only, nothing goes in the group. A short number means
+with Jarvis's own Telegram and adds it up per person for Sanjar. A short number means
 thousands ("10 tok" is 10,000) and several numbers on a line all count ("14, 10"); a line with no number is listed to
 check. Check photos and PDFs are read by a small model once per message (`var/state/expense_checks.json`), and a check for
-money the same person wrote down within a day counts once (ticket 4eb67dbf).
+money the same person wrote down within a day counts once (ticket 4eb67dbf). When he asks, `flatmates_post_expenses` posts it in that
+topic: a short summary split between the five, who pays and who gets, and a text file with every line (ticket 32abbb65).
 
 Reading files: Jarvis can look things up itself (read-only: Read, Glob, Grep) anywhere under
 `~/dev`, e.g. "what port does the taxi backend use", and Sanjar's global skills in `~/.claude/skills`

@@ -21,6 +21,7 @@
   go to its "new flat options" topic and any member's apartment question gets an answer, named or not.
   Booked viewings are posted there too, and when a time needs choosing the group is asked; the time
   it agrees goes to the owner. Other talk there gets silence, and it never reveals secrets or other projects.
+  When Sanjar asks, the expense report also goes to its expense topic: a short summary, who pays and who gets, and a file.
 
 ## Find ids, tokens and configs yourself before asking (Sanjar, 2026-11-04)
 - Before any NEEDS ME question about an id, token, key, account or config (his Telegram id, a bot
