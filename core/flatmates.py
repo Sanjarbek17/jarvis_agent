@@ -33,6 +33,7 @@ log = logging.getLogger("jarvis.flatmates")
 QUEUE = VAR / "flatmates_out"
 PROOFS = VAR / "flatmates_proofs"     # members asking for proof: the search, which has the owner chats, draws the picture
 DELETES = VAR / "flatmates_deletes"   # its own messages to take back
+PINS = VAR / "flatmates_pins"         # owners' locations, sent as real map pins under each flat's post (ticket c3339264)
 QUIET = 10               # seconds without a new message: people send several in a row, and the next may answer the last
 BOT_TALK = re.compile(r"\bflat \d|\b\d-(uy|xonadon)\b|the list\b|ro.?yxat|\bnoted\b|\bgot it\b|i only help|as an ai|my rules|"
                       r"sanjar\b.{0,40}(so.?ra|ask|handle|decide|hal qil)|i.ll (ask|check|send|find out|let you know)|so.?rayman|so.?rab (ko.?raman|beraman)|"
@@ -114,6 +115,30 @@ def drop(text: str, photos=(), viewing: bool = False, key: str = "", link: str =
     tmp.write_text(json.dumps({"text": text, "photos": [str(p) for p in photos], "viewing": viewing, "key": key, "link": link,
                                 "first": first, "reply_to": reply_to}, ensure_ascii=False))
     tmp.rename(QUEUE / f"{name}.json")               # appears complete, never half-written
+
+
+def drop_pin(lat: float, long: float, key: str, link: str, head: str) -> None:
+    """For the apartment search: an owner's location, to go under that flat's post."""
+    PINS.mkdir(parents=True, exist_ok=True)
+    name = f"{time.time():.6f}-{uuid.uuid4().hex[:6]}"
+    tmp = PINS / f"{name}.tmp"
+    tmp.write_text(json.dumps({"lat": lat, "long": long, "key": key, "link": link, "head": head}, ensure_ascii=False))
+    tmp.rename(PINS / f"{name}.json")
+
+
+async def apply_pins(tg) -> None:
+    """Under the flat's post. If that post can't be found, the flat's name goes first so the pin still says what it is."""
+    from telethon.tl.types import InputGeoPoint, InputMediaGeoPoint
+    for f in sorted(PINS.glob("*.json")) if PINS.exists() else ():
+        note = json.loads(f.read_text())
+        where = await find_post(tg, note["key"], note["link"])
+        if not where:
+            where = await topic_id(tg)
+            await tg.send_message(FLATMATES_GROUP_ID, f"📍 {note['head']}", reply_to=where, link_preview=False)
+        sent = await tg.send_file(FLATMATES_GROUP_ID, InputMediaGeoPoint(InputGeoPoint(note["lat"], note["long"])), reply_to=where)
+        remember("Jarvis", f"📍 The owner's location on the map: {note['head']}", sent.id)
+        f.unlink(missing_ok=True)
+        log.info("posted a location pin in Flatmates: %s", note["head"][:80])
 
 
 def drop_edit(message_id: int, text: str) -> None:
@@ -361,6 +386,12 @@ async def run(tg, owner_id: int) -> None:
                     except Exception:
                         log.exception("couldn't tell Sanjar")
                 break
+        if not any(QUEUE.glob("*.json")):      # a flat's post goes first, so its pin can go under it
+            try:
+                await apply_pins(tg)
+            except Exception as e:             # kept, and tried again
+                log.warning("can't post a pin in Flatmates: %r", e)
+                wait = RETRY_AFTER
         await asyncio.sleep(wait)
 
 
