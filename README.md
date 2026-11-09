@@ -42,7 +42,7 @@ at login, restarts if it crashes, and keeps the Mac awake with `caffeinate`.
 
 Saying "stop it" about a running ticket is enough: Jarvis stops that worker itself (`stop_worker`, same as
 `/stop`); a stopped ticket goes off the queue (⏹), not Failed. Dropping a running ticket stops it first.
-Telegram: plain text or a voice message = talk to Jarvis, `/status [project]`, `/stop <project|mac>`, `/call`, `/transcript`, `/clear`, `/guard [off|status|test]`, `/2fa <password>` (only while `scripts/qr_login.py` waits for it; the message is deleted at once).
+Telegram: plain text or a voice message = talk to Jarvis, `/status [project]`, `/stop <project|mac>`, `/call`, `/transcript`, `/clear`, `/logoutall` (ends every app and website login, so also Mac control), `/guard [off|status|test]`, `/2fa <password>` (only while `scripts/qr_login.py` waits for it; the message is deleted at once).
 `/joblogin` logs in the Upwork job worker's own Telegram account (+7 906, `~/dev/upwork_job`): a QR in the
 hunter bot chat to scan with the phone; `/joblogin code` + `/jobcode 1-2-3-4-5` for the code route. It runs as
 the worker's own process on its own session, so Jarvis keeps answering.

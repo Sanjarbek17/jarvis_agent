@@ -6,7 +6,8 @@
     mac.py move X Y
     mac.py drag X1 Y1 X2 Y2
     mac.py scroll DY [X Y]          DY > 0 scrolls up, < 0 down (lines)
-    mac.py type "any text"          types it (any language, emoji too)
+    mac.py type "any text"          types it (any language, emoji too); "-" reads the text from stdin
+    mac.py size                     the main display in points: "1280 800"
     mac.py key cmd+shift+t          one key or a combo: cmd ctrl alt shift + a key name
 
 Coordinates are screen points, top-left = 0,0, the same as the pixels of `shot`.
@@ -126,6 +127,10 @@ def main(args: list[str]) -> None:
         sys.exit(__doc__)
     cmd, rest = args[0], args[1:]
     nums = [float(a) for a in rest if not a.startswith("--")] if cmd in ("click", "move", "drag", "scroll") else []
+    if cmd == "size":
+        bounds = Q.CGDisplayBounds(Q.CGMainDisplayID())
+        print(int(bounds.size.width), int(bounds.size.height))
+        return
     if cmd != "check" and cmd != "shot" and not AS.AXIsProcessTrusted():
         sys.exit("Accessibility is not allowed for Jarvis, so it can't use the mouse or keyboard. "
                  "Run `mac.py check` and tell Sanjar.")
@@ -142,7 +147,7 @@ def main(args: list[str]) -> None:
     elif cmd == "scroll":
         scroll(int(nums[0]), *nums[1:3])
     elif cmd == "type":
-        type_text(" ".join(rest))
+        type_text(sys.stdin.read() if rest == ["-"] else " ".join(rest))
     elif cmd == "key":
         key(rest[0])
     else:

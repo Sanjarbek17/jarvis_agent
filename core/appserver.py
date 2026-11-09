@@ -34,6 +34,9 @@ WebSocket. Two kinds (ticket 31ed52a7):
     GET  /api/tickets/{ref}                  {ticket, text, log: [{at, line}], notion_url?}
     POST /api/tickets/{ref} {action, ...}    queue / unqueue / done / drop / edit {title?, text?, status?,
                                              sprint?} (edit: boards on the Mac only); {ticket}
+    GET  /api/mac/screen?w=1280              the Mac's screen as JPEG; X-Mac-Width/X-Mac-Height: its size in points
+    POST /api/mac/input {action, ...}        click {x,y,right?,double?} / move {x,y} / drag {x1,y1,x2,y2} / scroll {dy,x?,y?}
+                                             / type {text} / key {key: "cmd+tab"} / wake. Both: login session only (ticket 436ccc83)
     GET  /api/workers                        {count, workers: [{project, ref, title, url, started, step,
                                              active}], waiting}: the ticket workers running right now
     WS   /api/call?token=&chat=              a live call: phone sends 48 kHz mono s16 PCM, gets
@@ -70,11 +73,11 @@ from typing import Awaitable, Callable
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse
+from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from . import board, localboard
+from . import board, localboard, macremote
 from .brain import Brain, is_silent
 from .config import PROJECTS, STATE, reload_projects
 from .voice import transcribe_audio
@@ -173,6 +176,21 @@ def _authorized(req) -> bool:
         return True
     want = token()
     return bool(want) and not public(req) and secrets.compare_digest(got, want)
+
+
+def end_all_sessions() -> int:
+    """Telegram /logoutall: every app and website login ends, so nobody can control the Mac until a new
+    code is asked for. Returns how many there were."""
+    sessions = load_sessions()
+    _save_sessions({})
+    return len(sessions)
+
+
+def _session_of(req) -> dict | None:
+    """The login session of this request. Only sessions may control the Mac: the APK's built-in token,
+    which anyone with the APK file has, never can (not even on the home Wi-Fi)."""
+    got = _bearer(req)
+    return load_sessions().get(_hash(got)) if got else None
 
 
 def _deny():
@@ -764,6 +782,60 @@ async def notifications(req: Request):
     return JSONResponse({"chat": UPDATES, "title": "Updates from Jarvis", "items": updates_since(after)})
 
 
+MAC_QUIET = 15 * 60                    # control after this long without any starts a new "session": a new alert
+_mac_used = 0.0
+
+
+async def _mac_session(req: Request) -> dict | None:
+    """Tell Sanjar when someone starts controlling the Mac, so he'd notice if it weren't him."""
+    global _mac_used
+    hit = _session_of(req)
+    if hit is None:
+        return None
+    if time.monotonic() - _mac_used > MAC_QUIET or not _mac_used:
+        where = "over the internet" if public(req) else "on the home network"
+        log.warning("Mac remote control started by %s from %s", hit.get("device"), _client(req))
+        await _to_telegram(f"🖥 The Mac is being controlled from {hit.get('device', 'a device')}, {where} ({_client(req)}). "
+                           "If that isn't you, send /logoutall here: it ends every app and website login.")
+    _mac_used = time.monotonic()
+    return hit
+
+
+def _mac_denied(req):
+    return _deny() if not _authorized(req) else JSONResponse(
+        {"error": "Log in with a Telegram code to control the Mac."}, status_code=403)
+
+
+async def mac_screen(req: Request):
+    if not await _mac_session(req):
+        return _mac_denied(req)
+    try:
+        width = int(req.query_params.get("w") or 1280)
+    except ValueError:
+        width = 1280
+    try:
+        frame, w, h = await macremote.screen(width)
+    except Exception as e:
+        return JSONResponse({"error": str(e)[:300]}, status_code=503)
+    return Response(frame, media_type="image/jpeg", headers={
+        "Cache-Control": "no-store", "X-Mac-Width": str(w), "X-Mac-Height": str(h)})
+
+
+async def mac_input(req: Request):
+    if not await _mac_session(req):
+        return _mac_denied(req)
+    body = await _json(req)
+    if body.get("action") == "wake":
+        await macremote.wake()
+        return JSONResponse({"ok": True})
+    try:
+        err = await macremote.do_input(body)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    log.info("Mac remote: %s from %s", body.get("action"), _client(req))     # never the typed text
+    return JSONResponse({"error": err}, status_code=500) if err else JSONResponse({"ok": True})
+
+
 async def workers(req: Request):
     if not _authorized(req):
         return _deny()
@@ -873,6 +945,8 @@ app = Starlette(routes=[
     Route("/api/board", board_view, methods=["GET", "POST"]),
     Route("/api/tickets/{ref}", ticket_view, methods=["GET", "POST"]),
     Route("/api/workers", workers),
+    Route("/api/mac/screen", mac_screen),
+    Route("/api/mac/input", mac_input, methods=["POST"]),
     WebSocketRoute("/api/call", call),
     Route("/{name:path}", website),
 ])
