@@ -273,9 +273,13 @@ function renderSide() {
         h("span", { class: "dot" }),
         h("span", { class: "grow" }, h("div", { class: "name", text: "Workers" }),
           h("div", { class: "about", text: count ? `${count} running` : "Nobody is working" }))),
+      h("a", { class: `row ${here === "#/mac" ? "on" : ""}`, href: "#/mac" },
+        avatar("Mac"),
+        h("span", { class: "grow" }, h("div", { class: "name", text: "Mac" }),
+          h("div", { class: "about", text: "See and control its screen" }))),
       h("div", { class: "section", text: "Projects" }),
       ...projects.map(p => h("a", {
-        class: `row ${p.name === activeProject() && !here.startsWith("#/workers") && here !== updates ? "on" : ""}`,
+        class: `row ${p.name === activeProject() && !here.startsWith("#/workers") && here !== "#/mac" && here !== updates ? "on" : ""}`,
         href: projectLink(p.name),
       }, avatar(p.name), h("span", { class: "grow" }, h("div", { class: "name", text: p.name }),
         h("div", { class: "about", text: p.about }))))),
@@ -294,6 +298,7 @@ function parseRoute() {
     if (kind === "p" && one) return { view: "chats", project: one };
     if (kind === "c" && one && two) return { view: "main", project: one, chat: two };
     if (kind === "workers") return { view: "main", workers: true };
+    if (kind === "mac") return { view: "main", mac: true };
     if (kind === "b" && one) return { view: "main", project: one, board: true };
     if (kind === "t" && one && two) return { view: "main", project: one, ticket: two };
   } catch { /* a broken link: go home */ }
@@ -309,7 +314,8 @@ function route() {
   shell.dataset.view = where.view;
   renderSide();
   renderChats(where.project || GENERAL);
-  if (where.workers) showWorkers();
+  if (where.mac) showMac();
+  else if (where.workers) showWorkers();
   else if (where.board) showBoard(where.project);
   else if (where.ticket) showTicket(where.project, where.ticket);
   else if (where.chat) showChat(where.project, where.chat);
@@ -1098,6 +1104,112 @@ function drawTicket(data, editing = false) {
       ...data.log.map(l => h("div", { class: l.line.startsWith("• ") ? "muted small" : "", text: l.line }))) : null,
     data.notion_url || !local ? h("a", { class: "small", href: data.notion_url || t.url, target: "_blank", rel: "noopener noreferrer", text: "Open the original page" }) : null,
   ].filter(Boolean));
+}
+
+// --- the Mac, remotely (ticket 436ccc83) -----------------------------------------------------
+
+const MAC_KEYS = [["Return", "return"], ["Esc", "esc"], ["Tab", "tab"], ["⌫", "delete"], ["Space", "space"],
+  ["⌘Tab", "cmd+tab"], ["←", "left"], ["→", "right"], ["↑", "up"], ["↓", "down"]];
+
+function macInput(json) {
+  api("/api/mac/input", { method: "POST", json }).then(() => macNudge?.(), e => { if (e.status !== 401) toast(e.message); });
+}
+
+let macNudge = null;       // wakes the frame loop right after an action, so its result shows at once
+
+function showMac() {
+  open = null;
+  const status = h("div", { class: "sub", id: "mac-sub", text: "Connecting…" });
+  const pic = h("img", { class: "mac-screen", alt: "The Mac's screen", draggable: "false" });
+  let size = null;           // the screen in points
+  let right = false;
+  const rightBtn = h("button", { class: "btn small", text: "Right-click: off", "aria-pressed": "false", onclick: () => {
+    right = !right;
+    rightBtn.textContent = `Right-click: ${right ? "on" : "off"}`;
+    rightBtn.setAttribute("aria-pressed", String(right));
+    rightBtn.classList.toggle("primary", right);
+  } });
+  const point = e => {
+    const box = pic.getBoundingClientRect();
+    return { x: Math.round((e.clientX - box.left) / box.width * size.w), y: Math.round((e.clientY - box.top) / box.height * size.h) };
+  };
+  let pending = null;        // a click waits a moment: a second one makes it a double-click
+  pic.addEventListener("click", e => {
+    if (!size) return;
+    const at = point(e);
+    if (right) return macInput({ action: "click", ...at, right: true });
+    if (pending) {
+      clearTimeout(pending);
+      pending = null;
+      return macInput({ action: "click", ...at, double: true });
+    }
+    pending = setTimeout(() => { pending = null; macInput({ action: "click", ...at }); }, 260);
+  });
+  pic.addEventListener("contextmenu", e => {
+    e.preventDefault();
+    if (size) macInput({ action: "click", ...point(e), right: true });
+  });
+  let wheel = 0;
+  let wheelTimer = null;
+  pic.addEventListener("wheel", e => {
+    e.preventDefault();
+    if (!size) return;
+    wheel += e.deltaY;
+    const at = point(e);
+    wheelTimer ??= setTimeout(() => {
+      wheelTimer = null;
+      const dy = Math.round(-wheel / 40);
+      wheel = 0;
+      if (dy) macInput({ action: "scroll", dy: Math.max(-100, Math.min(100, dy)), ...at });
+    }, 120);
+  }, { passive: false });
+  const words = h("input", { class: "field", placeholder: "Type on the Mac", "aria-label": "Text to type on the Mac", maxlength: "5000" });
+  const typeIt = () => {
+    if (!words.value) return;
+    macInput({ action: "type", text: words.value });
+    words.value = "";
+  };
+  words.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); typeIt(); } });
+  const scrollBy = dy => macInput({ action: "scroll", dy });
+  document.getElementById("main").replaceChildren(
+    h("header", { class: "top" },
+      h("button", { class: "back", "aria-label": "Back", text: "‹", onclick: () => { location.hash = "#/"; } }),
+      h("div", { class: "grow" }, h("h2", { text: "Mac" }), status),
+      h("button", { class: "btn small", text: "Wake screen", onclick: () => macInput({ action: "wake" }) })),
+    h("div", { class: "mac-view", id: "mac-view" }, pic),
+    h("div", { class: "mac-bar" },
+      h("div", { class: "mac-type" }, words, h("button", { class: "btn primary small", text: "Type", onclick: typeIt })),
+      h("div", { class: "mac-keys" }, rightBtn,
+        h("button", { class: "btn small", text: "Scroll up", onclick: () => scrollBy(8) }),
+        h("button", { class: "btn small", text: "Scroll down", onclick: () => scrollBy(-8) }),
+        ...MAC_KEYS.map(([label, key]) => h("button", { class: "btn small", text: label, onclick: () => macInput({ action: "key", key }) })))));
+  macLoop(pic, status, s => { size = s; });
+}
+
+/** Frames while this page is showing and the tab is visible; a frame is only asked for after the last arrived. */
+async function macLoop(pic, status, gotSize) {
+  let shown = null;
+  while (pic.isConnected && session) {
+    if (document.hidden) { await new Promise(r => setTimeout(r, 1000)); continue; }
+    try {
+      const res = await request(`/api/mac/screen?w=${Math.min(1600, Math.max(800, pic.clientWidth * (window.devicePixelRatio || 1)))|0}`);
+      if (!res.ok) throw new ApiError((await res.json().catch(() => null))?.error || `Jarvis said ${res.status}.`, res.status);
+      const url = URL.createObjectURL(await res.blob());
+      gotSize({ w: Number(res.headers.get("X-Mac-Width")), h: Number(res.headers.get("X-Mac-Height")) });
+      pic.src = url;
+      if (shown) URL.revokeObjectURL(shown);
+      shown = url;
+      status.textContent = "Live. Click to click, scroll to scroll.";
+    } catch (e) {
+      status.textContent = e.message;
+      if (e.status === 401) break;
+    }
+    await new Promise(r => {
+      const timer = setTimeout(r, 900);
+      macNudge = () => { clearTimeout(timer); setTimeout(r, 250); };
+    });
+  }
+  if (shown) URL.revokeObjectURL(shown);
 }
 
 function showWorkers() {
