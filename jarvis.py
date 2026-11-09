@@ -904,6 +904,9 @@ async def on_message(event):
     elif text.startswith("/guard") or text.startswith("/unguard"):
         arg = "off" if text.startswith("/unguard") else text.removeprefix("/guard").strip().lower()
         await event.reply(await guard_command(arg))
+    elif text.startswith("/logoutall"):
+        count = appserver.end_all_sessions()         # kill switch for app, website and Mac control (ticket 436ccc83)
+        await event.reply(f"Done, sir: {count} login{'s' * (count != 1)} ended. The app and website need a new code from here.")
     elif text.startswith("/transcript"):
         files = sorted(CALLS.glob("*.txt")) if CALLS.exists() else []
         await event.reply(f"📞 {files[-1].stem}\n\n" + files[-1].read_text()[-3800:] if files else "No calls yet.")
