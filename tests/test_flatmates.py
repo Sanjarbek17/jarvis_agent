@@ -581,3 +581,60 @@ def test_where_the_photos_came_from_is_in_the_data(monkeypatch):
     seen = answered(monkeypatch, {"reply": "x"})
     asyncio.run(f.answer("Ikrom", "where did you get these?", "📷 More photos: SamGASI", True))
     assert "The photos: the owner sent them after we wrote to them." in seen["prompt"] and "Where did you get these?" in seen["prompt"]
+
+
+# --- owners' location pins (ticket c3339264) --------------------------------------------------------------
+
+class PinTg:
+    def __init__(self, fail=False):
+        self.files, self.texts, self.fail = [], [], fail
+
+    async def send_file(self, to, media, reply_to=None):
+        if self.fail:
+            raise RuntimeError("no network")
+        self.files.append((to, media, reply_to))
+        return NS(id=700)
+
+    async def send_message(self, to, text, reply_to=None, **kw):
+        self.texts.append((text, reply_to))
+        return NS(id=701)
+
+
+def pins_setup(tmp_path, monkeypatch, post):
+    monkeypatch.setattr(f, "PINS", tmp_path / "pins")
+    monkeypatch.setattr(f, "CHAT", tmp_path / "chat.jsonl")
+
+    async def find(tg, key, link):
+        return post
+
+    async def topic(tg, viewing=False):
+        return 42
+
+    monkeypatch.setattr(f, "find_post", find)
+    monkeypatch.setattr(f, "topic_id", topic)
+    f.drop_pin(39.64, 66.95, "@o", "https://t.me/g/1", "2 rooms, Qorasuv")
+
+
+def test_a_pin_goes_under_the_flats_post_as_a_real_map_pin(tmp_path, monkeypatch):
+    pins_setup(tmp_path, monkeypatch, 263)
+    tg = PinTg()
+    asyncio.run(f.apply_pins(tg))
+    to, media, reply = tg.files[0]
+    assert to == f.FLATMATES_GROUP_ID and reply == 263 and tg.texts == []
+    assert type(media).__name__ == "InputMediaGeoPoint" and (media.geo_point.lat, media.geo_point.long) == (39.64, 66.95)
+    assert not list(f.PINS.glob("*.json"))
+    assert "location" in f.history()[-1] and "Qorasuv" in f.history()[-1]
+
+
+def test_with_no_post_found_the_flats_name_goes_first(tmp_path, monkeypatch):
+    pins_setup(tmp_path, monkeypatch, 0)
+    tg = PinTg()
+    asyncio.run(f.apply_pins(tg))
+    assert tg.texts == [("📍 2 rooms, Qorasuv", 42)] and tg.files[0][2] == 42
+
+
+def test_a_pin_that_cant_be_sent_is_kept_for_next_time(tmp_path, monkeypatch):
+    pins_setup(tmp_path, monkeypatch, 263)
+    with pytest.raises(RuntimeError):
+        asyncio.run(f.apply_pins(PinTg(fail=True)))
+    assert len(list(f.PINS.glob("*.json"))) == 1
