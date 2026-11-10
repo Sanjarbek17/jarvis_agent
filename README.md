@@ -74,7 +74,9 @@ he files tickets for one project moves under that project (`follow_ticket`); one
 Answers go back where Sanjar asked (ticket 799dda33, `core/origin.py`): each app chat's brain sends
 `X-Jarvis-Origin: app:<chat id>` on its tool calls; add_task / queue_ticket / answer_task remember it per ticket
 (`var/state/ticket_origin.json`, note "added from the app"), and that ticket's result is written into the same
-app chat (plus the app's notification feed) instead of Telegram.
+app chat (plus the app's notification feed) instead of Telegram. That exact chat, not just any chat of the project
+(ticket 484828da): a call without an app chat (Jarvis answering or re-queueing the ticket itself, the self-check)
+never clears the recorded chat; only asking again from another app chat moves it there.
 Images in the app (ticket 546d965e): screenshots from mac_task / screenshot asked in an app chat are shown in that
 chat (not Telegram); ticket and Mac results carry their screenshots into the app too (the Updates chat gets them even
 when the answer went to Telegram). Images are kept shrunk to 1280 px JPEG in `var/state/app_images/` and served at

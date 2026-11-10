@@ -20,8 +20,12 @@ def test_origin_parse_and_store():
     assert origin.parse("") == {} and origin.parse("app:") == {} and origin.parse("telegram") == {}
     origin.set("t1", {"channel": "app", "chat": "abc"})
     assert origin.get("t1")["chat"] == "abc"
-    origin.set("t1", {})                       # asked again from Telegram: back to Telegram
-    assert origin.get("t1") == {}
+    origin.set("t1", {})                       # no header (Jarvis's own answer_task / queue): keeps the app chat
+    assert origin.get("t1")["chat"] == "abc"
+    origin.set("t1", {"channel": "app", "chat": "def"})   # asked again in another app chat: that one
+    assert origin.get("t1")["chat"] == "def"
+    origin.set("t2", {})                       # asked on Telegram: no record, Telegram as before
+    assert origin.get("t2") == {}
     assert origin.label({"channel": "app", "chat": "x"}, "Telegram") == "the app"
     assert origin.label({}, "Telegram") == "Telegram"
 
