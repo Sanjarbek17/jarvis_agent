@@ -77,6 +77,10 @@ Answers go back where Sanjar asked (ticket 799dda33, `core/origin.py`): each app
 app chat (plus the app's notification feed) instead of Telegram. That exact chat, not just any chat of the project
 (ticket 484828da): a call without an app chat (Jarvis answering or re-queueing the ticket itself, the self-check)
 never clears the recorded chat; only asking again from another app chat moves it there.
+His own passwords (ticket 5ad3f371): when Sanjar himself asks for the login of one of his own accounts, Jarvis may
+give it in his Telegram DM or an app/website chat opened with a login code (`[signed in]` on each message); never
+on calls, to the APK's built-in key (`[not signed in]`, and the reply is scrubbed in code too), or to anyone else.
+Chat files never keep it: every saved app message goes through `memory.scrub` (the .env values are re-read every 10 min).
 Images in the app (ticket 546d965e): screenshots from mac_task / screenshot asked in an app chat are shown in that
 chat (not Telegram); ticket and Mac results carry their screenshots into the app too (the Updates chat gets them even
 when the answer went to Telegram). Images are kept shrunk to 1280 px JPEG in `var/state/app_images/` and served at

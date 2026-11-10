@@ -128,9 +128,14 @@ PASSWORD_SAID = re.compile(r"(?i)\b(2fa|2-fa|password|passcode|parol|парол�
                            r"(?=\S*\d)(?=\S*[a-zA-Z])\S{4,}")
 
 
-@functools.cache
 def _secret_values() -> tuple[str, ...]:
-    """Secret values from this project's .env and the ones under ~/dev (keys like *KEY*, *PASS*)."""
+    """Secret values from this project's .env and the ones under ~/dev (keys like *KEY*, *PASS*), read again
+    every 10 min so accounts made after Jarvis started (e.g. a new Instagram password) are hidden too."""
+    return _read_secret_values(int(time.time() // 600))
+
+
+@functools.lru_cache(maxsize=1)
+def _read_secret_values(_bucket: int) -> tuple[str, ...]:
     found = set()
     for env in [HERE / ".env", *DEV.glob("*/.env"), *DEV.glob("*/*/.env"), *DEV.glob("*/*/*/.env")]:
         try:
