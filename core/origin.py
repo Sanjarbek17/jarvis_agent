@@ -38,12 +38,16 @@ def from_ctx(ctx) -> dict:
 
 
 def set(ref: str, o: dict) -> None:
-    """Remember where this ticket was asked from; a later ask from Telegram clears an app origin."""
+    """Remember where this ticket was asked from. A call with no app chat never clears a recorded one
+    (ticket 484828da): Jarvis answering or re-queueing the ticket itself (the self-check, the brain reading
+    a worker's report) comes in with no header, the same as Telegram, and wiped the chat, so the result
+    went to the project's latest chat instead of the one he asked in. Asked again from another app chat:
+    that chat from then on."""
     data = {k: v for k, v in _load().items() if time.time() - v.get("at", 0) < KEEP}
     if o:
         data[ref] = {**o, "at": time.time()}
-    else:
-        data.pop(ref, None)
+    elif ref in data:
+        return                                       # keep the app chat he asked in
     FILE.parent.mkdir(parents=True, exist_ok=True)
     FILE.write_text(json.dumps(data))
 

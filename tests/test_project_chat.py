@@ -75,7 +75,7 @@ def _jarvis(names, **g):
     return g
 
 
-def run_notify(monkeypatch, asked: str):
+def run_notify(monkeypatch, asked: str, record: bool = True):
     telegram, app = [], []
 
     async def send(tg, to, text, **kw):
@@ -91,7 +91,8 @@ def run_notify(monkeypatch, asked: str):
                 appserver=appserver, origin=origin, call=None, runner=NS(from_sanjar=lambda r: False),
                 tgfmt=NS(send=send, md=lambda t: t), app_push=lambda t, c="", ph=(): app.append(c),
                 send_photos=no_photos, log=logging.getLogger(), asyncio=asyncio, Path=__import__("pathlib").Path, Ticket=object)
-    origin.set("cl-1", {"channel": "app", "chat": asked} if asked else {})
+    if record:
+        origin.set("cl-1", {"channel": "app", "chat": asked} if asked else {})
 
     async def go():
         await g["notify"](NS(ref="cl-1", title="Fix lessons", project="Code Learning"), "done", "ok", [])
@@ -121,3 +122,27 @@ def test_asked_in_the_projects_own_chat_stays_there(chats, monkeypatch):
     appserver.new_chat("Code Learning", "newest")
     telegram, app = run_notify(monkeypatch, asked["id"])
     assert app == [asked["id"]] and telegram == []
+
+
+def test_jarvis_answering_the_ticket_itself_keeps_the_asking_chat(chats, monkeypatch):
+    """Ticket 484828da (aet-54): asked in one AI English Teacher chat, Jarvis answered its question itself
+    (answer_task with no app header), and the result went to the project's other, newer chat."""
+    asked = appserver.new_chat("Code Learning", "where he asked")
+    origin.set("cl-1", {"channel": "app", "chat": asked["id"]})
+    newer = appserver.new_chat("Code Learning", "another chat, used later")
+    card = NS(ref="cl-1", title="Fix lessons", project="Code Learning", page_id="p1")
+
+    async def find(ref):
+        return card
+
+    async def nothing(*a, **kw):
+        pass
+
+    monkeypatch.setattr(tools.board, "find", find)
+    monkeypatch.setattr(tools.board, "append_log", nothing)
+    monkeypatch.setattr(tools.board, "update", nothing)
+    for source in ("Telegram", "Selfcheck"):                    # the brain's own calls carry no app chat
+        asyncio.run(tools.make_server(source).call_tool("answer_task", {"ticket_ref": "cl-1", "answer": "yes"}))
+        assert origin.get("cl-1")["chat"] == asked["id"]
+    telegram, app = run_notify(monkeypatch, "", record=False)
+    assert app == [asked["id"]] and newer["id"] not in app and telegram == []
