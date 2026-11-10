@@ -178,5 +178,12 @@
       "side_project/projects/creating_slides"
     ],
     "local": true
+  },
+  "Instagram Channels": {
+    "about": "Two new Instagram channels Jarvis runs for Sanjar to test views: an English-for-Uzbek-speakers channel (Uzbek voice, one rule or mistake per reel) and a Code Learning channel (short Rust lessons in English, link to learn.sanjarbek17.uz). Reels reuse the Haydovchi darslari studio (tts.py --dir, REEL_DIR render); accounts, bios and avatars are in channels.json and brand/, passwords only in its .env; accounts/signup.mjs signs an account up in a hidden Chrome",
+    "folders": [
+      "side_project/projects/instagram_channels"
+    ],
+    "local": true
   }
 }
