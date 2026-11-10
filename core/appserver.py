@@ -365,6 +365,17 @@ def finish_moves() -> None:
                 push(f"Moved this chat to {name}.", chat["id"])
 
 
+SIGNED_IN = "[signed in: this is Sanjar on his own login]"
+NOT_SIGNED_IN = "[not signed in: the app's built-in key, which anyone with the APK has: never give passwords here]"
+
+
+def _kept(text: str) -> str:
+    """What's saved in a chat file: passwords and keys hidden (ticket 5ad3f371). Anyone with the APK's built-in
+    key can read chat history, so a password Jarvis gives Sanjar is only in that one reply, never in the file."""
+    from .memory import scrub
+    return scrub(text or "")
+
+
 def context_line(project: str) -> str:
     if project == GENERAL:
         return "[Jarvis app or website · general chat]"
@@ -395,7 +406,7 @@ def telegram_said(role: str, text: str) -> None:
     if not text:
         return
     chat = _updates_chat()
-    chat["messages"] = (chat["messages"] + [{"role": role, "text": text[:4000], "ts": time.time()}])[-KEEP_UPDATES:]
+    chat["messages"] = (chat["messages"] + [{"role": role, "text": _kept(text)[:4000], "ts": time.time()}])[-KEEP_UPDATES:]
     chat["updated"] = chat["messages"][-1]["ts"]
     save_chat(chat)
 
@@ -444,14 +455,17 @@ def reply_context(m: dict) -> str:
     return f"[Replying to this earlier message from {who}:\n{(body.strip() or '[no text]')[:3000]}\n]\n\n"
 
 
-async def ask(chat: dict, text: str, voice: bool = False, images: list[str] = (), reply_to=None) -> dict:
+async def ask(chat: dict, text: str, voice: bool = False, images: list[str] = (), reply_to=None,
+              signed_in: bool = False) -> dict:
     """Sanjar says `text` in this chat; returns Jarvis's message (both are saved). images: names of
     photos he attached (from save_upload); the brain gets their paths and looks at them itself.
-    reply_to: the ts of the message he's answering; an unknown one is ignored (the message still goes)."""
+    reply_to: the ts of the message he's answering; an unknown one is ignored (the message still goes).
+    signed_in: asked with a login session (a code sent to his Telegram), not the APK's built-in key: only then
+    may the reply hold one of his own passwords (ticket 5ad3f371); the saved copy never does."""
     earlier = _unseen_pushes(chat)
     chat["seen_pushes"] = time.time()
     answered = find_message(chat, reply_to) if reply_to is not None else None
-    chat["messages"].append({"role": "me", "text": text, "ts": time.time(), **({"voice": True} if voice else {}),
+    chat["messages"].append({"role": "me", "text": _kept(text), "ts": time.time(), **({"voice": True} if voice else {}),
                              **({"images": list(images)} if images else {}),
                              **({"reply": quote(answered)} if answered else {})})
     if chat["title"] == "New chat":
@@ -469,22 +483,24 @@ async def ask(chat: dict, text: str, voice: bool = False, images: list[str] = ()
     brain = _brain(chat)
     try:
         replying = reply_context(answered) if answered else ""
-        reply = await brain.reply(f"{context_line(chat['project'])}\n{earlier}{replying}{attached}{text}")
+        who = SIGNED_IN if signed_in else NOT_SIGNED_IN
+        reply = await brain.reply(f"{context_line(chat['project'])} {who}\n{earlier}{replying}{attached}{text}")
     except Exception:
         log.exception("app chat %s: brain failed", chat["id"])
         reply = "Sorry, something went wrong on my side. Try again?"
     if is_silent(reply) or not reply.strip():
         reply = "(no reply)"
     chat = load_chat(chat["id"]) or chat               # another request may have added messages meanwhile
-    msg = {"role": "jarvis", "text": reply, "ts": time.time()}
+    shown = reply if signed_in else _kept(reply)     # not signed in: no secret leaves, whatever the brain said
+    msg = {"role": "jarvis", "text": _kept(reply), "ts": time.time()}
     chat["messages"].append(msg)
     chat["session"], chat["updated"] = brain.session_id, time.time()
     save_chat(chat)
     if shared:
-        await _to_telegram(reply)
+        await _to_telegram(shown)
     else:
         _brains[chat["id"]] = (brain, time.monotonic())
-    return {**msg, "chat_project": chat["project"]}    # Jarvis may have moved the chat while answering
+    return {**msg, "text": shown, "chat_project": chat["project"]}    # Jarvis may have moved the chat while answering
 
 
 def save_images(paths) -> list[str]:
@@ -582,7 +598,7 @@ def push(text: str, chat_id: str = "", photos=(), files=()) -> dict | None:
     """Jarvis wrote to Sanjar first: keep a copy for the app (its notifications poll for these).
     chat_id: also put it into that app chat (the one he asked from), where its Claude conversation
     picks it up with his next message. photos: images shown with it (ticket 546d965e). files: from save_file."""
-    text = (text or "").strip()
+    text = _kept((text or "").strip())
     images = save_images(photos)
     if (not text and not images and not files) or (text and is_silent(text)):
         return None
@@ -683,7 +699,8 @@ async def messages(req: Request):
             return JSONResponse({"error": "Those images aren't on the Mac. Attach them again."}, status_code=400)
         if not text and not images:
             return JSONResponse({"error": "empty"}, status_code=400)
-        return JSONResponse(await ask(chat, text, images=images, reply_to=body.get("reply_to")))
+        return JSONResponse(await ask(chat, text, images=images, reply_to=body.get("reply_to"),
+                                      signed_in=_session_of(req) is not None))
     recent = chat["messages"][-200:]
     return JSONResponse(_with_project(recent) if chat["id"] == UPDATES else recent)
 
@@ -726,7 +743,8 @@ async def voice(req: Request):
         return JSONResponse({"heard": "", "reply": {"role": "jarvis", "text": "I couldn't make out that voice message.",
                                                      "ts": time.time()}})
     return JSONResponse({"heard": heard, "reply": await ask(chat, heard, voice=True,
-                                                           reply_to=req.query_params.get("reply_to"))})
+                                                           reply_to=req.query_params.get("reply_to"),
+                                                           signed_in=_session_of(req) is not None)})
 
 
 async def call(ws: WebSocket):
