@@ -365,15 +365,31 @@ def finish_moves() -> None:
                 push(f"Moved this chat to {name}.", chat["id"])
 
 
-SIGNED_IN = "[signed in: this is Sanjar on his own login]"
+SIGNED_IN = ("[signed in: this is Sanjar on his own login. If he asks for the login/password of one of his own "
+             "accounts, give it here plainly: his rule 5ad3f371]")
 NOT_SIGNED_IN = "[not signed in: the app's built-in key, which anyone with the APK has: never give passwords here]"
 
 
 def _kept(text: str) -> str:
-    """What's saved in a chat file: passwords and keys hidden (ticket 5ad3f371). Anyone with the APK's built-in
-    key can read chat history, so a password Jarvis gives Sanjar is only in that one reply, never in the file."""
+    """A message's "text" as saved: passwords and keys hidden (ticket 5ad3f371). Anyone with the APK's built-in
+    key can read chat history, so they only ever get this."""
     from .memory import scrub
     return scrub(text or "")
+
+
+OWN = "own"     # a signed-in reply's full text, kept next to the hidden "text" (ticket 7896b7af)
+
+
+def _for_reader(msgs: list[dict], signed_in: bool) -> list[dict]:
+    """Messages as one reader may see them. After every reply the app and the website reload the chat, so a
+    password that was only in the reply vanished from his screen (ticket 7896b7af): his own login session
+    gets the full text back; the APK's built-in key gets the hidden one. "own" itself never leaves."""
+    out = []
+    for m in msgs:
+        if OWN in m:
+            m = {k: v for k, v in m.items() if k != OWN} | ({"text": m[OWN]} if signed_in else {})
+        out.append(m)
+    return out
 
 
 def context_line(project: str) -> str:
@@ -493,6 +509,8 @@ async def ask(chat: dict, text: str, voice: bool = False, images: list[str] = ()
     chat = load_chat(chat["id"]) or chat               # another request may have added messages meanwhile
     shown = reply if signed_in else _kept(reply)     # not signed in: no secret leaves, whatever the brain said
     msg = {"role": "jarvis", "text": _kept(reply), "ts": time.time()}
+    if signed_in and msg["text"] != reply:
+        msg[OWN] = reply                             # only his signed-in readers get it back (_for_reader)
     chat["messages"].append(msg)
     chat["session"], chat["updated"] = brain.session_id, time.time()
     save_chat(chat)
@@ -500,7 +518,7 @@ async def ask(chat: dict, text: str, voice: bool = False, images: list[str] = ()
         await _to_telegram(shown)
     else:
         _brains[chat["id"]] = (brain, time.monotonic())
-    return {**msg, "text": shown, "chat_project": chat["project"]}    # Jarvis may have moved the chat while answering
+    return {**{k: v for k, v in msg.items() if k != OWN}, "text": shown, "chat_project": chat["project"]}    # Jarvis may have moved the chat while answering
 
 
 def save_images(paths) -> list[str]:
@@ -701,7 +719,7 @@ async def messages(req: Request):
             return JSONResponse({"error": "empty"}, status_code=400)
         return JSONResponse(await ask(chat, text, images=images, reply_to=body.get("reply_to"),
                                       signed_in=_session_of(req) is not None))
-    recent = chat["messages"][-200:]
+    recent = _for_reader(chat["messages"][-200:], _session_of(req) is not None)
     return JSONResponse(_with_project(recent) if chat["id"] == UPDATES else recent)
 
 

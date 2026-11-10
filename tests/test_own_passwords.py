@@ -39,17 +39,21 @@ def _setup(tmp_path, monkeypatch):
     return client, session, asked
 
 
-def test_signed_in_he_gets_it_once_and_the_chat_file_never_keeps_it(tmp_path, monkeypatch):
+def test_signed_in_he_gets_it_and_it_stays_on_his_screen(tmp_path, monkeypatch):
+    """Ticket 7896b7af: the app reloads the chat right after a reply; the password vanished on reload."""
     client, session, asked = _setup(tmp_path, monkeypatch)
     chat = appserver.new_chat("General", "pw")
-    got = client.post(f"/api/chats/{chat['id']}/messages", json={"text": "instagram password?"},
-                      headers={"Authorization": f"Bearer {session}"}).json()
-    assert PW in got["text"]                                          # the one reply he asked for
-    assert appserver.SIGNED_IN in asked[0]                            # the brain knows it's really him
-    saved = (appserver.CHATS / f"{chat['id']}.json").read_text()
-    assert PW not in saved and "[secret]" in saved
+    mine = {"Authorization": f"Bearer {session}"}
+    got = client.post(f"/api/chats/{chat['id']}/messages", json={"text": "instagram password?"}, headers=mine).json()
+    assert PW in got["text"] and appserver.OWN not in got            # the reply he asked for
+    assert appserver.SIGNED_IN in asked[0] and "give it here plainly" in asked[0]
+    reloaded = client.get(f"/api/chats/{chat['id']}/messages", headers=mine).json()
+    assert PW in reloaded[-1]["text"] and all(appserver.OWN not in m for m in reloaded)   # still there after reload
+    saved = appserver.load_chat(chat["id"])["messages"][-1]
+    assert PW not in saved["text"] and "[secret]" in saved["text"]   # the visible field stays hidden
     history = client.get(f"/api/chats/{chat['id']}/messages", headers={"Authorization": "Bearer t0k"}).json()
-    assert all(PW not in m["text"] for m in history)                 # the APK key reads history: hidden
+    assert all(PW not in str(m) for m in history)                     # the APK key reads history: hidden
+    assert PW not in str(appserver.chats_of("General"))               # nor the chat list preview
 
 
 def test_the_apks_built_in_key_never_gets_a_password(tmp_path, monkeypatch):
@@ -71,3 +75,16 @@ def test_pushes_and_the_telegram_copy_are_saved_without_it(tmp_path, monkeypatch
 def test_the_rule_is_in_jarvis_prompt_with_its_limits():
     text = brain.base_prompt()
     assert "HIS OWN account logins" in text and "Never on a call" in text and "[not signed in]" in text
+
+
+def test_not_signed_in_nothing_is_kept_for_later():
+    msgs = [{"role": "jarvis", "text": "password: [secret]", "ts": 1, appserver.OWN: f"password: {PW}"}]
+    assert appserver._for_reader(msgs, False) == [{"role": "jarvis", "text": "password: [secret]", "ts": 1}]
+    assert appserver._for_reader(msgs, True)[0]["text"] == f"password: {PW}"
+
+
+def test_the_prompt_no_longer_contradicts_itself():
+    text = brain.base_prompt()
+    assert "never repeat a password, key or token to anyone." not in text
+    assert "send passwords/keys/tokens anywhere" not in text
+    assert "without hesitating" in text
