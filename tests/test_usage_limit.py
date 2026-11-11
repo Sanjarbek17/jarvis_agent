@@ -24,16 +24,13 @@ def card(ref="aet-25"):
 
 
 class Proc:
-    def __init__(self, events):
-        lines = [json.dumps(e).encode() + b"\n" for e in events] + [b""]
-        self.stdout = NS(readline=lambda: self._next(lines))
-        self.returncode, self.pid = None, 1
-
-    async def _next(self, lines):
-        return lines.pop(0)
+    """A worker that already wrote its whole stream into its log file (stdout) and exited."""
+    def __init__(self, events, out):
+        out.write(b"".join(json.dumps(e).encode() + b"\n" for e in events))
+        self.returncode, self.pid = 0, 1
 
     async def wait(self):
-        self.returncode = 0
+        return self.returncode
 
 
 def run_worker(monkeypatch, tmp_path, events, ref="aet-25"):
@@ -47,7 +44,7 @@ def run_worker(monkeypatch, tmp_path, events, ref="aet-25"):
 
     async def exec_(*cmd, **kw):
         prompts.append(cmd[cmd.index("-p") + 1])
-        return Proc(events)
+        return Proc(events, kw["stdout"])
 
     async def notify(c, kind, text, photos):
         told.append((kind, text))

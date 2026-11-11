@@ -77,7 +77,26 @@ def swap_in_new_login() -> None:
 
 
 swap_in_new_login()
-tg = TelegramClient(str(SESSION), TG_API_ID, TG_API_HASH)
+class _OncePerMinute(logging.Filter):
+    """Telethon logs every failed connect try; while the network is down that's one line every few seconds."""
+    def __init__(self):
+        super().__init__()
+        self.last = 0.0
+
+    def filter(self, record):
+        if "connecting failed" not in record.getMessage():
+            return True
+        if time.monotonic() - self.last < 60:
+            return False
+        self.last = time.monotonic()
+        record.msg, record.args = f"still no connection to Telegram, retrying: {record.getMessage()}", ()
+        return True
+
+
+logging.getLogger("telethon.network.mtprotosender").addFilter(_OncePerMinute())
+# Network drops: keep retrying instead of giving up after 5 tries. Giving up ended main(), launchd restarted
+# Jarvis every ~15 s, and each restart cut off the running workers (2026-11-12 03:53, ticket 2475b845).
+tg = TelegramClient(str(SESSION), TG_API_ID, TG_API_HASH, connection_retries=-1, retry_delay=5, auto_reconnect=True)
 calls = PyTgCalls(tg)
 CHUNK = CALL_RATE // 100 * 2 * 2      # 10 ms of 48 kHz stereo s16 going into the call
 EMOJI = {"done": "✅", "failed": "❌", "needs_me": "❓", "stopped": "⏹", "auto_answered": "🤖"}

@@ -218,6 +218,12 @@ saved in `var/state/runner_status.json` and shown by `get_status`. Fair turns: o
 "Due" date first, then the project whose last worker started longest ago. Heavy commands go through `scripts/heavy.py`:
 one at a time, a second only with 3.5 GB+ available.
 
+Network drops and restarts (ticket 2475b845): Telegram retries forever (Telethon `connection_retries=-1`, failed tries
+logged once a minute) instead of ending Jarvis, so launchd no longer restarts it in a loop; no new worker starts while
+api.anthropic.com is unreachable. Workers run detached (own session) and write straight into `var/logs/<project>-<ref>.jsonl`;
+`var/state/workers.json` lists them, and a restarted Jarvis adopts a still-running (or finished) worker instead of
+re-queueing it. GitHub boards keep their last good copy in `var/state/ghboard_cache/` for restarts while GitHub is unreachable.
+
 Claude usage limit (ticket d23f4461): a worker stopped by it (the stream's `rate_limit_event` "rejected", or a
 "hit your limit" result) isn't Failed. The ticket goes back to Queued ("paused by the Claude usage limit"), no new
 worker starts until the reset time it announced (+2 min; `var/state/usage_limit.json`, survives restarts), and

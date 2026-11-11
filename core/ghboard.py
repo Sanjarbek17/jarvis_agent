@@ -59,8 +59,31 @@ async def _gh(*args: str, check: bool = True) -> str:
                                                 stderr=asyncio.subprocess.PIPE, stdin=asyncio.subprocess.DEVNULL)
     out, err = await proc.communicate()
     if check and proc.returncode:
-        raise RuntimeError(f"gh {' '.join(args[:3])}: {err.decode(errors='replace').strip()[:300]}")
+        why = err.decode(errors="replace").strip()[:300]
+        if "unknown owner type" in why or "error connecting to" in why:   # how gh says GitHub can't be reached
+            why = f"GitHub unreachable (no internet?): {why}"
+        raise RuntimeError(f"gh {' '.join(args[:3])}: {why}")
     return out.decode(errors="replace")
+
+
+SAVED = STATE / "ghboard_cache"     # the last good copy of each GitHub board, for restarts while GitHub is unreachable
+
+
+def _save(project: str, tickets: list) -> None:
+    import dataclasses
+    try:
+        SAVED.mkdir(parents=True, exist_ok=True)
+        (SAVED / f"{project}.json").write_text(json.dumps([dataclasses.asdict(t) for t in tickets]))
+    except Exception:
+        log.exception("couldn't save GitHub board %s to disk", project)
+
+
+def _load_saved(project: str) -> list | None:
+    from .board import Ticket
+    try:
+        return [Ticket(**t) for t in json.loads((SAVED / f"{project}.json").read_text())]
+    except (FileNotFoundError, json.JSONDecodeError, TypeError):
+        return None
 
 
 def _notes() -> dict:
@@ -109,11 +132,16 @@ async def tickets(project: str, fresh: bool = False) -> list:
     try:
         data = json.loads(await _gh("project", "item-list", str(g["project"]), "--owner", g["owner"],
                                     "--format", "json", "--limit", ITEM_LIMIT))
-    except Exception:
+    except Exception as e:
         _backoff[project] = time.monotonic() + BACKOFF
         if hit:
             log.warning("GitHub board %s unreadable; using the copy from %.0f s ago", project, time.monotonic() - hit[0])
             return hit[1]
+        saved = _load_saved(project)
+        if saved is not None:          # right after a restart with GitHub unreachable (2026-11-12 03:53, 2475b845)
+            log.warning("GitHub board %s unreadable (%s); using the copy saved on disk", project, str(e)[:120])
+            _cache[project] = (time.monotonic(), saved)
+            return saved
         raise
     notes = _notes()
     items = [it for it in data.get("items", []) if (it.get("content") or {}).get("type") == "Issue"]
@@ -123,6 +151,7 @@ async def tickets(project: str, fresh: bool = False) -> list:
                                it["content"]["number"]))
     out = [_ticket(project, it, notes) for it in items]
     _cache[project] = (time.monotonic(), out)
+    _save(project, out)
     return out
 
 
