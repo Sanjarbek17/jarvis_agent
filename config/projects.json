@@ -185,5 +185,12 @@
       "side_project/projects/instagram_channels"
     ],
     "local": true
+  },
+  "Yugur": {
+    "about": "Yugur: Flutter + Supabase running game for Samarkand/Uzbekistan where runners own H3 hex tiles by running (capture, loops, steal, strength, decay, anti-cheat, solo leaderboard; teams in v2). UI in Uzbek and Russian. SRS/SDD in docs/, build tickets on its own board; Sanjar asked not to be asked or made to test anything until version 1 is finished: Jarvis answers workers' questions itself.",
+    "folders": [
+      "side_project/projects/yugur"
+    ],
+    "local": true
   }
 }
