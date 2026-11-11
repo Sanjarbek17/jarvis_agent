@@ -11,6 +11,9 @@ import json
 import logging
 import os
 import re
+import signal
+import socket
+import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -51,6 +54,8 @@ STUCK_TOLD = STATE / "stuck_told.json"   # ticket ref -> when Sanjar was last to
 # Claude usage limit (ticket d23f4461): a worker stopped by it isn't Failed; it goes back to Queued and
 # continues once the limit resets. {"until": epoch, "refs": [paused refs], "told": epoch}
 USAGE_LIMIT = STATE / "usage_limit.json"
+WORKERS = STATE / "workers.json"   # ref -> {pid, project, log, attempt}: live workers, adopted after a restart
+ONLINE_HOST = ("api.anthropic.com", 443)   # workers need it; no new worker starts while it's unreachable
 LIMIT_MARGIN = 120           # start again this long after the announced reset
 LIMIT_FALLBACK = 30 * 60     # no reset time known: try again after this long
 _LIMIT_TEXT = re.compile(r"hit your (\S+ )?limit|usage limit reached|out of (extra )?usage", re.I)
@@ -100,6 +105,96 @@ def _mark_from_sanjar(card: Ticket) -> None:
         if card.ref not in marks:
             marks[card.ref] = time.time()
             FROM_SANJAR.write_text(json.dumps(marks))
+
+
+def online(timeout: float = 3) -> bool:
+    """Can workers reach their model right now? (ticket 2475b845: a network drop at 03:53 made every new worker
+    fail at once)."""
+    try:
+        socket.create_connection(ONLINE_HOST, timeout=timeout).close()
+        return True
+    except OSError:
+        return False
+
+
+def _pid_alive(pid: int, check_cmd: bool = True) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    if not check_cmd:
+        return True
+    try:              # a reused pid isn't our worker: it must still be a claude process
+        cmd = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return True
+    return "claude" in cmd
+
+
+class WorkerProc:
+    """A worker running detached from Jarvis (its own session, output straight into its log file), so a Jarvis
+    restart no longer kills it (ticket 2475b845). Either our child (proc) or one adopted after a restart (pid)."""
+
+    def __init__(self, pid: int, proc: asyncio.subprocess.Process | None = None):
+        self.pid, self.proc = pid, proc
+
+    @property
+    def returncode(self) -> int | None:
+        if self.proc is not None:
+            return self.proc.returncode
+        return None if _pid_alive(self.pid, check_cmd=False) else 0
+
+    def terminate(self) -> None:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(self.pid, signal.SIGTERM)     # the worker leads its own group: its tools stop too
+
+
+def _workers() -> dict:
+    return _load_json(WORKERS)
+
+
+def _set_worker(ref: str, entry: dict | None) -> None:
+    data = _workers()
+    if entry is None:
+        data.pop(ref, None)
+    else:
+        data[ref] = entry
+    WORKERS.write_text(json.dumps(data))
+
+
+def _has_result(path: Path) -> bool:
+    try:
+        return '"type":"result"' in path.read_text(errors="replace").replace('"type": "result"', '"type":"result"')
+    except OSError:
+        return False
+
+
+async def _follow(path: Path, offset: int, handle: WorkerProc, replay_until: int = -1):
+    """Lines the worker writes to its log file from `offset` on, until it exits. Yields (line, replayed): replayed
+    lines were already handled by the Jarvis before a restart (their steps are on the board already)."""
+    buf, pos = b"", offset
+    with path.open("rb") as f:
+        f.seek(offset)
+        while True:
+            chunk = f.read(1 << 16)
+            if not chunk:
+                if handle.returncode is None:
+                    await asyncio.sleep(0.5)
+                    continue
+                chunk = f.read()            # it exited: whatever it wrote last
+                if not chunk:
+                    if buf.strip():
+                        yield buf, False
+                    return
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                pos += len(line) + 1
+                yield line, pos <= replay_until
 
 
 def _load_sessions() -> dict[str, str]:
@@ -312,10 +407,12 @@ def progress_text(path: Path, running: bool, steps: int = 12) -> str:
 
 
 class Runner:
+    from_sanjar = staticmethod(from_sanjar)    # jarvis.notify calls runner.from_sanjar (crashed at 03:59, 2475b845)
+
     def __init__(self, notify: Notify):
         self.notify = notify
         self.running: dict[str, asyncio.Task] = {}      # project -> worker
-        self.procs: dict[str, asyncio.subprocess.Process] = {}
+        self.procs: dict[str, WorkerProc] = {}
         self.current: dict[str, Ticket] = {}            # project -> ticket being worked on
         self.stop_reasons: dict[str, str] = {}          # project -> why its worker was stopped on purpose
         self.finished: dict[str, float] = {}            # ticket ref -> when it finished (monotonic)
@@ -325,6 +422,7 @@ class Runner:
         self.last_start: dict[str, float] = {}          # project -> when its last worker started (fair turns)
         self.wait_reason = ""                           # why the next queued ticket isn't starting
         self.started: dict[str, float] = {}             # project -> when its current ticket started (epoch)
+        self._adopted: set[str] = set()                 # refs whose live worker was adopted after a restart
 
     async def run_forever(self, recover: bool = True):
         """recover: at Jarvis's start (workers of the old process are gone). False when the self-check
@@ -378,10 +476,14 @@ class Runner:
         """Tickets left Working when Jarvis starts: their worker is gone. A result that couldn't be
         written is applied from PENDING; otherwise the ticket goes back in the queue (it starts over),
         up to MAX_REQUEUES times, then Failed."""
-        pending, counts = _load_json(PENDING), _load_json(REQUEUED)
+        pending, counts, alive = _load_json(PENDING), _load_json(REQUEUED), _workers()
         for t in await board.with_jarvis("Working"):
             if t.ref in pending:
                 continue                      # its result is saved; _flush_pending writes it
+            w = alive.get(t.ref)
+            if w and (_pid_alive(int(w.get("pid", 0))) or _has_result(Path(w.get("log", "")))):
+                self._adopt(t, w)             # still running (or finished meanwhile): carry on with it
+                continue
             n = counts.get(t.ref, 0) + 1
             if n <= MAX_REQUEUES:
                 counts[t.ref] = n
@@ -392,6 +494,17 @@ class Runner:
                 await self._write(t, jarvis="Failed", note="stopped by Jarvis restarts too often; queue it again to retry")
                 await self.notify(t, "failed", "Its worker was cut off by Jarvis restarts several times.", [])
         REQUEUED.write_text(json.dumps(counts))
+        for ref in set(alive) - {p_ref for p_ref in self._adopted}:
+            _set_worker(ref, None)           # its ticket isn't Working any more
+
+    def _adopt(self, t: Ticket, w: dict) -> None:
+        """A worker that outlived the old Jarvis: follow its log to the end like any other (ticket 2475b845)."""
+        log.info("%s: adopted its running worker (pid %s) after the restart", t.ref, w.get("pid"))
+        self._adopted.add(t.ref)
+        task = asyncio.create_task(self._work(t, adopt=w), name=f"worker:{t.project}")
+        self.last_start[t.project] = time.monotonic()
+        self.running[t.project] = task
+        task.add_done_callback(lambda _t, p=t.project: self.running.pop(p, None))
 
     async def _write(self, card: Ticket, *, jarvis: str | None = None, note: str | None = None,
                      stage: str | None = None, log_lines: list[str] | None = None, keep: bool = True) -> bool:
@@ -462,6 +575,9 @@ class Runner:
         for t in self.pick(await board.queued()):
             if self.running and time.monotonic() - max(self.last_start.values(), default=0) < START_GAP:
                 return                       # one start at a time; the next check measures it first
+            if not await asyncio.to_thread(online):
+                self._waiting(t, "no internet (workers would fail at once); it starts when it's back")
+                return
             pids = [p.pid for p in self.procs.values() if p.returncode is None]
             ok, why = ramguard.can_start(len(self.running), worker_pids=pids)
             if not ok:                       # 8 GB Mac: the ticket waits in the queue until RAM frees up
@@ -562,15 +678,19 @@ class Runner:
             await asyncio.sleep(0.5)
         return card
 
-    async def _work(self, card: Ticket):
+    async def _work(self, card: Ticket, adopt: dict | None = None):
+        """adopt: a worker still running from before a Jarvis restart (WORKERS entry): follow it, don't start one."""
         _mark_from_sanjar(card)
         dirs = project_dirs(card.project)
         shots = SHOTS / card.ref
         shots.mkdir(exist_ok=True)
-        log.info("start %s in %s", card.line(), dirs[0])
-        if not await self._write(card, jarvis="Working", note="starting", stage="doing", keep=False):
-            self.finished[card.ref] = time.monotonic()   # board unreachable: leave it Queued, retry later
-            return
+        if adopt:
+            log.info("following %s's worker again (pid %s)", card.ref, adopt.get("pid"))
+        else:
+            log.info("start %s in %s", card.line(), dirs[0])
+            if not await self._write(card, jarvis="Working", note="starting", stage="doing", keep=False):
+                self.finished[card.ref] = time.monotonic()   # board unreachable: leave it Queued, retry later
+                return
         self.current[card.project] = card
         self.started[card.project] = time.time()
 
@@ -588,29 +708,40 @@ class Runner:
             return cmd
 
         result, is_error, last_push, pending = "", False, 0.0, []
-        prompt, attempt = _worker_prompt(card, shots), 0
+        prompt, attempt = _worker_prompt(card, shots), int((adopt or {}).get("attempt", 0))
         state = limit_state()
-        if card.ref in state.get("refs", []):     # it was cut off by the usage limit: carry on
+        if card.ref in state.get("refs", []) and not adopt:     # it was cut off by the usage limit: carry on
             prompt += ("\n\nNote: you already started this ticket and were stopped mid-work by the Claude "
                        "usage limit, which has reset now. Continue where you left off: check git status, your "
                        "branch and what's already done first, and don't redo finished steps.")
             state["refs"] = [r for r in state["refs"] if r != card.ref]
             USAGE_LIMIT.write_text(json.dumps(state))
         rejected_until, paused = 0.0, 0.0
-        logfile = (LOGS / f"{card.project}-{card.ref}.jsonl").open("w")
+        path = LOGS / f"{card.project}-{card.ref}.jsonl"
+        cancelled = False
         try:
             while True:
                 bg: dict[str, str] = {}        # background tasks started in this run, still running
                 cut: dict[str, str] = {}       # ...and ones killed before finishing
                 stopped_on_purpose: set[str] = set()
-                proc = await asyncio.create_subprocess_exec(
-                    *make_cmd(prompt), cwd=dirs[0], stdin=asyncio.subprocess.DEVNULL,
-                    env={**os.environ, **GIT_ENV, "JARVIS_APP_CHAT": origin.get(card.ref).get("chat", "")},
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, limit=50_000_000)
-                self.procs[card.project] = proc
-                while line := await proc.stdout.readline():
-                    logfile.write(line.decode(errors="replace"))
-                    logfile.flush()   # worker_progress reads it live
+                if adopt:                      # still running from before the restart: read its log from its start
+                    offset, replay_until = int(adopt.get("offset", 0)), path.stat().st_size if path.exists() else 0
+                    handle = WorkerProc(int(adopt["pid"]))
+                    adopt = None
+                else:
+                    # detached (own session) and writing straight into its log, so a Jarvis restart doesn't
+                    # kill it (ticket 2475b845); worker_progress reads the same file live
+                    offset, replay_until = path.stat().st_size if attempt and path.exists() else 0, -1
+                    with path.open("ab" if attempt else "wb") as out:
+                        proc = await asyncio.create_subprocess_exec(
+                            *make_cmd(prompt), cwd=dirs[0], stdin=asyncio.subprocess.DEVNULL,
+                            env={**os.environ, **GIT_ENV, "JARVIS_APP_CHAT": origin.get(card.ref).get("chat", "")},
+                            stdout=out, stderr=asyncio.subprocess.STDOUT, start_new_session=True)
+                    handle = WorkerProc(proc.pid, proc)
+                    _set_worker(card.ref, {"pid": proc.pid, "project": card.project, "log": str(path),
+                                           "offset": offset, "attempt": attempt, "started": time.time()})
+                self.procs[card.project] = handle
+                async for line, replayed in _follow(path, offset, handle, replay_until):
                     try:
                         event = json.loads(line)
                     except json.JSONDecodeError:
@@ -639,19 +770,24 @@ class Runner:
                             rejected_until = float(info.get("resetsAt") or 0) or time.time() + LIMIT_FALLBACK
                     elif kind == "result":
                         result, is_error = event.get("result") or "", bool(event.get("is_error"))
+                    if replayed:
+                        pending = []           # these steps were pushed before the restart
                     # push steps to Notion at most every 5 s
                     if pending and time.monotonic() - last_push > 5:
                         await self._push_steps(card, pending)
                         pending, last_push = [], time.monotonic()
-                await proc.wait()
+                if handle.proc is not None:
+                    rc = await handle.proc.wait()
+                else:                          # adopted: not our child, its exit code is unknown
+                    rc = 0 if result else 1
                 if pending:
                     await self._push_steps(card, pending)
                     pending = []
-                if proc.returncode and not result:
-                    is_error, result = True, f"Worker exited with code {proc.returncode}."
+                if rc and not result:
+                    is_error, result = True, f"Worker exited with code {rc}."
                 unfinished = [d for d in [*bg.values(), *cut.values()] if d]
                 paused = hit_limit(result, is_error, rejected_until)
-                if (is_error or paused or not unfinished or attempt >= MAX_CONTINUES or proc.returncode < 0
+                if (is_error or paused or not unfinished or attempt >= MAX_CONTINUES or rc < 0
                         or card.project in self.stop_reasons):
                     if unfinished and not is_error:
                         result += ("\n\nNote: background work was still unfinished after "
@@ -671,11 +807,15 @@ class Runner:
                           "directly, wait for everything to complete, check the results, merge into dev as "
                           "the rules say, and only then give your final summary.")
                 result = ""
+        except asyncio.CancelledError:
+            cancelled = True                   # Jarvis is stopping: the worker keeps running, the next Jarvis adopts it
+            raise
         except Exception as e:
             log.exception("worker crashed for %s", card.ref)
             is_error, result = True, f"Worker crashed: {e}"
         finally:
-            logfile.close()
+            if not cancelled:
+                _set_worker(card.ref, None)
             self.procs.pop(card.project, None)
             stopped = self.stop_reasons.pop(card.project, None)
             if stopped is not None:          # stopped on purpose: off the queue, not "Failed"

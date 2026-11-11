@@ -15,5 +15,7 @@ def isolated_runner_state(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "WRITE_TRIES", (0, 0, 0))
     monkeypatch.setattr(runner, "FROM_SANJAR", tmp_path / "from_sanjar.json")
     monkeypatch.setattr(runner, "USAGE_LIMIT", tmp_path / "usage_limit.json")
+    monkeypatch.setattr(runner, "WORKERS", tmp_path / "workers.json")
+    monkeypatch.setattr(runner, "online", lambda timeout=3: True)
     from core import origin
     monkeypatch.setattr(origin, "FILE", tmp_path / "ticket_origin.json")

@@ -22,7 +22,12 @@ JPID=$(launchctl print "gui/$(id -u)/com.sanjar.jarvis" | awk '$1 == "pid" && $2
 end=$(( $(date +%s) + 3*3600 ))
 busy() {   # a worker (claude -p Ticket ... / Mac task ...), a call brain ("live phone call") or the brain of a
            # group voice chat Jarvis sits in ("You joined the group voice chat")
-  ps -axww -o ppid=,args= | awk -v p="$JPID" -v c="$CALLS" '$1 == p && (($2 == "claude" && $3 == "-p" && ($4 == "Ticket" || ($4 == "Mac" && $5 == "task"))) || (c == "yes" && (/live phone call/ || /You joined the group voice chat/))) { f = 1 } END { exit !f }'
+  ps -axww -o ppid=,args= | awk -v p="$JPID" -v c="$CALLS" '$1 == p && (($2 == "claude" && $3 == "-p" && ($4 == "Ticket" || ($4 == "Mac" && $5 == "task"))) || (c == "yes" && (/live phone call/ || /You joined the group voice chat/))) { f = 1 } END { exit !f }' && return 0
+  # workers adopted after an earlier restart aren't Jarvis's children any more (ticket 2475b845)
+  for w in $(grep -o '"pid": [0-9]*' "$(dirname "$0")/../var/state/workers.json" 2>/dev/null | grep -o '[0-9]*$'); do
+    ps -p "$w" -o args= 2>/dev/null | grep -q '^claude -p Ticket' && return 0
+  done
+  return 1
 }
 echo "$(date) waiting for workers$([ $CALLS = yes ] && echo ' and calls') of $JPID to finish" >> "$LOG"
 # while this waits, the runner starts no new workers (core/runner.py RESTART_PENDING), or a busy queue
