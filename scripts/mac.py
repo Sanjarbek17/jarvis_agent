@@ -8,6 +8,8 @@
     mac.py scroll DY [X Y]          DY > 0 scrolls up, < 0 down (lines)
     mac.py type "any text"          types it (any language, emoji too); "-" reads the text from stdin
     mac.py size                     the main display in points: "1280 800"
+    mac.py serve                    stay running for remote control (core/macremote.py): one JSON request
+                                    per stdin line, one JSON line back; a frame's JPEG bytes follow its line
     mac.py key cmd+shift+t          one key or a combo: cmd ctrl alt shift + a key name
 
 Coordinates are screen points, top-left = 0,0, the same as the pixels of `shot`.
@@ -122,11 +124,87 @@ def key(combo: str) -> None:
         Q.CGEventPost(Q.kCGHIDEventTap, e)
 
 
+# --- serve: a long-running helper, so remote control doesn't start Python for every click -------
+
+def frame(width: int = 1024, quality: float = 0.5) -> tuple[bytes, int, int]:
+    """The main display as JPEG `width` pixels wide, in memory (no screencapture, no files): ~60 ms."""
+    from Foundation import NSMutableData
+    image = Q.CGDisplayCreateImage(Q.CGMainDisplayID())
+    if image is None:
+        raise RuntimeError("no picture: Screen Recording is off, or the display is asleep")
+    data = NSMutableData.data()
+    dest = Q.CGImageDestinationCreateWithData(data, "public.jpeg", 1, None)
+    Q.CGImageDestinationAddImage(dest, image, {Q.kCGImageDestinationLossyCompressionQuality: quality,
+                                               Q.kCGImageDestinationImageMaxPixelSize: width})
+    if not Q.CGImageDestinationFinalize(dest):
+        raise RuntimeError("couldn't make the JPEG")
+    bounds = Q.CGDisplayBounds(Q.CGMainDisplayID())
+    return bytes(data), int(bounds.size.width), int(bounds.size.height)
+
+
+def cursor() -> tuple[int, int]:
+    at = Q.CGEventGetLocation(Q.CGEventCreate(None))
+    return int(at.x), int(at.y)
+
+
+def handle(req: dict) -> tuple[dict, bytes]:
+    """One request of `serve`. Input requests are already checked by core/macremote.py."""
+    op = req.get("op")
+    if op == "shot":
+        jpeg, w, h = frame(int(req.get("w", 1024)), float(req.get("q", 0.5)))
+        cx, cy = cursor()
+        digest = __import__("hashlib").blake2b(jpeg, digest_size=8).hexdigest()
+        if digest == req.get("last"):
+            return {"ok": True, "same": True, "cx": cx, "cy": cy}, b""
+        return {"ok": True, "len": len(jpeg), "w": w, "h": h, "cx": cx, "cy": cy, "hash": digest}, jpeg
+    if not AS.AXIsProcessTrusted():
+        raise RuntimeError("Accessibility is off for Jarvis, so it can't use the mouse or keyboard.")
+    x, y = req.get("x"), req.get("y")
+    if op == "move":
+        _mouse(Q.kCGEventMouseMoved, x, y)
+    elif op == "down":
+        _mouse(Q.kCGEventMouseMoved, x, y)
+        _mouse(Q.kCGEventLeftMouseDown, x, y)
+    elif op == "drag":
+        _mouse(Q.kCGEventLeftMouseDragged, x, y)
+    elif op == "up":
+        _mouse(Q.kCGEventLeftMouseUp, x, y)
+    elif op == "click":
+        click(x, y, right=bool(req.get("right")), double=bool(req.get("double")))
+    elif op == "scroll":
+        scroll(int(req["dy"]), x, y)
+    elif op == "type":
+        type_text(req["text"])
+    elif op == "key":
+        name = req["key"].split("+")[-1]
+        if name not in KEYS:
+            raise RuntimeError(f"Unknown key {name!r}")
+        key(req["key"])
+    else:
+        raise RuntimeError(f"unknown op {op!r}")
+    return {"ok": True}, b""
+
+
+def serve() -> None:
+    import json
+    out = sys.stdout.buffer
+    for line in sys.stdin.buffer:
+        try:
+            head, body = handle(json.loads(line))
+        except Exception as e:                           # one bad request never ends the helper
+            head, body = {"ok": False, "error": str(e)[:300]}, b""
+        out.write(json.dumps(head).encode() + b"\n" + body)
+        out.flush()
+
+
 def main(args: list[str]) -> None:
     if not args:
         sys.exit(__doc__)
     cmd, rest = args[0], args[1:]
     nums = [float(a) for a in rest if not a.startswith("--")] if cmd in ("click", "move", "drag", "scroll") else []
+    if cmd == "serve":
+        serve()
+        return
     if cmd == "size":
         bounds = Q.CGDisplayBounds(Q.CGMainDisplayID())
         print(int(bounds.size.width), int(bounds.size.height))
