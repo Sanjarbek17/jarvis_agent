@@ -195,7 +195,7 @@ async def screen(width: int = 1280) -> tuple[bytes, int, int]:
 
 # --- the live socket ------------------------------------------------------------------------------
 
-FAST, SLOW = 0.07, 0.3                  # seconds between frames: while he's using it / when nothing happens
+FAST, SLOW = 0.07, 0.2                  # seconds between frames: while he's using it / when nothing happens
 BUSY_FOR = 3.0                          # "using it" = input in the last few seconds
 
 
