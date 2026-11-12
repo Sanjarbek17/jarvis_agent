@@ -41,6 +41,9 @@ WebSocket. Two kinds (ticket 31ed52a7):
                                              length, {w, h, cx, cy}, JPEG), sent only when the picture changed; text
                                              messages {"t": "cursor"|"error"}. The phone sends {"t": "ack"} per frame,
                                              inputs as above plus down / drag / up {x, y} to drag. Login session only.
+    GET  /api/app/latest                     {version_code, version_name, size_bytes, sha256, notes}: the newest published
+                                             Jarvis APK (scripts/publish_app.py); 204 when none. The app updates itself
+    GET  /api/app/apk                        that APK. Both need a login like the rest: the APK has APP_TOKEN inside
     GET  /api/workers                        {count, workers: [{project, ref, title, url, started, step,
                                              active}], waiting}: the ticket workers running right now
     WS   /api/call?token=&chat=              a live call: phone sends 48 kHz mono s16 PCM, gets
@@ -92,6 +95,7 @@ CHATS = STATE / "app_chats"
 IMAGES = STATE / "app_images"          # screenshots and photos shown in app chats (ticket 546d965e)
 IMAGE_MAX_PX = 1280                    # longest side: plenty for a phone, small over mobile data
 _IMAGE_NAME = re.compile(r"^[0-9a-f]{16}\.(jpg|png)$")
+RELEASES = STATE / "app_release"      # the newest Jarvis APK + latest.json, from scripts/publish_app.py (ticket 50b087e6)
 FILES = STATE / "app_files"            # copies of what send_file.py sends, for the app and the website
 FILE_MAX = 500_000_000                 # bigger ones stay on Telegram only
 FILE_KEEP = 30 * 86400
@@ -801,6 +805,45 @@ async def image(req: Request):
                         headers={"Cache-Control": "private, max-age=31536000, immutable"})
 
 
+_RELEASE_FILE = re.compile(r"^jarvis-app-[0-9][0-9A-Za-z.]*\+[0-9]+\.apk$")
+
+
+def latest_release() -> dict | None:
+    """The published release, or None if there's nothing valid: no or bad latest.json, or the APK missing or of
+    another size than it says. Never raises: the app keeps working without updates."""
+    try:
+        m = json.loads((RELEASES / "latest.json").read_text())
+        ok = (isinstance(m.get("version_code"), int) and m["version_code"] >= 1 and isinstance(m.get("version_name"), str)
+              and isinstance(m.get("file"), str) and _RELEASE_FILE.match(m["file"])
+              and isinstance(m.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", m["sha256"])
+              and isinstance(m.get("size_bytes"), int) and (RELEASES / m["file"]).stat().st_size == m["size_bytes"])
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not ok:
+        log.warning("app release manifest unusable")
+        return None
+    return {k: m[k] for k in ("version_code", "version_name", "file", "sha256", "size_bytes")} | {"notes": str(m.get("notes") or "")[:500]}
+
+
+async def app_latest(req: Request):
+    if not _authorized(req):
+        return _deny()
+    release = latest_release()
+    if not release:
+        return Response(status_code=204)
+    return JSONResponse({k: v for k, v in release.items() if k != "file"}, headers={"Cache-Control": "no-store"})
+
+
+async def app_apk(req: Request):
+    if not _authorized(req):
+        return _deny()
+    release = latest_release()
+    if not release:
+        return JSONResponse({"error": "No version is published."}, status_code=404)
+    return FileResponse(RELEASES / release["file"], media_type="application/vnd.android.package-archive",
+                        filename=release["file"], headers={"Cache-Control": "no-store"})
+
+
 async def file_(req: Request):
     """GET /api/files/{name}: a file from a chat message, always as a download."""
     if not _authorized(req):
@@ -1009,6 +1052,8 @@ app = Starlette(routes=[
     Route("/api/board", board_view, methods=["GET", "POST"]),
     Route("/api/tickets/{ref}", ticket_view, methods=["GET", "POST"]),
     Route("/api/workers", workers),
+    Route("/api/app/latest", app_latest),
+    Route("/api/app/apk", app_apk),
     Route("/api/mac/screen", mac_screen),
     Route("/api/mac/input", mac_input, methods=["POST"]),
     WebSocketRoute("/api/mac/live", mac_live),
