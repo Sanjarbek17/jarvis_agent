@@ -37,6 +37,10 @@ WebSocket. Two kinds (ticket 31ed52a7):
     GET  /api/mac/screen?w=1280              the Mac's screen as JPEG; X-Mac-Width/X-Mac-Height: its size in points
     POST /api/mac/input {action, ...}        click {x,y,right?,double?} / move {x,y} / drag {x1,y1,x2,y2} / scroll {dy,x?,y?}
                                              / type {text} / key {key: "cmd+tab"} / wake. Both: login session only (ticket 436ccc83)
+    WS   /api/mac/live?token=&w=1024&q=0.5   the fast way (ticket 18cf9c7b): binary messages are frames (4 bytes JSON
+                                             length, {w, h, cx, cy}, JPEG), sent only when the picture changed; text
+                                             messages {"t": "cursor"|"error"}. The phone sends {"t": "ack"} per frame,
+                                             inputs as above plus down / drag / up {x, y} to drag. Login session only.
     GET  /api/workers                        {count, workers: [{project, ref, title, url, started, step,
                                              active}], waiting}: the ticket workers running right now
     WS   /api/call?token=&chat=              a live call: phone sends 48 kHz mono s16 PCM, gets
@@ -873,6 +877,29 @@ async def mac_input(req: Request):
     return JSONResponse({"error": err}, status_code=500) if err else JSONResponse({"ok": True})
 
 
+async def mac_live(ws: WebSocket):
+    if not await _mac_session(ws):
+        await ws.close(code=4401 if not _authorized(ws) else 4403)
+        return
+    await ws.accept()
+    log.info("Mac live view opened from %s", _client(ws))
+    try:
+        width = int(ws.query_params.get("w") or 1024)
+        quality = float(ws.query_params.get("q") or 0.5)
+    except ValueError:
+        width, quality = 1024, 0.5
+    try:
+        await macremote.live(ws, width, quality)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        log.exception("Mac live view failed")
+    finally:
+        log.info("Mac live view closed")
+        with contextlib.suppress(Exception):
+            await ws.close()
+
+
 async def workers(req: Request):
     if not _authorized(req):
         return _deny()
@@ -984,6 +1011,7 @@ app = Starlette(routes=[
     Route("/api/workers", workers),
     Route("/api/mac/screen", mac_screen),
     Route("/api/mac/input", mac_input, methods=["POST"]),
+    WebSocketRoute("/api/mac/live", mac_live),
     WebSocketRoute("/api/call", call),
     Route("/{name:path}", website),
 ])

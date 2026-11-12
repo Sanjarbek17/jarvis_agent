@@ -1111,17 +1111,21 @@ function drawTicket(data, editing = false) {
 const MAC_KEYS = [["Return", "return"], ["Esc", "esc"], ["Tab", "tab"], ["⌫", "delete"], ["Space", "space"],
   ["⌘Tab", "cmd+tab"], ["←", "left"], ["→", "right"], ["↑", "up"], ["↓", "down"]];
 
-function macInput(json) {
-  api("/api/mac/input", { method: "POST", json }).then(() => macNudge?.(), e => { if (e.status !== 401) toast(e.message); });
-}
+let macSocket = null;      // the live view (ticket 18cf9c7b): frames in, mouse and keys out, one connection
 
-let macNudge = null;       // wakes the frame loop right after an action, so its result shows at once
+function macInput(json) {
+  if (macSocket?.readyState === WebSocket.OPEN) return macSocket.send(JSON.stringify(json));
+  api("/api/mac/input", { method: "POST", json }).catch(e => { if (e.status !== 401) toast(e.message); });
+}
 
 function showMac() {
   open = null;
   const status = h("div", { class: "sub", id: "mac-sub", text: "Connecting…" });
   const pic = h("img", { class: "mac-screen", alt: "The Mac's screen", draggable: "false" });
-  let size = null;           // the screen in points
+  const pointer = h("div", { class: "mac-cursor hide", "aria-hidden": "true" });
+  pointer.innerHTML = '<svg viewBox="0 0 14 21"><path d="M1 1v16l4-4 3 7 3-1.4-3-6.8h5.5z" fill="#fff" stroke="#000" stroke-width="1.3" stroke-linejoin="round"/></svg>';
+  const wrap = h("div", { class: "mac-wrap" }, pic, pointer);
+  const view = { size: null, cursor: null };
   let right = false;
   const rightBtn = h("button", { class: "btn small", text: "Right-click: off", "aria-pressed": "false", onclick: () => {
     right = !right;
@@ -1131,12 +1135,42 @@ function showMac() {
   } });
   const point = e => {
     const box = pic.getBoundingClientRect();
-    return { x: Math.round((e.clientX - box.left) / box.width * size.w), y: Math.round((e.clientY - box.top) / box.height * size.h) };
+    const x = Math.round((e.clientX - box.left) / box.width * view.size.w);
+    const y = Math.round((e.clientY - box.top) / box.height * view.size.h);
+    return { x: Math.max(0, Math.min(view.size.w, x)), y: Math.max(0, Math.min(view.size.h, y)) };
   };
+
+  // press and move = drag with the button held (selecting text, moving windows); press and let go = click
+  let press = null;          // {start, at, dragging, id}
   let pending = null;        // a click waits a moment: a second one makes it a double-click
-  pic.addEventListener("click", e => {
-    if (!size) return;
-    const at = point(e);
+  let lastMove = 0;
+  pic.addEventListener("pointerdown", e => {
+    if (!view.size || e.button !== 0) return;
+    e.preventDefault();
+    pic.setPointerCapture(e.pointerId);
+    press = { start: point(e), at: point(e), dragging: false, x: e.clientX, y: e.clientY };
+  });
+  pic.addEventListener("pointermove", e => {
+    if (!view.size) return;
+    const now = performance.now();
+    if (!press) {            // hovering with a real mouse moves the Mac's pointer too
+      if (e.pointerType === "mouse" && now - lastMove > 60) { lastMove = now; macInput({ action: "move", ...point(e) }); }
+      return;
+    }
+    if (!press.dragging && Math.hypot(e.clientX - press.x, e.clientY - press.y) < 6) return;
+    if (!press.dragging) {
+      press.dragging = true;
+      macInput({ action: "down", ...press.start });
+    }
+    press.at = point(e);
+    if (now - lastMove > 30) { lastMove = now; macInput({ action: "drag", ...press.at }); }
+  });
+  const release = e => {
+    if (!press) return;
+    const was = press;
+    press = null;
+    if (was.dragging) return macInput({ action: "up", ...(e.type === "pointercancel" ? was.at : point(e)) });
+    const at = was.start;
     if (right) return macInput({ action: "click", ...at, right: true });
     if (pending) {
       clearTimeout(pending);
@@ -1144,16 +1178,19 @@ function showMac() {
       return macInput({ action: "click", ...at, double: true });
     }
     pending = setTimeout(() => { pending = null; macInput({ action: "click", ...at }); }, 260);
-  });
+  };
+  pic.addEventListener("pointerup", release);
+  pic.addEventListener("pointercancel", release);
   pic.addEventListener("contextmenu", e => {
     e.preventDefault();
-    if (size) macInput({ action: "click", ...point(e), right: true });
+    press = null;
+    if (view.size) macInput({ action: "click", ...point(e), right: true });
   });
   let wheel = 0;
   let wheelTimer = null;
   pic.addEventListener("wheel", e => {
     e.preventDefault();
-    if (!size) return;
+    if (!view.size) return;
     wheel += e.deltaY;
     const at = point(e);
     wheelTimer ??= setTimeout(() => {
@@ -1161,7 +1198,7 @@ function showMac() {
       const dy = Math.round(-wheel / 40);
       wheel = 0;
       if (dy) macInput({ action: "scroll", dy: Math.max(-100, Math.min(100, dy)), ...at });
-    }, 120);
+    }, 60);
   }, { passive: false });
   const words = h("input", { class: "field", placeholder: "Type on the Mac", "aria-label": "Text to type on the Mac", maxlength: "5000" });
   const typeIt = () => {
@@ -1176,40 +1213,70 @@ function showMac() {
       h("button", { class: "back", "aria-label": "Back", text: "‹", onclick: () => { location.hash = "#/"; } }),
       h("div", { class: "grow" }, h("h2", { text: "Mac" }), status),
       h("button", { class: "btn small", text: "Wake screen", onclick: () => macInput({ action: "wake" }) })),
-    h("div", { class: "mac-view", id: "mac-view" }, pic),
+    h("div", { class: "mac-view", id: "mac-view" }, wrap),
     h("div", { class: "mac-bar" },
       h("div", { class: "mac-type" }, words, h("button", { class: "btn primary small", text: "Type", onclick: typeIt })),
       h("div", { class: "mac-keys" }, rightBtn,
         h("button", { class: "btn small", text: "Scroll up", onclick: () => scrollBy(8) }),
         h("button", { class: "btn small", text: "Scroll down", onclick: () => scrollBy(-8) }),
         ...MAC_KEYS.map(([label, key]) => h("button", { class: "btn small", text: label, onclick: () => macInput({ action: "key", key }) })))));
-  macLoop(pic, status, s => { size = s; });
+  macLive(pic, pointer, status, view);
 }
 
-/** Frames while this page is showing and the tab is visible; a frame is only asked for after the last arrived. */
-async function macLoop(pic, status, gotSize) {
+/** The live socket while this page shows: frames as fast as they're drawn, reconnecting if it drops. */
+function macLive(pic, pointer, status, view) {
   let shown = null;
-  while (pic.isConnected && session) {
-    if (document.hidden) { await new Promise(r => setTimeout(r, 1000)); continue; }
-    try {
-      const res = await request(`/api/mac/screen?w=${Math.min(1600, Math.max(800, pic.clientWidth * (window.devicePixelRatio || 1)))|0}`);
-      if (!res.ok) throw new ApiError((await res.json().catch(() => null))?.error || `Jarvis said ${res.status}.`, res.status);
-      const url = URL.createObjectURL(await res.blob());
-      gotSize({ w: Number(res.headers.get("X-Mac-Width")), h: Number(res.headers.get("X-Mac-Height")) });
+  let tries = 0;
+  const placeCursor = () => {
+    if (!view.size || !view.cursor) return;
+    pointer.classList.remove("hide");
+    pointer.style.left = `${view.cursor.x / view.size.w * 100}%`;
+    pointer.style.top = `${view.cursor.y / view.size.h * 100}%`;
+  };
+  const connect = () => {
+    if (!pic.isConnected || !session) return;
+    const width = Math.min(1600, Math.max(800, (pic.parentElement.clientWidth || 1000) * (window.devicePixelRatio || 1))) | 0;
+    const ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/api/mac/live?token=${encodeURIComponent(session)}&w=${width}&q=0.5`);
+    ws.binaryType = "arraybuffer";
+    macSocket = ws;
+    ws.onopen = () => { tries = 0; status.textContent = "Live. Click, or press and move to drag."; };
+    ws.onmessage = e => {
+      if (typeof e.data === "string") {
+        const msg = JSON.parse(e.data);
+        if (msg.t === "cursor") { view.cursor = { x: msg.cx, y: msg.cy }; placeCursor(); }
+        else if (msg.t === "error") status.textContent = msg.error;
+        return;
+      }
+      const bytes = new Uint8Array(e.data);
+      const n = new DataView(e.data).getUint32(0);
+      const meta = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + n)));
+      const url = URL.createObjectURL(new Blob([bytes.subarray(4 + n)], { type: "image/jpeg" }));
+      pic.onload = () => {
+        if (shown) URL.revokeObjectURL(shown);
+        shown = url;
+        if (ws.readyState === WebSocket.OPEN) ws.send('{"t":"ack"}');      // ready for the next one
+      };
       pic.src = url;
-      if (shown) URL.revokeObjectURL(shown);
-      shown = url;
-      status.textContent = "Live. Click to click, scroll to scroll.";
-    } catch (e) {
-      status.textContent = e.message;
-      if (e.status === 401) break;
-    }
-    await new Promise(r => {
-      const timer = setTimeout(r, 900);
-      macNudge = () => { clearTimeout(timer); setTimeout(r, 250); };
-    });
-  }
-  if (shown) URL.revokeObjectURL(shown);
+      view.size = { w: meta.w, h: meta.h };
+      view.cursor = { x: meta.cx, y: meta.cy };
+      placeCursor();
+    };
+    ws.onclose = e => {
+      if (macSocket === ws) macSocket = null;
+      if (!pic.isConnected) return;
+      if (e.code === 4401 || e.code === 4403) { status.textContent = "Log in with a Telegram code to control the Mac."; return; }
+      status.textContent = "Reconnecting…";
+      setTimeout(connect, Math.min(8000, 500 * 2 ** tries++));
+    };
+  };
+  connect();
+  const watch = setInterval(() => {            // left the page: close the socket, stop the frames
+    if (pic.isConnected) return;
+    clearInterval(watch);
+    macSocket?.close();
+    macSocket = null;
+    if (shown) URL.revokeObjectURL(shown);
+  }, 500);
 }
 
 function showWorkers() {
