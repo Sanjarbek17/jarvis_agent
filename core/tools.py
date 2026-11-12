@@ -341,6 +341,17 @@ def make_server(source: str) -> MCPServer:
         return f"{t.ref} is queued again with the answer"
 
     @server.tool()
+    async def live_stats(project: str) -> str:
+        """Instagram numbers read RIGHT NOW (followers, views of the newest reels) for "Haydovchi darslari" or
+        "Instagram Channels", each labelled with the time it was read. Use it for every status / views / followers
+        question about them; never answer those from saved check-*.json files or memory (Sanjar, ticket 0960b065).
+        Takes up to a minute or two the first time; a reading is reused for 15 min."""
+        from . import livestats
+        if project not in livestats.PROJECTS:
+            return f"No live stats for {project!r}; they exist for: {', '.join(livestats.PROJECTS)}"
+        return livestats.text(await livestats.fetch(project))
+
+    @server.tool()
     async def worker_progress(project: str, ticket: str = "") -> str:
         """How a Claude Code worker is doing, read from its live log: running or finished, how long,
         its last steps, the command it's waiting on and that command's latest output (e.g. a slow
