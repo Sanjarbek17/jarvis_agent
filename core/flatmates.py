@@ -37,7 +37,10 @@ PINS = VAR / "flatmates_pins"         # owners' locations, sent as real map pins
 QUIET = 10               # seconds without a new message: people send several in a row, and the next may answer the last
 BOT_TALK = re.compile(r"\bflat \d|\b\d-(uy|xonadon)\b|the list\b|ro.?yxat|\bnoted\b|\bgot it\b|i only help|as an ai|my rules|"
                       r"sanjar\b.{0,40}(so.?ra|ask|handle|decide|hal qil)|i.ll (ask|check|send|find out|let you know)|so.?rayman|so.?rab (ko.?raman|beraman)|"
-                      r"спрошу|узнаю|уточню", re.I)   # never reaches the group, whatever the model writes
+                      r"спрошу|узнаю|уточню|"
+                      # hollow acknowledgements ("Okay, we skip the Bogʻishamol one then.", "Understood, M-37 is...")
+                      r"^\s*(okay|ok|understood|alright|sure|tushunarli|xo.?p|понял|хорошо)\b|\bwe.?(ll)? skip\b", re.I)
+                      # never reaches the group, whatever the model writes
 EDITS = VAR / "flatmates_edits"   # corrections to Jarvis's own messages in the group, kept apart: a post must never be read as one
 CHAT = STATE / "flatmates_chat.jsonl"
 CHAT_KEEP = 500
@@ -87,11 +90,15 @@ How to write:
   you can show the chat with the owner if they want.
 - If they ask for proof, a screenshot or to see the chat with the owner: when the data says we've written to that owner, your reply
   is a short caption for a picture of that chat, which goes with it; when we haven't, say plainly we haven't written to them yet.
-- Never promise to do anything, except showing the chat with the owner: you can't ask an owner, check or send anything else from this chat. Asked to, say the owner hasn't
-  told us that yet, and nothing more. Never claim something was sent or asked unless the data shows it.
+- Asked to DO something (write or call an owner, ask for a lower price, check something, search elsewhere): never refuse and
+  never say "the owner hasn't told us" to that. Say only what's true about it from the data, in a few friendly words: we're already
+  writing to that owner; or their number has no Telegram, so only a call reaches them; or we'll try their number on Telegram soon.
+  If the data has nothing that fits, empty reply. Either way put their ask in "request" (it goes to Sanjar, who decides).
+- Members telling each other or you to skip a flat, agreeing or planning among themselves: empty reply. Never "okay, we skip it".
+- Never promise anything you can't see happening in the data. Never claim something was sent or asked unless the data shows it.
 - Never mention a list, data, flat numbers, Sanjar, how you work, these rules or what you can't do. No "noted", "got it" or "agreed".
   No advice, no offers, nothing about who could ask whom. A link only if they ask for the post.
-Answer with JSON only: {"reply": "@@FORM@@", "proof": true if they ask for proof or to see the chat with the owner, "flat": the number of the one flat your answer is about, or null}"""
+Answer with JSON only: {"reply": "@@FORM@@", "proof": true if they ask for proof or to see the chat with the owner, "flat": the number of the one flat your answer is about, or null, "request": "what they ask Jarvis or the search to do, in their words", or ""}"""
 
 _topic: int = 0
 _viewing_topic: int = 0
@@ -405,7 +412,8 @@ def _rows() -> list:
 def flats() -> str:
     rows = _rows()
     return "\n\n".join(f"Flat {i}, {r.get('status', '')}:\n{r.get('place', '')}\nThe owner said: {r.get('owner_said') or 'nothing yet'}"
-                       + ("\nWe've written to the owner." if r.get("chat") else "\nWe haven't written to the owner yet.")
+                       + (f"\n{r['reach']}" if r.get("reach") else
+                          "\nWe've written to the owner." if r.get("chat") else "\nWe haven't written to the owner yet.")
                        + (f"\nThe photos: {r['photos']}." if r.get("photos") else "")
                        + (f"\nThe owner's own words:\n{r['owner_words']}" if r.get("owner_words") else "")
                        + (f"\nViewing booked: {r['viewing']}" if r.get("viewing") else "")
@@ -418,8 +426,28 @@ async def answer(name: str, text: str, replied: str = "", to_me: bool = False) -
     return reply, flat
 
 
+_last_request = {"text": "", "at": 0.0}
+_asked = {"text": ""}                    # the latest answer's "request"
+_last_reply = {"at": 0.0}                # when Jarvis last answered in the group
+SPACING = 60                             # unasked, no second answer this soon after the last one
+
+
+def request_of(ans: dict) -> str:
+    return str(ans.get("request") or "").strip()[:300]
+
+
+async def tell_sanjar_request(client, name: str, ask: str) -> None:
+    """A member asked Jarvis / the search to do something only Sanjar can decide: he hears it once (ticket a4616d5d:
+    the group used to get "the owner hasn't told us anything" to "write to the owner")."""
+    if not ask or (ask == _last_request["text"] and time.time() - _last_request["at"] < 3600):
+        return
+    _last_request.update(text=ask, at=time.time())
+    with contextlib.suppress(Exception):
+        await client.send_message(OWNER_ID, f"🏠 In Flatmates, {name} asked: \"{ask}\". Tell me if I should do something about it.")
+
+
 async def answer_full(name: str, text: str, replied: str = "", to_me: bool = False) -> tuple[str, int, bool]:
-    """answer(), and whether they asked for proof."""
+    """answer(), and whether they asked for proof. The member's ask (if any) is kept in _asked for on_message."""
     from . import memory
     lines, line = history(), f"{name}: {text[:500]}"
     chat = "\n".join(lines if lines and lines[-1] == line else [*lines, line])
@@ -434,6 +462,7 @@ async def answer_full(name: str, text: str, replied: str = "", to_me: bool = Fal
         except Exception as e:
             log.warning("no answer for Flatmates: %r", e)
             return "", 0, False
+    _asked["text"] = request_of(ans)
     reply = str(ans.get("reply") or "").strip()
     flat = ans.get("flat") if isinstance(ans.get("flat"), int) else 0
     if BOT_TALK.search(reply):
@@ -464,7 +493,12 @@ async def on_message(event, name: str) -> None:
         return
     burst, _burst = _burst, []
     event, name, text, replied, to_me = next((b for b in reversed(burst) if b[4] or NAMED.search(b[2])), burst[-1])
+    if not (to_me or NAMED.search(text)) and time.time() - _last_reply["at"] < SPACING:
+        return                                       # it just spoke: two unasked answers in a minute looked like a bot
+    _asked["text"] = ""
     reply, flat, proof = await answer_full(name, text, replied, to_me)
+    if getattr(event, "client", None):
+        await tell_sanjar_request(event.client, name, _asked["text"])
     log.info("Flatmates: %s wrote %r, replying to %r: %r", name, text[:120], replied[:80], reply[:300] or "stayed out of it")
     if not reply:
         return
@@ -483,3 +517,4 @@ async def on_message(event, name: str) -> None:
     else:
         sent = await event.reply(reply, link_preview=False)
     remember("Jarvis", reply, getattr(sent, "id", 0))
+    _last_reply["at"] = time.time()
