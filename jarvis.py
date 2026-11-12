@@ -44,7 +44,7 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.types import InputPeerChannel, MessageActionGroupCall
 
-from core import appserver, board, contacts, coremem, expenses, flatmates, google, guard, memory, origin, outbox, selfcheck, tgfmt, tools
+from core import appserver, board, contacts, coremem, expenses, flatmates, google, guard, livestats, memory, origin, outbox, selfcheck, tgfmt, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, WATCHED_GROUP_IDS, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
@@ -863,7 +863,9 @@ async def chat_turn(event, text: str, shown: str = ""):
                 "[He sent these one after another while you were busy; answer them together, in order]\n\n"
                 + "\n\n---\n\n".join(t for _, t in batch))
             async with tg.action(OWNER_ID, "typing"):
-                reply = await chat.reply(msg)
+                # a status question about the Instagram projects: live numbers first, in code (ticket 0960b065)
+                live = await livestats.brief_for("", "\n".join(t for _, t in batch))
+                reply = await chat.reply(live + msg)
             await tgfmt.reply(batch[-1][0], tgfmt.md(reply) if reply else "(no reply)")
             show_on_site("jarvis", reply)
     finally:

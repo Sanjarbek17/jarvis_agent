@@ -218,6 +218,12 @@ saved in `var/state/runner_status.json` and shown by `get_status`. Fair turns: o
 "Due" date first, then the project whose last worker started longest ago. Heavy commands go through `scripts/heavy.py`:
 one at a time, a second only with 3.5 GB+ available.
 
+Live status (ticket 0960b065): a status / views / followers question about Haydovchi darslari or Instagram Channels
+(app chat of that project, or Telegram / General naming it) makes Jarvis's code read the numbers right now first
+(`core/livestats.py` -> `scripts/ig_stats.mjs`, each account's own logged-in hidden Chrome, ~30 s) and put them, with
+their time, in front of the message as a [LIVE STATS] block. A reading is reused for 15 min (`var/state/live_stats.json`);
+older numbers (the autopilot's check-*.json with likes/saves) are shown only with their age. Tool: `live_stats`.
+
 Network drops and restarts (ticket 2475b845): Telegram retries forever (Telethon `connection_retries=-1`, failed tries
 logged once a minute) instead of ending Jarvis, so launchd no longer restarts it in a loop; no new worker starts while
 api.anthropic.com is unreachable. Workers run detached (own session) and write straight into `var/logs/<project>-<ref>.jsonl`;

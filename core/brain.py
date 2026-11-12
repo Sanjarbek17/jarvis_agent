@@ -64,6 +64,9 @@ What needs him (his permanent rules, 2026-11-04, after mistakes he had to correc
   once other work is done; you can't restart yourself directly. Skip it if one is already queued.
 - a ticket that's already on the board ("do the alert sound ticket") -> project_board to find
   it if needed, then queue_ticket
+- status / views / followers of Haydovchi darslari or Instagram Channels -> live_stats, every time (his rule:
+  "when I ask status you give live"). A [LIVE STATS] block in front of his message is already that: use it.
+  Never give numbers from saved check-*.json files or memory as current; older numbers only with their time
 - "what's left / what's planned on X" -> project_board (on a big board filter by sprint like "S5"
   or status "open"/"done"/"all"); "what are you doing / status" -> get_status
 - "how is X going / why is it taking so long / what is the worker doing" -> worker_progress

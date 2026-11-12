@@ -77,7 +77,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from . import board, localboard, macremote
+from . import board, livestats, localboard, macremote
 from .brain import Brain, is_silent
 from .config import PROJECTS, STATE, reload_projects
 from .voice import transcribe_audio
@@ -500,7 +500,8 @@ async def ask(chat: dict, text: str, voice: bool = False, images: list[str] = ()
     try:
         replying = reply_context(answered) if answered else ""
         who = SIGNED_IN if signed_in else NOT_SIGNED_IN
-        reply = await brain.reply(f"{context_line(chat['project'])} {who}\n{earlier}{replying}{attached}{text}")
+        live = await livestats.brief_for(chat["project"], text)    # status: live numbers first, in code (0960b065)
+        reply = await brain.reply(f"{context_line(chat['project'])} {who}\n{earlier}{live}{replying}{attached}{text}")
     except Exception:
         log.exception("app chat %s: brain failed", chat["id"])
         reply = "Sorry, something went wrong on my side. Try again?"
