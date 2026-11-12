@@ -192,5 +192,12 @@
       "side_project/projects/yugur"
     ],
     "local": true
+  },
+  "Call Relay": {
+    "about": "Call Relay: Android app on Sanjar's two phones: when any app on phone A (e.g. Yandex Pro) opens the dialer with a number, the call is placed from phone B. Same APK on both, paired by a code; numbers go encrypted through ntfy.sh.",
+    "folders": [
+      "side_project/projects/call_relay"
+    ],
+    "local": true
   }
 }
