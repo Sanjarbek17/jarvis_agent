@@ -1212,6 +1212,11 @@ function showMac() {
     h("header", { class: "top" },
       h("button", { class: "back", "aria-label": "Back", text: "‹", onclick: () => { location.hash = "#/"; } }),
       h("div", { class: "grow" }, h("h2", { text: "Mac" }), status),
+      h("button", { class: "btn small", text: "🔒 Lock", title: "Lock the Mac", onclick: () => {   // ticket f6ba4d69
+        if (confirm("Lock the Mac? You may not be able to unlock it from here: macOS can refuse typed keys on its lock screen.")) {
+          macInput({ action: "key", key: "ctrl+cmd+q" });
+        }
+      } }),
       h("button", { class: "btn small", text: "Wake screen", onclick: () => macInput({ action: "wake" }) })),
     h("div", { class: "mac-view", id: "mac-view" }, wrap),
     h("div", { class: "mac-bar" },
