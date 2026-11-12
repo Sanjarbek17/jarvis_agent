@@ -22,6 +22,8 @@ def clean(tmp_path, monkeypatch):
     monkeypatch.setattr(f, "_burst", [])
     monkeypatch.setattr(f, "_told", 0.0)
     monkeypatch.setattr(f, "_answering", asyncio.Lock())
+    monkeypatch.setattr(f, "_last_reply", {"at": 0.0})
+    monkeypatch.setattr(f, "_last_request", {"text": "", "at": 0.0})
 
 
 class Tg:
@@ -638,3 +640,40 @@ def test_a_pin_that_cant_be_sent_is_kept_for_next_time(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         asyncio.run(f.apply_pins(PinTg(fail=True)))
     assert len(list(f.PINS.glob("*.json"))) == 1
+
+
+# --- ticket a4616d5d: no embarrassing answers -------------------------------------------------------------------
+
+def test_hollow_acknowledgements_never_reach_the_group(monkeypatch):
+    for bad in ("Okay, we skip the Bogʻishamol one then.", "Understood, M-37 is behind the airport.", "Tushunarli, o'tkazib yuboramiz."):
+        answered(monkeypatch, {"reply": bad})
+        assert asyncio.run(f.answer("Javohir", "This does not suit us")) == ("", 0), bad
+    answered(monkeypatch, {"reply": "Ha, bu o'sha uy, Sartepo, Maskani 5."})
+    assert asyncio.run(f.answer("Sanjar", "bu o'sha uymi?"))[0].startswith("Ha")
+
+
+def test_the_answerer_knows_how_each_owner_is_reached():
+    f.FLATMATES_VIEW.write_text(json.dumps([{"place": "2 rooms, Sartepo", "status": "still open",
+                                              "reach": "Their number has no Telegram account, so we can't write to them: only a phone call reaches them."}]))
+    assert "only a phone call reaches them" in f.flats() and "haven't written" not in f.flats()
+
+
+def test_the_prompt_never_lets_it_brush_off_a_request():
+    assert "never refuse" in f.PROMPT and '"request"' in f.PROMPT and "Never \"okay, we skip it\"" in f.PROMPT
+
+
+def test_a_request_goes_to_sanjar_once_not_a_refusal_to_the_group(monkeypatch):
+    answered(monkeypatch, {"reply": "", "request": "ask the owner for a lower price"})
+    tg, replies = Group(), []
+    asyncio.run(f.on_message(event("Can you ask the apartment owner if they would offer a lower price?", client=tg, replies=replies), "Javohir"))
+    asyncio.run(f.on_message(event("Can you ask the apartment owner if they would offer a lower price?", client=tg, replies=replies), "Javohir"))
+    assert replies == [] and len([m for m in tg.sent if "lower price" in str(m)]) == 1
+
+
+def test_no_second_unasked_answer_within_a_minute(monkeypatch):
+    answered(monkeypatch, {"reply": "$240."})
+    replies = []
+    asyncio.run(f.on_message(event("qancha?", client=Group(), replies=replies), "Ali"))
+    asyncio.run(f.on_message(event("qayerda?", client=Group(), replies=replies), "Vali"))
+    asyncio.run(f.on_message(event("Jarvis, qayerda?", client=Group(), replies=replies), "Vali"))   # named: answered
+    assert replies == ["$240.", "$240."]
