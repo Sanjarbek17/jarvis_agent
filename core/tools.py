@@ -384,9 +384,16 @@ def make_server(source: str) -> MCPServer:
         return await hooks.call_contact(contact, message)
 
     @server.tool()
+    async def lock_mac() -> str:
+        """Lock the Mac for real: the login window comes up and only Sanjar's password opens it (not display
+        sleep, which may not ask for a password). Use this whenever he says lock the Mac / the screen."""
+        from . import guard
+        return "Locked the Mac." if await asyncio.to_thread(guard.lock_screen) else "Couldn't lock the Mac."
+
+    @server.tool()
     async def run_on_mac(script: str, language: str = "shell") -> str:
         """Run ONE quick shell (zsh) or AppleScript snippet on the Mac right now and get its output:
-        instant things like volume, open/quit an app, play/pause music, lock the screen, battery,
+        instant things like volume, open/quit an app, play/pause music, battery,
         what's running. language: "shell" or "applescript". Anything with several steps, the
         screen, or unknown apps -> mac_task. Same safety rules as mac_task."""
         log.info("run_on_mac (%s): %s", language, script[:200])
