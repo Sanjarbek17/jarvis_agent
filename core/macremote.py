@@ -9,6 +9,7 @@ never holds up the mouse), and the WebSocket /api/mac/live streams frames as fas
 while mouse and keys come back on the same socket: no Python start per click, no request per frame.
 """
 import asyncio
+import collections
 import contextlib
 import json
 import logging
@@ -195,6 +196,7 @@ async def screen(width: int = 1280) -> tuple[bytes, int, int]:
 
 # --- the live socket ------------------------------------------------------------------------------
 
+COALESCE = ("move", "drag")             # only the newest of a run of these matters
 FAST, SLOW = 0.07, 0.2                  # seconds between frames: while he's using it / when nothing happens
 BUSY_FOR = 3.0                          # "using it" = input in the last few seconds
 
@@ -210,6 +212,8 @@ async def live(ws, width: int = 1024, quality: float = 0.5) -> None:
     Text messages from the phone: {"t": "ack"} after showing a frame, {"t": "size", "w", "q"} to change the
     picture, or an input {"action": ...} like POST /api/mac/input. Ends when the socket closes."""
     credit = asyncio.Semaphore(2)
+    waiting: collections.deque = collections.deque()   # inputs in order; a run of moves keeps only its newest
+    arrived = asyncio.Event()
     state = {"w": max(480, min(width, 1920)), "q": max(0.2, min(quality, 0.9)), "busy": 0.0, "held": None}
 
     async def receive():
@@ -226,23 +230,36 @@ async def live(ws, width: int = 1024, quality: float = 0.5) -> None:
                     state["q"] = max(0.2, min(float(msg.get("q", state["q"])), 0.9))
                 continue
             state["busy"] = time.monotonic()
-            if msg.get("action") == "wake":
-                await wake()
-                continue
-            try:
-                op = input_op(msg)
-            except ValueError as e:
-                await ws.send_text(json.dumps({"t": "error", "error": str(e)}))
-                continue
-            if op["op"] == "down":
-                state["held"] = (op["x"], op["y"])
-            elif op["op"] in ("drag", "move") and state["held"]:
-                state["held"] = (op["x"], op["y"])
-            elif op["op"] == "up":
-                state["held"] = None
-            err = await do_input(msg)
-            if err:
-                await ws.send_text(json.dumps({"t": "error", "error": err}))
+            if msg.get("action") != "wake":
+                try:
+                    op = input_op(msg)
+                except ValueError as e:
+                    await ws.send_text(json.dumps({"t": "error", "error": str(e)}))
+                    continue
+                if op["op"] == "down":
+                    state["held"] = (op["x"], op["y"])
+                elif op["op"] in ("drag", "move") and state["held"]:
+                    state["held"] = (op["x"], op["y"])
+                elif op["op"] == "up":
+                    state["held"] = None
+            waiting.append(msg)          # done by work(), so acks never wait behind the mouse (ticket 439b8193)
+            arrived.set()
+
+    async def work():
+        while True:
+            await arrived.wait()
+            arrived.clear()
+            while waiting:
+                msg = waiting.popleft()
+                # moves that piled up on a slow connection: go straight to the newest, don't replay the trail
+                while msg.get("action") in COALESCE and waiting and waiting[0].get("action") == msg["action"]:
+                    msg = waiting.popleft()
+                if msg.get("action") == "wake":
+                    await wake()
+                    continue
+                err = await do_input(msg)
+                if err:
+                    await ws.send_text(json.dumps({"t": "error", "error": err}))
 
     async def send():
         last = ""
@@ -264,7 +281,7 @@ async def live(ws, width: int = 1024, quality: float = 0.5) -> None:
             gap = FAST if time.monotonic() - state["busy"] < BUSY_FOR else SLOW
             await asyncio.sleep(max(0.0, gap - (time.monotonic() - started)))
 
-    tasks = [asyncio.create_task(receive()), asyncio.create_task(send())]
+    tasks = [asyncio.create_task(receive()), asyncio.create_task(send()), asyncio.create_task(work())]
     try:
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     finally:

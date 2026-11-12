@@ -122,3 +122,47 @@ def test_old_drag_request_becomes_steps(app):
     assert asyncio.run(macremote.do_input({"action": "drag", "x1": 0, "y1": 0, "x2": 20, "y2": 40})) == ""
     assert [r["op"] for r in inputs.got] == ["down"] + ["drag"] * 20 + ["up"]
     assert (inputs.got[-1]["x"], inputs.got[-1]["y"]) == (20, 40)
+
+
+def test_piled_up_moves_jump_to_the_newest_in_order(app, monkeypatch):
+    import asyncio
+    client, frames, inputs, _ = app
+    slow = {"first": True}
+    real = inputs.request
+
+    async def request(req, timeout=20):
+        if slow.pop("first", False):
+            await asyncio.sleep(0.3)                     # a slow first move: the rest pile up meanwhile
+        return await real(req, timeout)
+
+    monkeypatch.setattr(inputs, "request", request)
+    with client.websocket_connect("/api/mac/live?token=my-session") as ws:
+        ws.receive_bytes()
+        ws.send_text(json.dumps({"action": "move", "x": 0, "y": 0}))
+        for i in range(1, 21):
+            ws.send_text(json.dumps({"action": "move", "x": i, "y": i}))
+        ws.send_text(json.dumps({"action": "click", "x": 20, "y": 20}))
+        ws.send_text(json.dumps({"action": "move", "x": 30, "y": 30}))
+        import time
+        time.sleep(0.8)
+    ops = [(r["op"], r.get("x")) for r in inputs.got]
+    assert ops[0] == ("move", 0)
+    assert ("move", 20) in ops and len([o for o in ops if o[0] == "move"]) < 10    # the trail was skipped
+    assert ops.index(("move", 20)) < ops.index(("click", 20.0)) < ops.index(("move", 30))   # order kept
+
+
+def test_acks_are_not_held_up_by_slow_input(app, monkeypatch):
+    import asyncio
+    client, frames, inputs, _ = app
+
+    async def stuck(req, timeout=20):
+        await asyncio.sleep(5)
+        return {"ok": True}, b""
+
+    monkeypatch.setattr(inputs, "request", stuck)
+    with client.websocket_connect("/api/mac/live?token=my-session") as ws:
+        ws.receive_bytes()
+        ws.receive_bytes()
+        ws.send_text(json.dumps({"action": "move", "x": 1, "y": 1}))      # stuck for 5 s
+        ws.send_text(json.dumps({"t": "ack"}))
+        assert frame_of(ws.receive_bytes())[1] == b"\xff\xd8\xff-same"  # the next frame came anyway
