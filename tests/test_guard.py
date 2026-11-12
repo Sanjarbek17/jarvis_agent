@@ -138,3 +138,58 @@ def test_take_photo_times_out_when_macos_waits_for_permission(tmp_path, monkeypa
 
 def test_real_idle_reading():
     assert guard.idle_seconds() >= 0
+
+
+# --- ticket 4946d461: lock the Mac and warn out loud -----------------------------------------------------------
+
+def test_a_touch_locks_the_mac_after_the_screenshot_and_warns_out_loud(g, monkeypatch, tmp_path):
+    order = []
+
+    async def shot():
+        order.append("screenshot")
+        return tmp_path / "screen.png"
+
+    async def warn():
+        order.append("warning")
+
+    g.screenshot = shot
+    g.lock = lambda: order.append("lock") or True
+    g.warn = warn
+    g.arm(grace=0)
+    time.sleep(0.01)
+    touched(monkeypatch, 0)
+    assert asyncio.run(g.check())
+    assert order == ["screenshot", "lock", "warning"]              # the screenshot still shows what they opened
+    assert "Locking it" in g.texts[0] and not any("couldn't lock" in t for t in g.texts)
+
+
+def test_he_is_told_when_the_lock_fails(g, monkeypatch):
+    g.lock = lambda: False
+    g.arm(grace=0)
+    time.sleep(0.01)
+    touched(monkeypatch, 0)
+    asyncio.run(g.check())
+    assert any("couldn't lock" in t for t in g.texts)
+
+
+def test_the_warning_puts_his_volume_back(monkeypatch):
+    calls, played = [], []
+
+    async def osa(script):
+        calls.append(script)
+        return "output volume:30, input volume:50, alert volume:100, output muted:true" if script.startswith("get") else ""
+
+    async def play(path):
+        played.append(str(path))
+
+    monkeypatch.setattr(guard, "_osascript", osa)
+    monkeypatch.setattr(guard, "_play", play)
+    asyncio.run(guard.play_warning())
+    assert calls[1] == f"set volume output volume {guard.WARN_VOLUME} without output muted"
+    assert calls[-1] == "set volume output volume 30 with output muted"                # muted again, as he left it
+    assert played[0].endswith("Basso.aiff") and any(p.endswith("guard_warning.wav") for p in played)
+
+
+def test_the_real_lock_call_exists_on_this_mac():
+    import ctypes
+    assert hasattr(ctypes.CDLL(guard.LOGIN_FRAMEWORK), "SACLockScreenImmediate") and guard.WARNING.exists()

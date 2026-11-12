@@ -1,6 +1,6 @@
 import pytest
 
-from core import localboard, runner
+from core import guard, localboard, runner
 
 
 @pytest.fixture(autouse=True)
@@ -16,6 +16,12 @@ def isolated_runner_state(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "FROM_SANJAR", tmp_path / "from_sanjar.json")
     monkeypatch.setattr(runner, "USAGE_LIMIT", tmp_path / "usage_limit.json")
     monkeypatch.setattr(runner, "WORKERS", tmp_path / "workers.json")
+    monkeypatch.setattr(guard, "lock_screen", lambda: True)          # tests never lock the real Mac...
+
+    async def _quiet():
+        pass
+
+    monkeypatch.setattr(guard, "warn", _quiet)                       # ...or play the alarm
     monkeypatch.setattr(runner, "online", lambda timeout=3: True)
     from core import origin
     monkeypatch.setattr(origin, "FILE", tmp_path / "ticket_origin.json")
