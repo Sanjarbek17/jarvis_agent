@@ -219,6 +219,9 @@ def make_server(source: str) -> MCPServer:
         text = await board.status_text(project)
         if hooks.runner.wait_reason:          # e.g. a ticket held back because RAM is short
             text += f"\n\nRunner: {hooks.runner.wait_reason}"
+        from . import usagewatch
+        if line := usagewatch.status_line():
+            text += f"\n{line}"
         return text
 
     @server.tool()

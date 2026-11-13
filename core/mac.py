@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from .config import HERE, LOGS, MAC_NEVER_DO, SHOTS, STATE
+from . import usagewatch
 from .runner import NEEDS_ME, progress_text
 
 log = logging.getLogger("jarvis.mac")
@@ -102,6 +103,8 @@ class MacWorker:
                             continue
                         if event.get("session_id"):
                             SESSION.write_text(json.dumps({"id": event["session_id"]}))
+                        if event.get("type") == "rate_limit_event":
+                            await usagewatch.report(event.get("rate_limit_info") or {})
                         if event.get("type") == "result":
                             result, is_error = event.get("result") or "", bool(event.get("is_error"))
                     await self.proc.wait()

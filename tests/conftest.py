@@ -1,6 +1,6 @@
 import pytest
 
-from core import guard, localboard, runner
+from core import guard, localboard, runner, usagewatch
 
 
 @pytest.fixture(autouse=True)
@@ -16,6 +16,7 @@ def isolated_runner_state(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "FROM_SANJAR", tmp_path / "from_sanjar.json")
     monkeypatch.setattr(runner, "USAGE_LIMIT", tmp_path / "usage_limit.json")
     monkeypatch.setattr(runner, "WORKERS", tmp_path / "workers.json")
+    monkeypatch.setattr(usagewatch, "FILE", tmp_path / "usage_watch.json")   # never the real usage state
 
     async def _no_chrome(owner, older_than=-1):
         pass
