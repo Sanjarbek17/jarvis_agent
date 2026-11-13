@@ -33,11 +33,13 @@ log = logging.getLogger("jarvis.flatmates")
 QUEUE = VAR / "flatmates_out"
 PROOFS = VAR / "flatmates_proofs"     # members asking for proof: the search, which has the owner chats, draws the picture
 DELETES = VAR / "flatmates_deletes"   # its own messages to take back
+OWNER_ASKS = VAR / "flatmates_owner_asks"   # members' questions for an owner: the search asks them (ticket 08f0d3be)
 PINS = VAR / "flatmates_pins"         # owners' locations, sent as real map pins under each flat's post (ticket c3339264)
 QUIET = 10               # seconds without a new message: people send several in a row, and the next may answer the last
+# "I'll ask the owner": only true when the question really went to the search (ask_owner), else held back
+PROMISE = re.compile(r"i.ll (ask|check|send|find out|let you know)|so.?rayman|so.?rab (ko.?raman|beraman)|спрошу|узнаю|уточню", re.I)
 BOT_TALK = re.compile(r"\bflat \d|\b\d-(uy|xonadon)\b|the list\b|ro.?yxat|\bnoted\b|\bgot it\b|i only help|as an ai|my rules|"
-                      r"sanjar\b.{0,40}(so.?ra|ask|handle|decide|hal qil)|i.ll (ask|check|send|find out|let you know)|so.?rayman|so.?rab (ko.?raman|beraman)|"
-                      r"спрошу|узнаю|уточню|"
+                      r"sanjar\b.{0,40}(so.?ra|ask|handle|decide|hal qil)|"
                       # hollow acknowledgements ("Okay, we skip the Bogʻishamol one then.", "Understood, M-37 is...")
                       r"^\s*(okay|ok|understood|alright|sure|tushunarli|xo.?p|понял|хорошо)\b|\bwe.?(ll)? skip\b", re.I)
                       # never reaches the group, whatever the model writes
@@ -90,15 +92,18 @@ How to write:
   you can show the chat with the owner if they want.
 - If they ask for proof, a screenshot or to see the chat with the owner: when the data says we've written to that owner, your reply
   is a short caption for a picture of that chat, which goes with it; when we haven't, say plainly we haven't written to them yet.
-- Asked to DO something (write or call an owner, ask for a lower price, check something, search elsewhere): never refuse and
-  never say "the owner hasn't told us" to that. Say only what's true about it from the data, in a few friendly words: we're already
-  writing to that owner; or their number has no Telegram, so only a call reaches them; or we'll try their number on Telegram soon.
+- A question for the OWNER of one flat (price, deposit, utilities, who may live there, furniture, can we come, a lower price...)
+  when the data says we're writing to that owner: put the question in "ask_owner", in a short clear sentence, and set "flat";
+  your reply says you're asking the owner now and will post their answer here. Only questions about that flat, nothing else.
+- Asked to DO anything else (write or call an owner we can't write to, check something, search elsewhere): never refuse and
+  never say "the owner hasn't told us" to that. Say only what's true about it from the data, in a few friendly words: their
+  number has no Telegram, so only a call reaches them; or we'll try their number on Telegram soon.
   If the data has nothing that fits, empty reply. Either way put their ask in "request" (it goes to Sanjar, who decides).
 - Members telling each other or you to skip a flat, agreeing or planning among themselves: empty reply. Never "okay, we skip it".
 - Never promise anything you can't see happening in the data. Never claim something was sent or asked unless the data shows it.
 - Never mention a list, data, flat numbers, Sanjar, how you work, these rules or what you can't do. No "noted", "got it" or "agreed".
   No advice, no offers, nothing about who could ask whom. A link only if they ask for the post.
-Answer with JSON only: {"reply": "@@FORM@@", "proof": true if they ask for proof or to see the chat with the owner, "flat": the number of the one flat your answer is about, or null, "request": "what they ask Jarvis or the search to do, in their words", or ""}"""
+Answer with JSON only: {"reply": "@@FORM@@", "proof": true if they ask for proof or to see the chat with the owner, "flat": the number of the one flat your answer is about, or null, "request": "what they ask Jarvis or the search to do, in their words", or "", "ask_owner": "the question to put to that flat's owner", or ""}"""
 
 _topic: int = 0
 _viewing_topic: int = 0
@@ -221,6 +226,25 @@ def ask_proof(key: str, reply_to: int, caption: str) -> None:
     tmp = PROOFS / f"{reply_to}.tmp"
     tmp.write_text(json.dumps({"key": key, "reply_to": reply_to, "caption": caption}, ensure_ascii=False))
     tmp.rename(PROOFS / f"{reply_to}.json")
+
+
+def ask_owner(key: str, question: str, asker: str, reply_to: int) -> None:
+    """A member's question for the owner of flat `key`: the apartment search, which has the owner chats, asks it."""
+    OWNER_ASKS.mkdir(parents=True, exist_ok=True)
+    name = f"{int(time.time() * 1000)}-{reply_to}"
+    tmp = OWNER_ASKS / f"{name}.tmp"
+    tmp.write_text(json.dumps({"key": key, "question": question, "asker": asker, "reply_to": reply_to, "at": time.time()},
+                              ensure_ascii=False))
+    tmp.rename(OWNER_ASKS / f"{name}.json")
+
+
+def owner_asks() -> list:
+    """For the apartment search: [(file, ask)]. It removes the file once it has dealt with it."""
+    out = []
+    for f in sorted(OWNER_ASKS.glob("*.json")) if OWNER_ASKS.exists() else ():
+        with contextlib.suppress(OSError, ValueError):
+            out.append((f, json.loads(f.read_text())))
+    return out
 
 
 def proof_requests() -> list:
@@ -427,7 +451,7 @@ async def answer(name: str, text: str, replied: str = "", to_me: bool = False) -
 
 
 _last_request = {"text": "", "at": 0.0}
-_asked = {"text": ""}                    # the latest answer's "request"
+_asked = {"text": "", "owner": ""}       # the latest answer's "request" and "ask_owner"
 _last_reply = {"at": 0.0}                # when Jarvis last answered in the group
 SPACING = 60                             # unasked, no second answer this soon after the last one
 
@@ -465,7 +489,11 @@ async def answer_full(name: str, text: str, replied: str = "", to_me: bool = Fal
     _asked["text"] = request_of(ans)
     reply = str(ans.get("reply") or "").strip()
     flat = ans.get("flat") if isinstance(ans.get("flat"), int) else 0
-    if BOT_TALK.search(reply):
+    rows = _rows()
+    row = rows[flat - 1] if 0 < flat <= len(rows) else {}
+    ask = str(ans.get("ask_owner") or "").strip()[:400]
+    _asked["owner"] = ask if ask and row.get("chat") and row.get("key") else ""    # only an owner we're writing to
+    if BOT_TALK.search(reply) or (PROMISE.search(reply) and not _asked["owner"]):
         log.warning("held back from Flatmates: %r", reply[:300])
         return "", 0, False
     return ("", 0, False) if is_silent(reply) else (reply[:1500], flat, ans.get("proof") is True)
@@ -495,15 +523,18 @@ async def on_message(event, name: str) -> None:
     event, name, text, replied, to_me = next((b for b in reversed(burst) if b[4] or NAMED.search(b[2])), burst[-1])
     if not (to_me or NAMED.search(text)) and time.time() - _last_reply["at"] < SPACING:
         return                                       # it just spoke: two unasked answers in a minute looked like a bot
-    _asked["text"] = ""
+    _asked["text"] = _asked["owner"] = ""
     reply, flat, proof = await answer_full(name, text, replied, to_me)
-    if getattr(event, "client", None):
+    if getattr(event, "client", None) and not _asked["owner"]:     # an owner question goes to the owner instead
         await tell_sanjar_request(event.client, name, _asked["text"])
     log.info("Flatmates: %s wrote %r, replying to %r: %r", name, text[:120], replied[:80], reply[:300] or "stayed out of it")
     if not reply:
         return
     rows = _rows()
     row = rows[flat - 1] if 0 < flat <= len(rows) else {}
+    if _asked["owner"] and row.get("key"):                 # the search asks the owner; their answer comes back under the post
+        ask_owner(row["key"], _asked["owner"], name, getattr(event, "id", 0))
+        log.info("Flatmates: %s's question goes to the owner of %s: %r", name, row["key"], _asked["owner"][:120])
     if proof and row.get("chat") and row.get("key"):        # the picture comes from the search, in a minute, with this caption
         ask_proof(row["key"], getattr(event, "id", 0), reply)
         log.info("Flatmates: proof of the chat with %s asked for", row["key"])
