@@ -27,7 +27,8 @@ WebSocket. Two kinds (ticket 31ed52a7):
     POST /api/chats/{id}/voice?reply_to=ts (audio body) {heard, reply}: transcribed like a Telegram voice note
     GET  /api/images/{name}                  an image named in a message's "images" list (JPEG/PNG)
     GET  /api/files/{name}                   a file from a message's "files" list [{name, title, size}]
-    GET  /api/notifications?after=<ts>       {chat, items}: what Jarvis wrote first (ticket news, "needs
+    GET  /api/notifications?after=<ts>       {chat, items, replies}: replies = Jarvis's chat answers since ts
+                                             {chat, chat_title, chat_project, text, ts} (ticket 8da9f61b); what Jarvis wrote first (ticket news, "needs
                                              you", the daily summary) since ts; the phone polls this
     GET  /api/board?project=X                {project, local, columns, tickets: [...]}: any board, Notion too
     POST /api/board {project, title, text, queue?}  a new ticket; {ticket}
@@ -524,6 +525,7 @@ async def ask(chat: dict, text: str, voice: bool = False, images: list[str] = ()
     chat["messages"].append(msg)
     chat["session"], chat["updated"] = brain.session_id, time.time()
     save_chat(chat)
+    note_reply(chat, msg)
     if shared:
         await _to_telegram(shown)
     else:
@@ -655,6 +657,33 @@ def _with_project(items: list[dict]) -> list[dict]:
         chat = load_chat(m["chat"]) if m.get("chat") else None
         out.append({**m, "chat_project": chat["project"]} if chat else m)
     return out
+
+
+REPLIES = STATE / "app_replies.json"   # Jarvis's latest chat answers, for the phone's notifications (ticket 8da9f61b)
+KEEP_REPLIES = 100
+
+
+def note_reply(chat: dict, msg: dict) -> None:
+    """Jarvis answered in an app chat: keep a short note so the phone can notify him if he left the chat or the app.
+    Only the safe text (never what _kept took out): a notification can show on the lock screen."""
+    try:
+        notes = json.loads(REPLIES.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        notes = []
+    notes.append({"chat": chat["id"], "chat_title": chat.get("title", ""), "chat_project": chat.get("project", GENERAL),
+                  "text": (msg.get("text") or "")[:300], "ts": msg["ts"]})
+    REPLIES.parent.mkdir(parents=True, exist_ok=True)
+    tmp = REPLIES.with_suffix(".tmp")
+    tmp.write_text(json.dumps(notes[-KEEP_REPLIES:], ensure_ascii=False))
+    os.replace(tmp, REPLIES)
+
+
+def replies_since(after: float, limit: int = 20) -> list[dict]:
+    try:
+        notes = json.loads(REPLIES.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+    return [n for n in notes if n.get("ts", 0) > after][-limit:]
 
 
 def updates_since(after: float, limit: int = 20) -> list[dict]:
@@ -864,7 +893,8 @@ async def notifications(req: Request):
         after = float(req.query_params.get("after") or 0)
     except ValueError:
         after = 0.0
-    return JSONResponse({"chat": UPDATES, "title": "Updates from Jarvis", "items": updates_since(after)})
+    return JSONResponse({"chat": UPDATES, "title": "Updates from Jarvis", "items": updates_since(after),
+                         "replies": replies_since(after)})
 
 
 MAC_QUIET = 15 * 60                    # control after this long without any starts a new "session": a new alert
