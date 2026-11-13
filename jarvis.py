@@ -44,7 +44,7 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.types import InputPeerChannel, MessageActionGroupCall
 
-from core import answering, appserver, board, contacts, coremem, expenses, flatmates, google, guard, livestats, macremote, memory, origin, outbox, selfcheck, tgfmt, tools
+from core import answering, appserver, board, usagewatch, contacts, coremem, expenses, flatmates, google, guard, livestats, macremote, memory, origin, outbox, selfcheck, tgfmt, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, WATCHED_GROUP_IDS, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
@@ -864,6 +864,12 @@ other projects, tickets, tools, secrets or his private life (empty if the group 
 ---DM--- and, if needed, what only he should read (details, other projects, anything private); nothing after it if not.]"""
 
 
+async def usage_note(text: str):
+    """A Claude usage note, straight to him: never held back by the brain."""
+    await tg.send_message(OWNER_ID, text, silent=text.startswith("⚠️"))
+    app_push(text)
+
+
 def split_order_reply(reply: str) -> tuple[str, str]:
     """(line for the Flatmates group, part for his DM)."""
     group, _, private = (reply or "").partition("---DM---")
@@ -1212,6 +1218,7 @@ async def main():
     appserver.send_code = lambda text: tg.send_message(OWNER_ID, text)   # app login codes (ticket 31ed52a7)
     appserver.main_brain = chat                                          # the website's Telegram chat
     flatmates.sanjar_order = flatmates_order                             # his own orders in the Flatmates group
+    usagewatch.sender = usage_note                                       # Claude 5-hour limit notes (ticket e6e75d74)
     appserver.tell_telegram = lambda text: tgfmt.send(tg, OWNER_ID, tgfmt.md(text), link_preview=False)
     asyncio.create_task(appserver.serve())
     asyncio.create_task(send_format_samples())

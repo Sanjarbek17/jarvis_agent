@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from typing import AsyncIterator
 
-from . import coremem, memory
+from . import coremem, memory, usagewatch
 from .config import CALLS, DEV, HERE, PROJECTS, TOOLS_PORT, projects_text, projects_version, rules_text
 
 log = logging.getLogger("jarvis.brain")
@@ -373,6 +373,8 @@ class Brain:
                     # a tool call ends a text block; make sure sentences get cut there
                     if any(b.get("type") == "tool_use" for b in event["message"].get("content", [])):
                         yield "\n"
+                elif kind == "rate_limit_event":
+                    asyncio.create_task(usagewatch.report(event.get("rate_limit_info") or {}))
                 elif kind == "result":
                     if event.get("is_error"):
                         log.error("brain error: %s", event.get("result"))

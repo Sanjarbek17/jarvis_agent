@@ -70,15 +70,21 @@ def test_hit_limit_detection():
 
 
 def test_limited_worker_is_paused_not_failed(monkeypatch, tmp_path):
+    notes = []
+
+    async def note(t):
+        notes.append(t)
+
+    monkeypatch.setattr(runner.usagewatch, "sender", note)
     writes, told, _ = run_worker(monkeypatch, tmp_path, LIMIT_STREAM)
     final = writes[-1]
     assert final["jarvis"] == "Queued" and "usage limit" in final["note"]
     assert not any(w.get("jarvis") == "Failed" for w in writes)
     state = json.loads(runner.USAGE_LIMIT.read_text())
     assert state["until"] == RESET and state["refs"] == ["aet-25"]
-    assert [k for k, _ in told] == ["paused"]
+    assert told == [] and len(notes) == 1 and "used up" in notes[0]        # one note, straight to him (e6e75d74)
     _, told2, _ = run_worker(monkeypatch, tmp_path, LIMIT_STREAM, ref="aet-26")   # second one: no second note
-    assert told2 == [] and json.loads(runner.USAGE_LIMIT.read_text())["refs"] == ["aet-25", "aet-26"]
+    assert told2 == [] and len(notes) == 1 and json.loads(runner.USAGE_LIMIT.read_text())["refs"] == ["aet-25", "aet-26"]
 
 
 def test_resumed_worker_is_told_to_continue(monkeypatch, tmp_path):

@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from . import autoanswer, board, grants, localboard, origin, ramguard, tgfmt
+from . import autoanswer, board, grants, localboard, origin, ramguard, tgfmt, usagewatch
 from .brain import BRAIN_MODEL   # workers run on the same model as the Jarvis brain (Opus)
 from .board import Ticket
 from .config import (rules_text, GIT_FLOW, HERE, LOGS, NEVER_DO, NEVER_DO_MAIN_OK, POLL_SECONDS,
@@ -588,6 +588,7 @@ class Runner:
                 self._waiting(nxt[0], "the Claude usage limit; it resets at "
                               + time.strftime("%H:%M", time.localtime(until - LIMIT_MARGIN)))
             return
+        await usagewatch.report_reset()      # "the 5-hour limit has reset", once after a hit
         if until:                            # it has reset: paused tickets are Queued and start now
             state = limit_state()
             state.pop("until", None)
@@ -788,6 +789,8 @@ class Runner:
                                 cut[tid] = desc
                     elif kind == "rate_limit_event":
                         info = event.get("rate_limit_info") or {}
+                        if not replayed:
+                            await usagewatch.report(info)      # 80% / used up: one note each (ticket e6e75d74)
                         if info.get("status") == "rejected":
                             rejected_until = float(info.get("resetsAt") or 0) or time.time() + LIMIT_FALLBACK
                     elif kind == "result":
@@ -894,7 +897,7 @@ class Runner:
                                      f"It continues by itself after {at}."])
         self.finished[card.ref] = time.monotonic()
         log.info("%s: paused by the usage limit until %s", card.ref, at)
-        if first:                            # one note per limit, not one per ticket
+        if first and not usagewatch.recently_hit():      # one note per limit; usagewatch may have told him already
             await self.notify(card, "paused", f"The Claude usage limit stopped the workers. They're back in the "
                                               f"queue and continue by themselves after {at}.", [])
 
