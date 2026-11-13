@@ -766,3 +766,9 @@ def test_his_answer_is_split_into_group_line_and_dm():
     exec(compile(ast.Module([fn], []), "jarvis.py", "exec"), g)
     assert g["split_order_reply"]("Ok, dropped #3.\n---DM---\nThe Yugur build passed.") == ("Ok, dropped #3.", "The Yugur build passed.")
     assert g["split_order_reply"]("Ok.") == ("Ok.", "")
+
+
+
+def test_the_search_is_only_for_our_own_flat():
+    """Ticket 68816936: Jarvis offered family flats to a member who asked; Sanjar: "find yourself"."""
+    assert "only for our own flat" in f.PROMPT and "never offer them listings" in f.PROMPT
