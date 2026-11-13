@@ -33,6 +33,7 @@ def isolated_runner_state(tmp_path, monkeypatch):
         return None, "camera blocked in tests"
 
     monkeypatch.setattr(guard, "take_photo", _no_camera)             # ...or turn the real camera on (ticket 04cf4647)
+    monkeypatch.setattr(guard, "AUTOMATION", tmp_path / "automation_input")   # never the real marker
     monkeypatch.setattr(guard, "CAMERA", ["-f", "lavfi", "-i", "testsrc=size=320x240:rate=30"])   # even a direct call
     monkeypatch.setattr(runner, "online", lambda timeout=3: True)
     from core import origin

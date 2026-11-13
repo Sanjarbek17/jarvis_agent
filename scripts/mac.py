@@ -25,6 +25,27 @@ import ApplicationServices as AS
 import Quartz as Q
 
 SHOTS = Path(__file__).parent.parent / "var" / "shots"
+# Every click and key this tool makes is Jarvis's, not a stranger at the Mac: the guard (core/guard.py) skips input
+# right after this marker changes (ticket 733814dd: the reel poster's clicks locked the Mac twice on 13 Nov).
+AUTOMATION = Path(__file__).parent.parent / "var" / "state" / "automation_input"
+_marked = [0.0]
+
+
+def _mark() -> None:
+    now = time.time()
+    if now - _marked[0] < 0.5:
+        return
+    _marked[0] = now
+    try:
+        AUTOMATION.parent.mkdir(parents=True, exist_ok=True)
+        AUTOMATION.write_text(str(now))
+    except OSError:
+        pass
+
+
+def _post(event) -> None:
+    _mark()
+    Q.CGEventPost(Q.kCGHIDEventTap, event)
 
 KEYS = {
     "return": 36, "enter": 36, "tab": 48, "space": 49, "delete": 51, "backspace": 51, "esc": 53,
@@ -70,7 +91,7 @@ def shot(path: str = "") -> None:
 def _mouse(kind: int, x: float, y: float, button: int = Q.kCGMouseButtonLeft, clicks: int = 1) -> None:
     e = Q.CGEventCreateMouseEvent(None, kind, (x, y), button)
     Q.CGEventSetIntegerValueField(e, Q.kCGMouseEventClickState, clicks)
-    Q.CGEventPost(Q.kCGHIDEventTap, e)
+    _post(e)
 
 
 def click(x: float, y: float, right: bool = False, double: bool = False) -> None:
@@ -96,7 +117,7 @@ def drag(x1: float, y1: float, x2: float, y2: float) -> None:
 def scroll(dy: int, x: float | None = None, y: float | None = None) -> None:
     if x is not None:
         _mouse(Q.kCGEventMouseMoved, x, y)
-    Q.CGEventPost(Q.kCGHIDEventTap, Q.CGEventCreateScrollWheelEvent(None, Q.kCGScrollEventUnitLine, 1, dy))
+    _post(Q.CGEventCreateScrollWheelEvent(None, Q.kCGScrollEventUnitLine, 1, dy))
 
 
 def type_text(text: str) -> None:
@@ -107,7 +128,7 @@ def type_text(text: str) -> None:
         for down in (True, False):
             e = Q.CGEventCreateKeyboardEvent(None, 0, down)
             Q.CGEventKeyboardSetUnicodeString(e, len(ch.encode("utf-16-le")) // 2, ch)
-            Q.CGEventPost(Q.kCGHIDEventTap, e)
+            _post(e)
         time.sleep(0.01)
 
 
@@ -121,7 +142,7 @@ def key(combo: str) -> None:
     for down in (True, False):
         e = Q.CGEventCreateKeyboardEvent(None, KEYS[name], down)
         Q.CGEventSetFlags(e, flags)
-        Q.CGEventPost(Q.kCGHIDEventTap, e)
+        _post(e)
 
 
 # --- serve: a long-running helper, so remote control doesn't start Python for every click -------

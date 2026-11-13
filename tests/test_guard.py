@@ -245,3 +245,38 @@ def test_no_test_can_reach_the_real_camera():
     """Ticket 04cf4647: a guard test armed the guard and took two real camera photos on every test run."""
     assert asyncio.run(guard.take_photo()) == (None, "camera blocked in tests")
     assert "avfoundation" not in guard.CAMERA
+
+
+
+# --- ticket 733814dd: Jarvis's own clicks (the reel poster through scripts/mac.py) aren't a touch ------------------
+
+def test_input_right_after_jarvis_automation_doesnt_lock(g, monkeypatch):
+    locks = []
+    g.lock = lambda: locks.append(1) or True
+    g.arm(grace=0)
+    time.sleep(0.01)
+    guard.AUTOMATION.write_text("now")                     # scripts/mac.py just clicked
+    touched(monkeypatch, 0)
+    assert not asyncio.run(g.check()) and locks == [] and g.texts == []
+    # long after the automation, a real touch still locks
+    import os
+    old = time.time() - guard.AUTOMATION_GRACE - 5
+    os.utime(guard.AUTOMATION, (old, old))
+    time.sleep(guard.POLL + 0.1)
+    touched(monkeypatch, 0)
+    assert asyncio.run(g.check()) and locks == [1]
+
+
+def test_mac_tool_marks_every_event(tmp_path, monkeypatch):
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("mac_tool", Path(__file__).resolve().parent.parent / "scripts" / "mac.py")
+    mac = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mac)
+    posted = []
+    monkeypatch.setattr(mac, "AUTOMATION", tmp_path / "automation_input")
+    monkeypatch.setattr(mac.Q, "CGEventPost", lambda tap, e: posted.append(e))
+    mac._marked[0] = 0.0
+    mac._post("event")
+    assert posted == ["event"] and (tmp_path / "automation_input").exists()
+    assert "CGEventPost(Q.kCGHIDEventTap, event)" in (Path(__file__).resolve().parent.parent / "scripts" / "mac.py").read_text()
