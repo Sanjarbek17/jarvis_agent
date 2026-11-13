@@ -122,7 +122,7 @@ def test_sending_is_retried(g):
 def test_take_photo_real_ffmpeg_gives_a_jpeg(tmp_path, monkeypatch):
     monkeypatch.setattr(guard, "SHOTS", tmp_path)
     monkeypatch.setattr(guard, "CAMERA", ["-f", "lavfi", "-i", "testsrc=size=320x240:rate=30"])
-    path, why = asyncio.run(guard.take_photo())
+    path, why = asyncio.run(guard.capture_photo())
     assert why == "" and path.read_bytes()[:2] == b"\xff\xd8"
 
 
@@ -133,7 +133,7 @@ def test_take_photo_times_out_when_macos_waits_for_permission(tmp_path, monkeypa
     monkeypatch.setattr(guard, "SHOTS", tmp_path)
     monkeypatch.setattr(guard, "FFMPEG", str(hang))
     monkeypatch.setattr(guard, "PHOTO_TIMEOUT", 0.2)
-    assert asyncio.run(guard.take_photo()) == (None, guard.NO_CAMERA)
+    assert asyncio.run(guard.capture_photo()) == (None, guard.NO_CAMERA)
 
 
 def test_real_idle_reading():
@@ -238,3 +238,10 @@ def test_waking_the_screen_from_the_app_counts_as_him(monkeypatch):
     monkeypatch.setattr(macremote, "_run", run)
     asyncio.run(macremote.wake())
     assert macremote.controlling()
+
+
+
+def test_no_test_can_reach_the_real_camera():
+    """Ticket 04cf4647: a guard test armed the guard and took two real camera photos on every test run."""
+    assert asyncio.run(guard.take_photo()) == (None, "camera blocked in tests")
+    assert "avfoundation" not in guard.CAMERA
