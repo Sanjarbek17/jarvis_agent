@@ -24,6 +24,7 @@ def clean(tmp_path, monkeypatch):
     monkeypatch.setattr(f, "_answering", asyncio.Lock())
     monkeypatch.setattr(f, "_last_reply", {"at": 0.0})
     monkeypatch.setattr(f, "_last_request", {"text": "", "at": 0.0})
+    monkeypatch.setattr(f, "OWNER_ASKS", tmp_path / "owner_asks")
 
 
 class Tg:
@@ -677,3 +678,27 @@ def test_no_second_unasked_answer_within_a_minute(monkeypatch):
     asyncio.run(f.on_message(event("qayerda?", client=Group(), replies=replies), "Vali"))
     asyncio.run(f.on_message(event("Jarvis, qayerda?", client=Group(), replies=replies), "Vali"))   # named: answered
     assert replies == ["$240.", "$240."]
+
+
+# --- ticket 08f0d3be: members' questions go to the owner ----------------------------------------------------------
+
+def test_a_question_for_an_owner_we_write_to_is_queued_for_the_search(monkeypatch):
+    f.FLATMATES_VIEW.write_text(json.dumps([{"key": "@o", "place": "2 rooms, Qorasuv", "status": "still open", "chat": True,
+                                              "reach": "We're writing to the owner on Telegram."}]))
+    answered(monkeypatch, {"reply": "I'll ask the owner and post their answer here.", "flat": 1,
+                           "ask_owner": "Are utilities included in the price?", "request": "ask about utilities"})
+    tg, replies = Group(), []
+    asyncio.run(f.on_message(event("Kommunal narxga kiradimi? so'rab ber", client=tg, replies=replies), "Ikrom"))
+    asks = f.owner_asks()
+    assert len(asks) == 1 and asks[0][1]["key"] == "@o" and asks[0][1]["question"] == "Are utilities included in the price?"
+    assert asks[0][1]["asker"] == "Ikrom"
+    assert replies == ["I'll ask the owner and post their answer here."]                   # the promise is true now
+    assert not [m for m in tg.sent if "asked" in str(m) and "Flatmates" in str(m)]        # no extra note to Sanjar
+
+
+def test_no_ask_without_a_chat_and_no_empty_promise(monkeypatch):
+    f.FLATMATES_VIEW.write_text(json.dumps([{"key": "tel1", "place": "2 rooms", "status": "still open", "chat": False}]))
+    answered(monkeypatch, {"reply": "I'll ask the owner.", "flat": 1, "ask_owner": "Is it free?"})
+    replies = []
+    asyncio.run(f.on_message(event("bo'shmi? so'rab ber", client=Group(), replies=replies), "Ali"))
+    assert f.owner_asks() == [] and replies == []                                           # held back: it can't ask them
