@@ -55,7 +55,21 @@ STUCK_TOLD = STATE / "stuck_told.json"   # ticket ref -> when Sanjar was last to
 # continues once the limit resets. {"until": epoch, "refs": [paused refs], "told": epoch}
 USAGE_LIMIT = STATE / "usage_limit.json"
 WORKERS = STATE / "workers.json"   # ref -> {pid, project, log, attempt}: live workers, adopted after a restart
-ONLINE_HOST = ("api.anthropic.com", 443)   # workers need it; no new worker starts while it's unreachable
+ONLINE_HOST = ("api.anthropic.com", 443)
+# workers can't open pages in Sanjar's real Chrome with `open` (30 tabs were left open, ticket 3a61de45)
+WORKER_SETTINGS = json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+    {"type": "command", "command": f"{HERE / '.venv/bin/python'} {HERE / 'scripts/hooks/no_raw_chrome.py'}"}]}]}})
+REAL_CHROME = HERE / "scripts" / "real_chrome.py"
+
+
+async def close_chrome_of(owner: str, older_than: float = -1) -> None:
+    """Close the real-Chrome windows opened through scripts/real_chrome.py by this owner (a ticket ref, "mac"),
+    all of them or those older than `older_than` seconds ("" = every owner)."""
+    with contextlib.suppress(Exception):
+        args = ["sweep", "--owner", owner, "--older-than", str(older_than)] if older_than >= 0 else ["close", "--owner", owner]
+        proc = await asyncio.create_subprocess_exec(str(HERE / ".venv/bin/python"), str(REAL_CHROME), *args,
+                                                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        await asyncio.wait_for(proc.wait(), 60)   # workers need it; no new worker starts while it's unreachable
 LIMIT_MARGIN = 120           # start again this long after the announced reset
 LIMIT_FALLBACK = 30 * 60     # no reset time known: try again after this long
 _LIMIT_TEXT = re.compile(r"hit your (\S+ )?limit|usage limit reached|out of (extra )?usage", re.I)
@@ -275,6 +289,9 @@ Sanjar is away from the computer and won't approve anything, so work on your own
   afterwards (`./gradlew --stop`, close emulators). Don't start sub-agents that each build.
 - If you change something visible in a web app, start it (or use the running one) and save a
   screenshot of the result as a PNG in {shots}/ (e.g. with headless Chrome or Playwright).
+- Never open pages in Sanjar's own Chrome with `open` (it's blocked: they were never closed). Use a headless
+  browser; only when a page needs his logins: {HERE / ".venv/bin/python"} {HERE / "scripts/real_chrome.py"} open <url>
+  [--profile "Profile 4"], then `real_chrome.py close --window <id>` when done (closed anyway when this ticket ends).
 - Never touch ~/Documents, ~/Desktop or ~/Downloads (not even `ls`): macOS asks for permission
   there and the command hangs forever, since nobody is at the Mac to click Allow. If a note or
   memory says to put files there, skip that step and mention it in your summary.
@@ -443,6 +460,8 @@ class Runner:
                 self.last_sweep = time.monotonic()
                 try:
                     await self._sweep_stuck()
+                    await close_chrome_of("mac", 30 * 60)      # pages the Mac worker opened for a step
+                    await close_chrome_of("", 3 * 3600)        # and anything left over (ticket 3a61de45)
                 except Exception:
                     log.exception("stuck-ticket sweep failed")
             await asyncio.sleep(POLL_SECONDS)
@@ -695,7 +714,7 @@ class Runner:
         self.started[card.project] = time.time()
 
         def make_cmd(prompt: str) -> list[str]:
-            cmd = ["claude", "-p", prompt, "--model", BRAIN_MODEL,
+            cmd = ["claude", "-p", prompt, "--model", BRAIN_MODEL, "--settings", WORKER_SETTINGS,
                    "--output-format", "stream-json",
                    "--verbose", "--permission-mode", "bypassPermissions",
                    "--disallowedTools", "Bash(sudo:*)", "Bash(git push --force:*)", "Bash(git push -f:*)",
@@ -735,7 +754,8 @@ class Runner:
                     with path.open("ab" if attempt else "wb") as out:
                         proc = await asyncio.create_subprocess_exec(
                             *make_cmd(prompt), cwd=dirs[0], stdin=asyncio.subprocess.DEVNULL,
-                            env={**os.environ, **GIT_ENV, "JARVIS_APP_CHAT": origin.get(card.ref).get("chat", "")},
+                            env={**os.environ, **GIT_ENV, "JARVIS_APP_CHAT": origin.get(card.ref).get("chat", ""),
+                                 "JARVIS_OWNER": card.ref},
                             stdout=out, stderr=asyncio.subprocess.STDOUT, start_new_session=True)
                     handle = WorkerProc(proc.pid, proc)
                     _set_worker(card.ref, {"pid": proc.pid, "project": card.project, "log": str(path),
@@ -816,6 +836,7 @@ class Runner:
         finally:
             if not cancelled:
                 _set_worker(card.ref, None)
+                await close_chrome_of(card.ref)          # the Chrome windows it opened for this ticket
             self.procs.pop(card.project, None)
             stopped = self.stop_reasons.pop(card.project, None)
             if stopped is not None:          # stopped on purpose: off the queue, not "Failed"

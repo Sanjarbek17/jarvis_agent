@@ -224,6 +224,13 @@ Live status (ticket 0960b065): a status / views / followers question about Haydo
 their time, in front of the message as a [LIVE STATS] block. A reading is reused for 15 min (`var/state/live_stats.json`);
 older numbers (the autopilot's check-*.json with likes/saves) are shown only with their age. Tool: `live_stats`.
 
+Chrome tabs (ticket 3a61de45): ticket workers can't open pages in Sanjar's own Chrome with `open` / AppleScript
+(a PreToolUse hook, `scripts/hooks/no_raw_chrome.py`, passed with `--settings`, blocks it and says what to do). When a
+page needs his logins they use `scripts/real_chrome.py open <url> [--profile ...]`: a new window, remembered in
+`var/state/opened_chrome.json` with the ticket ref, closed when the worker ends. The Mac worker uses it for pages it
+opens for a step (closed after 30 min); leftovers are swept after 3 h. While a script's own Chrome runs (renders,
+Instagram), AppleScript may talk to that one, so nothing is closed until it's gone.
+
 Network drops and restarts (ticket 2475b845): Telegram retries forever (Telethon `connection_retries=-1`, failed tries
 logged once a minute) instead of ending Jarvis, so launchd no longer restarts it in a loop; no new worker starts while
 api.anthropic.com is unreachable. Workers run detached (own session) and write straight into `var/logs/<project>-<ref>.jsonl`;
