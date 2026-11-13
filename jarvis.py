@@ -44,7 +44,7 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.types import InputPeerChannel, MessageActionGroupCall
 
-from core import appserver, board, contacts, coremem, expenses, flatmates, google, guard, livestats, macremote, memory, origin, outbox, selfcheck, tgfmt, tools
+from core import answering, appserver, board, contacts, coremem, expenses, flatmates, google, guard, livestats, macremote, memory, origin, outbox, selfcheck, tgfmt, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, WATCHED_GROUP_IDS, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
@@ -52,7 +52,7 @@ from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watch
                          TG_API_ID)
 from core.mac import MacWorker
 from core.runner import Runner
-from core.voice import Ears, Interrupter, Mouth, split_sentences, transcribe_audio
+from core.voice import Ears, Interrupter, Mouth, SilenceWatch, split_sentences, transcribe_audio
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s",
                     handlers=[logging.StreamHandler(), logging.FileHandler(LOGS / "jarvis.log")])
@@ -481,6 +481,15 @@ class AppCall(Call):
     def __init__(self, ws, chat: dict):
         super().__init__(0)
         self.ws, self.chat = ws, chat
+        self.silence = SilenceWatch()
+
+    def hear(self, pcm: bytes):
+        """Also notices when the phone sends only silence: Android gives an app pure zeros from the mic once its
+        screen turns off or it leaves the foreground, and Sanjar talked for two minutes unheard (13 Nov, 11ff3b8a)."""
+        super().hear(pcm)
+        if self.silence.heard(pcm, time.monotonic()):
+            log.warning("app call: the phone sends only silence (screen off or app in the background?)")
+            asyncio.create_task(self._send_text(json.dumps({"who": "Jarvis", "text": SilenceWatch.TOLD})))
 
     async def start(self, reason: str = ""):
         self.tasks = [asyncio.create_task(self.brain.start()), asyncio.create_task(self._think()),
@@ -865,7 +874,8 @@ async def chat_turn(event, text: str, shown: str = ""):
             async with tg.action(OWNER_ID, "typing"):
                 # a status question about the Instagram projects: live numbers first, in code (ticket 0960b065)
                 live = await livestats.brief_for("", "\n".join(t for _, t in batch))
-                reply = await chat.reply(live + msg)
+                with answering.mark("telegram"):            # a restart waits for this answer (11ff3b8a)
+                    reply = await chat.reply(live + msg)
             await tgfmt.reply(batch[-1][0], tgfmt.md(reply) if reply else "(no reply)")
             show_on_site("jarvis", reply)
     finally:

@@ -84,7 +84,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from . import board, livestats, localboard, macremote
+from . import answering, board, livestats, localboard, macremote
 from .brain import Brain, is_silent
 from .config import PROJECTS, STATE, reload_projects
 from .voice import transcribe_audio
@@ -509,7 +509,8 @@ async def ask(chat: dict, text: str, voice: bool = False, images: list[str] = ()
         replying = reply_context(answered) if answered else ""
         who = SIGNED_IN if signed_in else NOT_SIGNED_IN
         live = await livestats.brief_for(chat["project"], text)    # status: live numbers first, in code (0960b065)
-        reply = await brain.reply(f"{context_line(chat['project'])} {who}\n{earlier}{live}{replying}{attached}{text}")
+        with answering.mark(chat["id"]):                      # a restart waits for this answer (11ff3b8a)
+            reply = await brain.reply(f"{context_line(chat['project'])} {who}\n{earlier}{live}{replying}{attached}{text}")
     except Exception:
         log.exception("app chat %s: brain failed", chat["id"])
         reply = "Sorry, something went wrong on my side. Try again?"
@@ -1062,6 +1063,29 @@ app = Starlette(routes=[
 ])
 
 
+LOST_WITHIN = 3 * 3600
+
+
+def tell_lost_answers(now: float | None = None) -> list[str]:
+    """At start: a chat whose last message is still his, unanswered and recent, lost its answer when Jarvis
+    stopped (a crash, a restart): say so in that chat instead of staying silent (ticket 11ff3b8a). Returns
+    the chat ids told."""
+    now = now or time.time()
+    told = []
+    for f in CHATS.glob("*.json") if CHATS.exists() else []:
+        with contextlib.suppress(Exception):
+            chat = json.loads(f.read_text())
+            last = chat["messages"][-1] if chat.get("messages") else None
+            if last and last.get("role") == "me" and now - last.get("ts", 0) < LOST_WITHIN:
+                said = (last.get("text") or "your message").strip().replace("\n", " ")
+                push(f"Sorry, I restarted before I could answer \"{said[:80]}{'…' if len(said) > 80 else ''}\". "
+                     "Please send it again.", chat["id"])
+                told.append(chat["id"])
+    if told:
+        log.info("told %d chat(s) their last message lost its answer: %s", len(told), ", ".join(told))
+    return told
+
+
 async def serve() -> None:
     if not token():
         log.warning("APP_TOKEN missing in .env: the Jarvis app server is off")
@@ -1069,5 +1093,8 @@ async def serve() -> None:
     config = uvicorn.Config(app, host="0.0.0.0", port=PORT, log_level="warning", ws_max_size=4_000_000)
     server = uvicorn.Server(config)
     server.capture_signals = contextlib.nullcontext   # same reason as core/tools.py
+    answering.clear()
+    with contextlib.suppress(Exception):
+        tell_lost_answers()
     log.info("app server on port %s", PORT)
     await asyncio.gather(server.serve(), stop_idle_brains())

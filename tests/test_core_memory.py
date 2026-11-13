@@ -130,6 +130,7 @@ def test_messages_while_busy_join_one_turn():
     g = _jarvis_funcs("chat_turn", chat=NS(reply=chat_reply), tg=NS(action=lambda *a: Action()), OWNER_ID=1,
                       show_on_site=lambda role, text: shown.append((role, text)),
                       livestats=NS(brief_for=_no_live),
+                      answering=__import__("core.answering", fromlist=["x"]),
                       tgfmt=NS(reply=reply, md=lambda t: t), _inbox=[], _inbox_running=False, asyncio=asyncio)
 
     async def go():
