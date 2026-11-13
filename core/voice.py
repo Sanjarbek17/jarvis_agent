@@ -418,3 +418,24 @@ class Mouth:
                     else:
                         log.error("TTS stream ended with no audio for a reply")
                     self._spoken = 0
+
+
+class SilenceWatch:
+    """A phone that sends nothing but zeros from its mic (Android does that to an app whose screen turned off or that
+    left the foreground): heard() says so once per silent stretch, after `after` seconds (ticket 11ff3b8a)."""
+    TOLD = ("⚠️ I can't hear you: your phone stopped sending the microphone. Keep this screen open (newer app "
+            "versions keep it working with the screen off).")
+
+    def __init__(self, after: float = 6.0):
+        self.after, self.since, self.told = after, 0.0, False
+
+    def heard(self, pcm: bytes, now: float) -> bool:
+        """True exactly when it's time to tell him."""
+        if any(pcm):                                     # real sound, even quiet, is never all zero bytes
+            self.since, self.told = 0.0, False
+            return False
+        self.since = self.since or now
+        if not self.told and now - self.since >= self.after:
+            self.told = True
+            return True
+        return False
