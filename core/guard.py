@@ -30,6 +30,8 @@ SEND_TRIES = (0, 5, 15, 30)       # opening the lid wakes the Mac before its net
 FFMPEG = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"     # launchd's PATH has no Homebrew
 CAMERA = ["-f", "avfoundation", "-framerate", "30", "-video_size", "1280x720", "-pixel_format", "nv12", "-i", "0"]
 WARM_UP_FRAMES = 30               # the first frames of a Mac camera are dark
+AUTOMATION = STATE / "automation_input"   # scripts/mac.py marks every click and key it makes (ticket 733814dd)
+AUTOMATION_GRACE = 15                        # seconds after Jarvis's own input that a touch isn't counted
 WARNING = HERE / "assets" / "guard_warning.wav"   # "Do not touch this computer" in Uzbek, Russian and English (Gemini TTS)
 ALARM = "/System/Library/Sounds/Basso.aiff"
 WARN_VOLUME = 85                  # loud enough to be heard; his own volume is put back afterwards
@@ -43,6 +45,15 @@ def idle_seconds() -> float:
     import Quartz
     return Quartz.CGEventSourceSecondsSinceLastEventType(Quartz.kCGEventSourceStateHIDSystemState,
                                                          Quartz.kCGAnyInputEventType)
+
+
+def automation_recent(grace: float = AUTOMATION_GRACE) -> bool:
+    """Was the latest input Jarvis's own (the reel poster, a Mac task, a worker, the app's remote control, all through
+    scripts/mac.py)? Then it isn't someone touching the Mac."""
+    try:
+        return time.time() - AUTOMATION.stat().st_mtime < grace
+    except OSError:
+        return False
 
 
 def lock_screen() -> bool:
@@ -173,7 +184,7 @@ class Guard:
         if not s:
             return False
         now = time.time()
-        if self.busy():                  # the Mac worker clicks and types: that isn't anyone touching it
+        if self.busy() or automation_recent():   # Jarvis's own clicks and keys: that isn't anyone touching it
             s["watch_from"] = max(s["watch_from"], now + POLL)
             self._save(s)
             return False
