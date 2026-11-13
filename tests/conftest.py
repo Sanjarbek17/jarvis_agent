@@ -27,6 +27,12 @@ def isolated_runner_state(tmp_path, monkeypatch):
         pass
 
     monkeypatch.setattr(guard, "warn", _quiet)                       # ...or play the alarm
+
+    async def _no_camera():
+        return None, "camera blocked in tests"
+
+    monkeypatch.setattr(guard, "take_photo", _no_camera)             # ...or turn the real camera on (ticket 04cf4647)
+    monkeypatch.setattr(guard, "CAMERA", ["-f", "lavfi", "-i", "testsrc=size=320x240:rate=30"])   # even a direct call
     monkeypatch.setattr(runner, "online", lambda timeout=3: True)
     from core import origin
     monkeypatch.setattr(origin, "FILE", tmp_path / "ticket_origin.json")

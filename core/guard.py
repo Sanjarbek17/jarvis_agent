@@ -95,7 +95,7 @@ async def play_warning() -> None:
 warn = play_warning                  # what the guard calls (tests swap it for silence)
 
 
-async def take_photo() -> tuple[Path | None, str]:
+async def capture_photo() -> tuple[Path | None, str]:
     """A camera photo: (path, "") or (None, why not)."""
     SHOTS.mkdir(parents=True, exist_ok=True)
     path = SHOTS / f"guard_{int(time.time() * 1000)}.jpg"
@@ -116,6 +116,9 @@ async def take_photo() -> tuple[Path | None, str]:
         return path, ""
     return None, f"the camera failed: {err.decode(errors='replace').strip()[-200:] or proc.returncode}"
 
+
+
+take_photo = capture_photo        # what the guard calls; tests swap it (they must never use the real camera)
 
 class Guard:
     def __init__(self, send_text: Callable[[str], Awaitable], send_photos: Callable[[list[Path], str], Awaitable],
