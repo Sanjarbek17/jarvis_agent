@@ -30,6 +30,8 @@ _KEY = re.compile(r"^((cmd|command|ctrl|control|alt|option|shift|fn)\+)*([a-z0-9
 
 _frames: dict[int, tuple[float, bytes, int, int]] = {}    # width -> (when, jpeg, screen w, screen h)
 _screen_lock = asyncio.Lock()
+REMOTE_GRACE = 10                       # seconds after his last remote click/key that the guard still lets pass
+_last_remote = {"at": 0.0}              # when Sanjar last sent input from the app / website
 _input_lock = asyncio.Lock()
 
 
@@ -157,9 +159,21 @@ frames = Helper("frames")
 inputs = Helper("input")
 
 
+def controlling(grace: float = REMOTE_GRACE) -> bool:
+    """Is Sanjar driving the Mac from the app right now? The guard must not lock it under him (ticket 70e8ad2f):
+    his remote clicks and keys look exactly like someone at the keyboard. Only input counts: just watching the
+    screen from the app leaves the guard on, so a real touch then still locks it."""
+    return time.time() - _last_remote["at"] < grace
+
+
+def _mark_remote() -> None:
+    _last_remote["at"] = time.time()
+
+
 async def do_input(body: dict) -> str:
     """Do it on the Mac; returns an error message, or "" if it worked."""
     op = input_op(body)
+    _mark_remote()                                        # before: the guard polls while the click happens
     if op["op"] == "dragline":                            # down, 20 steps, up: as mac.py drag did
         steps = [{"op": "down", "x": op["x1"], "y": op["y1"]}]
         steps += [{"op": "drag", "x": op["x1"] + (op["x2"] - op["x1"]) * i / 20, "y": op["y1"] + (op["y2"] - op["y1"]) * i / 20}
@@ -167,16 +181,21 @@ async def do_input(body: dict) -> str:
         steps.append({"op": "up", "x": op["x2"], "y": op["y2"]})
     else:
         steps = [op]
-    for step in steps:
-        head, _ = await inputs.request(step, timeout=60 if op["op"] == "type" else 20)
-        if not head.get("ok"):
-            return head.get("error") or "It didn't work."
-    return ""
+    try:
+        for step in steps:
+            head, _ = await inputs.request(step, timeout=60 if op["op"] == "type" else 20)
+            if not head.get("ok"):
+                return head.get("error") or "It didn't work."
+        return ""
+    finally:
+        _mark_remote()                                    # and after: typing a long text takes a while
 
 
 async def wake() -> None:
     """Wake the display (it's asleep when nobody's at the Mac and the picture is black)."""
+    _mark_remote()                                        # "-u" counts as user activity: the guard would see a touch
     await _run("caffeinate", "-u", "-t", "2", timeout=5)
+    _mark_remote()
 
 
 async def screen(width: int = 1280) -> tuple[bytes, int, int]:

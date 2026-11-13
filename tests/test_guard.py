@@ -193,3 +193,48 @@ def test_the_warning_puts_his_volume_back(monkeypatch):
 def test_the_real_lock_call_exists_on_this_mac():
     import ctypes
     assert hasattr(ctypes.CDLL(guard.LOGIN_FRAMEWORK), "SACLockScreenImmediate") and guard.WARNING.exists()
+
+
+# --- ticket 70e8ad2f: Sanjar driving the Mac from the app isn't a touch -----------------------------------------
+
+def test_sanjars_remote_clicks_dont_lock_the_mac(tmp_path, monkeypatch):
+    from core import macremote
+    monkeypatch.setattr(guard, "FILE", tmp_path / "guard.json")
+    monkeypatch.setattr(macremote, "_last_remote", {"at": 0.0})
+
+    class Inputs:
+        async def request(self, step, timeout=20):
+            return {"ok": True}, b""
+
+    monkeypatch.setattr(macremote, "inputs", Inputs())
+    alerts = []
+
+    async def text(t):
+        alerts.append(t)
+
+    async def nothing(*a):
+        return tmp_path / "x.png"
+
+    g = guard.Guard(text, nothing, nothing, busy=macremote.controlling)    # as jarvis.py wires it
+    g.arm(grace=0)
+    time.sleep(0.01)
+    asyncio.run(macremote.do_input({"action": "click", "x": 10, "y": 10}))
+    touched(monkeypatch, 0)                                   # macOS sees the click as input
+    assert macremote.controlling() and not asyncio.run(g.check()) and alerts == []
+    # he stops; long after, someone touches it for real: that still locks
+    macremote._last_remote["at"] = time.time() - macremote.REMOTE_GRACE - 1
+    time.sleep(guard.POLL + 0.1)
+    touched(monkeypatch, 0)
+    assert not macremote.controlling() and asyncio.run(g.check()) and alerts
+
+
+def test_waking_the_screen_from_the_app_counts_as_him(monkeypatch):
+    from core import macremote
+    monkeypatch.setattr(macremote, "_last_remote", {"at": 0.0})
+
+    async def run(*cmd, **kw):
+        return 0, ""
+
+    monkeypatch.setattr(macremote, "_run", run)
+    asyncio.run(macremote.wake())
+    assert macremote.controlling()

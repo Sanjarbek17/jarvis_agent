@@ -44,7 +44,7 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.types import InputPeerChannel, MessageActionGroupCall
 
-from core import appserver, board, contacts, coremem, expenses, flatmates, google, guard, livestats, memory, origin, outbox, selfcheck, tgfmt, tools
+from core import appserver, board, contacts, coremem, expenses, flatmates, google, guard, livestats, macremote, memory, origin, outbox, selfcheck, tgfmt, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, WATCHED_GROUP_IDS, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
@@ -1150,7 +1150,8 @@ async def main():
     tools.hooks.expenses = lambda: expenses.text(tg)
     tools.hooks.post_expenses = lambda: expenses.post(tg)
     tools.hooks.guard = guard.Guard(guard_alert, guard_photos, tools.take_screenshot,
-                                    busy=lambda: bool(tools.hooks.mac.current))
+                                    # the Mac worker's clicks, or Sanjar driving it from the app (ticket 70e8ad2f)
+                                    busy=lambda: bool(tools.hooks.mac.current) or macremote.controlling())
     runner_task = {"t": asyncio.create_task(runner.run_forever(), name="runner")}
 
     def restart_runner():                 # the self-check found the runner's task dead: start it again
