@@ -32,9 +32,6 @@ CAMERA = ["-f", "avfoundation", "-framerate", "30", "-video_size", "1280x720", "
 WARM_UP_FRAMES = 30               # the first frames of a Mac camera are dark
 AUTOMATION = STATE / "automation_input"   # scripts/mac.py marks every click and key it makes (ticket 733814dd)
 AUTOMATION_GRACE = 15                        # seconds after Jarvis's own input that a touch isn't counted
-WARNING = HERE / "assets" / "guard_warning.wav"   # "Do not touch this computer" in Uzbek, Russian and English (Gemini TTS)
-ALARM = "/System/Library/Sounds/Basso.aiff"
-WARN_VOLUME = 85                  # loud enough to be heard; his own volume is put back afterwards
 LOGIN_FRAMEWORK = "/System/Library/PrivateFrameworks/login.framework/Versions/Current/login"
 NO_CAMERA = ("the camera didn't answer: macOS is probably waiting for someone to allow it for Jarvis "
              "(a prompt on the Mac, or System Settings > Privacy & Security > Camera)")
@@ -69,41 +66,6 @@ def lock_screen() -> bool:
         return False
 
 
-async def _osascript(script: str) -> str:
-    proc = await asyncio.create_subprocess_exec("osascript", "-e", script, stdout=asyncio.subprocess.PIPE,
-                                                stderr=asyncio.subprocess.DEVNULL)
-    out, _ = await asyncio.wait_for(proc.communicate(), 10)
-    return out.decode().strip()
-
-
-async def _play(path: str | Path) -> None:
-    proc = await asyncio.create_subprocess_exec("afplay", str(path))
-    await asyncio.wait_for(proc.wait(), 60)
-
-
-async def play_warning() -> None:
-    """An alarm and a spoken "Do not touch this computer" (Uzbek, Russian, English), loud even if the Mac was
-    muted; his own volume and mute come back afterwards."""
-    before = ""
-    try:
-        before = await _osascript("get volume settings")      # "output volume:30, input volume:..., output muted:false"
-        await _osascript(f"set volume output volume {WARN_VOLUME} without output muted")
-        for _ in range(2):
-            await _play(ALARM)
-        if WARNING.exists():
-            await _play(WARNING)
-        await _play(ALARM)
-    except Exception as e:
-        log.warning("guard: warning sound failed: %r", e)
-    finally:
-        vol = next((p.split(":")[1] for p in before.split(", ") if p.startswith("output volume:")), "")
-        muted = "output muted:true" in before
-        if vol.isdigit():
-            with contextlib.suppress(Exception):
-                await _osascript(f"set volume output volume {vol}" + (" with output muted" if muted else " without output muted"))
-
-
-warn = play_warning                  # what the guard calls (tests swap it for silence)
 
 
 async def capture_photo() -> tuple[Path | None, str]:
@@ -135,7 +97,7 @@ class Guard:
     def __init__(self, send_text: Callable[[str], Awaitable], send_photos: Callable[[list[Path], str], Awaitable],
                  screenshot: Callable[[], Awaitable[Path]], busy: Callable[[], bool] = lambda: False):
         self.send_text, self.send_photos, self.screenshot, self.busy = send_text, send_photos, screenshot, busy
-        self.lock, self.warn = lock_screen, warn          # replaced in tests: they must never lock the Mac or play sounds
+        self.lock = lock_screen          # replaced in tests: they must never lock the real Mac
 
     def state(self) -> dict:
         try:
@@ -199,14 +161,13 @@ class Guard:
     async def alert(self, when: float) -> None:
         log.warning("guard: the Mac was touched")
         at = time.strftime("%H:%M:%S", time.localtime(when))
-        await self._deliver(self.send_text, f"🚨 Someone touched the Mac at {at}. Locking it, warning them out loud, taking photos.")
+        await self._deliver(self.send_text, f"🚨 Someone touched the Mac at {at}. Locking it and taking photos.")
         shots, why = [], ""
         try:
             shots.append(await self.screenshot())     # first, while it still shows what they opened
         except Exception as e:
             log.warning("guard: no screenshot: %r", e)
         locked = await asyncio.to_thread(self.lock)
-        sound = asyncio.create_task(self.warn())     # plays while the camera takes their photo
         if not locked:
             await self._deliver(self.send_text, "⚠️ I couldn't lock the Mac.")
         photo, why = await take_photo()
@@ -221,8 +182,6 @@ class Guard:
             photo, _ = await take_photo()
             if photo:
                 await self._deliver(self.send_photos, [photo], "🚨 A few seconds later")
-        with contextlib.suppress(Exception):
-            await sound
 
     async def test(self) -> str:
         """Take a camera photo now and send it, to check the camera (and to make macOS ask for it)."""

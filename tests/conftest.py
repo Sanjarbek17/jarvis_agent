@@ -24,10 +24,6 @@ def isolated_runner_state(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "close_chrome_of", _no_chrome)      # never closes windows in the real Chrome
     monkeypatch.setattr(guard, "lock_screen", lambda: True)          # tests never lock the real Mac...
 
-    async def _quiet():
-        pass
-
-    monkeypatch.setattr(guard, "warn", _quiet)                       # ...or play the alarm
 
     async def _no_camera():
         return None, "camera blocked in tests"
