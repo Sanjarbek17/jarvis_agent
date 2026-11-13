@@ -43,6 +43,9 @@ How to get things done, in this order of preference:
 - Commands that may trigger a macOS permission prompt (~/Documents, ~/Desktop, ~/Downloads, Photos,
   Contacts...) can hang forever: always wrap them as `timeout 20 <command>`. If one times out, take
   a shot: if a dialog is asking, you may click Allow on it for this task.
+- A web page you open only to do a step or look something up: {PY} {HERE / "scripts/real_chrome.py"} open <url>
+  [--profile "Profile 4"] (a new window), and `real_chrome.py close --window <id>` when you're done (they're also
+  closed after 30 min). Leave open only what he asked to see. Never pile up tabs (ticket 3a61de45).
 - Save a screenshot of the end result as a PNG in {shots}/ when it's something visible.
 - To send Sanjar a file, run: {PY} {HERE / "scripts/send_file.py"} <file> "<caption>"
 
@@ -87,7 +90,7 @@ class MacWorker:
                     self.proc = await asyncio.create_subprocess_exec(
                         *cmd, cwd=WORKDIR, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.STDOUT, limit=50_000_000,
-                        env={**os.environ, "JARVIS_APP_CHAT": app_chat})
+                        env={**os.environ, "JARVIS_APP_CHAT": app_chat, "JARVIS_OWNER": "mac"})
                     while line := await self.proc.stdout.readline():
                         logfile.write(line.decode(errors="replace"))
                         logfile.flush()
