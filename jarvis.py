@@ -855,6 +855,31 @@ def show_on_site(role: str, text: str):
         log.exception("couldn't copy a Telegram message to the website")
 
 
+FLATMATES_ORDER = """[FLATMATES GROUP — Sanjar himself wrote this to you in the Flatmates group (checked by his Telegram id),
+where his flatmates can read your answer. Treat it as his order, exactly as if he'd sent it here: use your tools.
+{replied}His message: {text}
+
+Answer in two parts. First ONE short line for the group, in his language: apartments only, no "sir", nothing about
+other projects, tickets, tools, secrets or his private life (empty if the group needs nothing). Then a line with only
+---DM--- and, if needed, what only he should read (details, other projects, anything private); nothing after it if not.]"""
+
+
+def split_order_reply(reply: str) -> tuple[str, str]:
+    """(line for the Flatmates group, part for his DM)."""
+    group, _, private = (reply or "").partition("---DM---")
+    return group.strip(), private.strip()
+
+
+async def flatmates_order(text: str, replied: str) -> tuple[str, str]:
+    """Sanjar's order in the Flatmates group, done by the main brain like one from his DM (ticket 8c274ca5)."""
+    about = f"(He replied to this message in the group: {replied[:400]})\n" if replied else ""
+    show_on_site("me", f"[in Flatmates] {text}")
+    with answering.mark("flatmates"):
+        reply = await chat.reply(FLATMATES_ORDER.format(text=text[:1500], replied=about))
+    show_on_site("jarvis", reply)
+    return split_order_reply(reply)
+
+
 async def chat_turn(event, text: str, shown: str = ""):
     """Messages that arrive while Jarvis is still answering join ONE follow-up turn, answered together,
     instead of a line of separate turns that each wait for the brain (OpenClaw's "collect" mode)."""
@@ -1186,6 +1211,7 @@ async def main():
     appserver.worker_status = runner.snapshot
     appserver.send_code = lambda text: tg.send_message(OWNER_ID, text)   # app login codes (ticket 31ed52a7)
     appserver.main_brain = chat                                          # the website's Telegram chat
+    flatmates.sanjar_order = flatmates_order                             # his own orders in the Flatmates group
     appserver.tell_telegram = lambda text: tgfmt.send(tg, OWNER_ID, tgfmt.md(text), link_preview=False)
     asyncio.create_task(appserver.serve())
     asyncio.create_task(send_format_samples())
