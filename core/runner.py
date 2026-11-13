@@ -292,6 +292,8 @@ Sanjar is away from the computer and won't approve anything, so work on your own
 - Never open pages in Sanjar's own Chrome with `open` (it's blocked: they were never closed). Use a headless
   browser; only when a page needs his logins: {HERE / ".venv/bin/python"} {HERE / "scripts/real_chrome.py"} open <url>
   [--profile "Profile 4"], then `real_chrome.py close --window <id>` when done (closed anyway when this ticket ends).
+- Never copy or reuse his real Chrome profile's cookies / Login Data / Local State in another browser (blocked too):
+  Google signs him out of every account when his session appears in a second browser.
 - Never touch ~/Documents, ~/Desktop or ~/Downloads (not even `ls`): macOS asks for permission
   there and the command hangs forever, since nobody is at the Mac to click Allow. If a note or
   memory says to put files there, skip that step and mention it in your summary.

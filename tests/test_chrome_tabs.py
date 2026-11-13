@@ -73,3 +73,15 @@ def test_the_helper_never_trusts_applescript_while_a_script_chrome_runs(monkeypa
     calls = []
     monkeypatch.setattr(rc, "_osa", lambda s: calls.append(s) or "")
     assert rc.close("t") == 1 and rc._load() == [] and "whose id is 5" in calls[-1]
+
+
+
+def test_the_hook_blocks_copying_his_real_chrome_profile():
+    """Ticket c09280c2: Yugur workers copied Default's cookies into their own Chromes; Google signed him out."""
+    for c in ('SRC=~/Library/Application\\ Support/Google/Chrome; cp "$SRC/Default/Cookies" .chrome/Default/',
+              'sqlite3 "$HOME/Library/Application Support/Google/Chrome/Default/Cookies" ".backup \'x\'"',
+              'cp ~/Library/Application\\ Support/Google/Chrome/Local\\ State .chrome/',
+              'node x.mjs --user-data-dir="/Users/sanjarbek/Library/Application Support/Google/Chrome"'):
+        assert hook.touches_real_profile(c), c
+    for c in ('sqlite3 marketing/chrome-profile/Default/Cookies "select 1"', 'open -a Calculator', 'git status'):
+        assert not hook.touches_real_profile(c), c

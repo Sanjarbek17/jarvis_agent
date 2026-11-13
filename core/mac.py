@@ -46,6 +46,8 @@ How to get things done, in this order of preference:
 - A web page you open only to do a step or look something up: {PY} {HERE / "scripts/real_chrome.py"} open <url>
   [--profile "Profile 4"] (a new window), and `real_chrome.py close --window <id>` when you're done (they're also
   closed after 30 min). Leave open only what he asked to see. Never pile up tabs (ticket 3a61de45).
+- Never copy his Chrome profile's cookies, Login Data or Local State into another browser or folder: Google then
+  signs him out of all his accounts (ticket c09280c2). Work in his real Chrome instead.
 - Save a screenshot of the end result as a PNG in {shots}/ when it's something visible.
 - To send Sanjar a file, run: {PY} {HERE / "scripts/send_file.py"} <file> "<caption>"
 
