@@ -30,6 +30,8 @@ log = logging.getLogger("jarvis.runner")
 SESSIONS = STATE / "sessions.json"
 NEEDS_ME = "NEEDS ME:"
 MAX_CONTINUES = 3            # resume a worker this many times if its background work was cut off
+BG_AFTER_RESULT = 10 * 60    # the claude CLI keeps a worker alive after its final answer while background work
+                             # runs (and wakes it when that ends); past this, the ticket is over: stop it (ac668ebe)
 SWEEP_EVERY = 30 * 60        # how often to look for tickets stuck In Progress
 STUCK_AFTER = 2 * 3600       # In Progress this long with no live worker = stuck
 START_GAP = 30                # seconds between starting workers: let the last one grow before measuring
@@ -156,6 +158,8 @@ class WorkerProc:
 
     def __init__(self, pid: int, proc: asyncio.subprocess.Process | None = None):
         self.pid, self.proc = pid, proc
+        self.end_by = 0.0          # it gave its final answer with background work still running: stop it at this time
+        self.ended_late = False    # ...and that happened
 
     @property
     def returncode(self) -> int | None:
@@ -198,6 +202,9 @@ async def _follow(path: Path, offset: int, handle: WorkerProc, replay_until: int
             chunk = f.read(1 << 16)
             if not chunk:
                 if handle.returncode is None:
+                    if handle.end_by and time.time() > handle.end_by and not handle.ended_late:
+                        handle.ended_late = True    # its answer is in; only leftover background work keeps it alive
+                        handle.terminate()
                     await asyncio.sleep(0.5)
                     continue
                 chunk = f.read()            # it exited: whatever it wrote last
@@ -303,8 +310,13 @@ Sanjar is away from the computer and won't approve anything, so work on your own
 - If you truly can't continue without a decision from Sanjar, stop and make the LAST line of
   your final message: {NEEDS_ME} <one short question>
 - Never end your turn while background agents, workflows or background commands you started are
-  still running: wait for each to finish (or stop it on purpose) before your final summary. When
-  your turn ends, anything still running is killed and its work is lost.
+  still running: wait for each to finish (or stop it on purpose) before your final summary. Your
+  ticket is over once you give it: anything still running 10 minutes later is stopped.
+- Never keep a watcher or wait loop running for something that happens later (an evening post, a
+  reply expected tomorrow): it holds a worker slot and blocks Jarvis's restarts. Finish now, and for
+  a later check on a board on the Mac add a queued follow-up that waits until then:
+  `{HERE / '.venv/bin/python'} {HERE / 'scripts/board.py'} add "<project>" "Check <what>" --text "<what to check and why>" --queue --start-after HH:MM`
+  (or "YYYY-MM-DD HH:MM"). Otherwise say in your summary what's still to check and when.
 - The same if your work is done for now but the next step waits on him: a push to main, an
   approval, a choice, a key or account. Never finish quietly and wait — end with {NEEDS_ME} saying
   exactly what he needs to do. (Merging into `dev` is never a reason to wait: do it yourself.)
@@ -651,6 +663,8 @@ class Runner:
         for i, t in enumerate(queued):
             if t.project in self.running:
                 continue
+            if not board.startable(t):               # a follow-up waiting for its time (start_after)
+                continue
             if t.ref in self.finished:
                 # just finished (the board may still read as Queued for a moment); don't re-run it
                 log.info("skipping %s: finished %.0fs ago", t.ref, time.monotonic() - self.finished[t.ref])
@@ -774,6 +788,7 @@ class Runner:
                         _save_session(card.project, event["session_id"])
                     kind = event.get("type")
                     if kind == "assistant":
+                        handle.end_by = 0.0    # woken again (a background task ended): it's working, no deadline
                         for block in event["message"].get("content", []):
                             if block.get("type") == "tool_use":
                                 pending.append(_step_text(block))
@@ -796,6 +811,9 @@ class Runner:
                             rejected_until = float(info.get("resetsAt") or 0) or time.time() + LIMIT_FALLBACK
                     elif kind == "result":
                         result, is_error = event.get("result") or "", bool(event.get("is_error"))
+                        # still alive only for its background work: that may finish it off shortly, but never
+                        # keeps the slot (or a waiting restart) for hours, like a watcher for an evening post
+                        handle.end_by = time.time() + BG_AFTER_RESULT if bg else 0.0
                     if replayed:
                         pending = []           # these steps were pushed before the restart
                     # push steps to Notion at most every 5 s
@@ -813,6 +831,12 @@ class Runner:
                     is_error, result = True, f"Worker exited with code {rc}."
                 unfinished = [d for d in [*bg.values(), *cut.values()] if d]
                 paused = hit_limit(result, is_error, rejected_until)
+                if handle.ended_late and result:   # it had finished: don't resume it for its leftover watcher
+                    log.info("%s: finished, but background work was still running %d min later: stopped it (%s)",
+                             card.ref, BG_AFTER_RESULT // 60, "; ".join(unfinished[:6]))
+                    result += (f"\n\nNote: background work was still running {BG_AFTER_RESULT // 60} min after "
+                               "the final answer, so Jarvis stopped it: " + "; ".join(unfinished[:6] or ["?"]))
+                    break
                 if (is_error or paused or not unfinished or attempt >= MAX_CONTINUES or rc < 0
                         or card.project in self.stop_reasons):
                     if unfinished and not is_error:
