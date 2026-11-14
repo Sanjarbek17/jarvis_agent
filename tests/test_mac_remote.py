@@ -18,7 +18,6 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(appserver, "SESSIONS", tmp_path / "sessions.json")
     appserver.SESSIONS.write_text(json.dumps({hashlib.sha256(b"my-session").hexdigest(): {"device": "Huawei", "used": 9e12}}))
     monkeypatch.setenv("APP_TOKEN", "home-token")
-    monkeypatch.setattr(appserver, "_mac_used", 0.0)
     done, told = [], []
 
     async def do_input(body):
@@ -71,17 +70,29 @@ def test_input_with_a_session_and_bad_input_refused(app):
     assert len(done) == 2
 
 
-def test_alert_when_control_starts_then_quiet(app, monkeypatch):
+def test_alert_once_per_device_never_again(app):
+    """Ticket 54044803: his own phone controlling the Mac alerts him once, the first time, never again."""
     client, _, told = app
     client.get("/api/mac/screen", headers=SESSION | PUBLIC)
-    assert len(told) == 1 and "Huawei" in told[0] and "over the internet" in told[0] and "203.0.113.9" in told[0]
-    assert "/logoutall" in told[0]
-    client.get("/api/mac/screen", headers=SESSION | PUBLIC)
-    client.post("/api/mac/input", json={"action": "move", "x": 1, "y": 1}, headers=SESSION | PUBLIC)
-    assert len(told) == 1                            # one alert for one sitting
-    monkeypatch.setattr(appserver, "_mac_used", 1.0)  # long ago
+    assert len(told) == 1 and "Huawei" in told[0] and "new device" in told[0] and "/logoutall" in told[0]
+    for _ in range(3):
+        client.get("/api/mac/screen", headers=SESSION | PUBLIC)
+        client.post("/api/mac/input", json={"action": "move", "x": 1, "y": 1}, headers=SESSION)
+    assert len(told) == 1                               # the same device, later, other network: silent
+    second = hashlib.sha256(b"other-phone").hexdigest()
+    sessions = json.loads(appserver.SESSIONS.read_text()) | {second: {"device": "Stranger's phone", "used": 9e12}}
+    appserver.SESSIONS.write_text(json.dumps(sessions))
+    client.get("/api/mac/screen", headers={"Authorization": "Bearer other-phone"})
+    assert len(told) == 2 and "Stranger's phone" in told[1]   # a device that never did it before: told
+
+
+def test_known_device_is_remembered_across_restarts(app):
+    client, _, told = app
     client.get("/api/mac/screen", headers=SESSION)
-    assert len(told) == 2 and "home network" in told[1]
+    assert json.loads(appserver.SESSIONS.read_text())[hashlib.sha256(b"my-session").hexdigest()]["mac_known"]
+    told.clear()
+    client.get("/api/mac/screen", headers=SESSION)      # the flag lives in the sessions file, not in memory
+    assert told == []
 
 
 def test_logoutall_cuts_off_control(app):
