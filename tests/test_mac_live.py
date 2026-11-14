@@ -33,7 +33,6 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(appserver, "SESSIONS", tmp_path / "sessions.json")
     appserver.SESSIONS.write_text(json.dumps({hashlib.sha256(b"my-session").hexdigest(): {"device": "Mi 11", "used": 9e12}}))
     monkeypatch.setenv("APP_TOKEN", "home-token")
-    monkeypatch.setattr(appserver, "_mac_used", 0.0)
     frames = FakeHelper([b"\xff\xd8\xff-one", b"\xff\xd8\xff-two"])
     inputs = FakeHelper()
     monkeypatch.setattr(macremote, "frames", frames)

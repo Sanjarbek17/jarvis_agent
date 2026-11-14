@@ -909,22 +909,26 @@ async def notifications(req: Request):
     return JSONResponse({"chat": UPDATES, "title": "Updates from Jarvis", "items": items, "replies": replies})
 
 
-MAC_QUIET = 15 * 60                    # control after this long without any starts a new "session": a new alert
-_mac_used = 0.0
-
-
 async def _mac_session(req: Request) -> dict | None:
-    """Tell Sanjar when someone starts controlling the Mac, so he'd notice if it weren't him."""
-    global _mac_used
-    hit = _session_of(req)
+    """The login session allowed to control the Mac, or None.
+
+    Sanjar hears about it once per device: the first time a login ever controls the Mac (ticket 54044803). Every
+    login exists only because he typed a code Jarvis sent to his own Telegram, so alerting on each sitting only told
+    him about himself; a new device (his, or one that got hold of a code) is the one thing worth telling. Someone
+    at the Mac's own keyboard is the guard's job (core/guard.py), not this."""
+    got = _bearer(req)
+    sessions = load_sessions()
+    hit = sessions.get(_hash(got)) if got else None
     if hit is None:
         return None
-    if time.monotonic() - _mac_used > MAC_QUIET or not _mac_used:
+    if not hit.get("mac_known"):
         where = "over the internet" if public(req) else "on the home network"
-        log.warning("Mac remote control started by %s from %s", hit.get("device"), _client(req))
-        await _to_telegram(f"🖥 The Mac is being controlled from {hit.get('device', 'a device')}, {where} ({_client(req)}). "
-                           "If that isn't you, send /logoutall here: it ends every app and website login.")
-    _mac_used = time.monotonic()
+        log.warning("Mac remote control: first time from %s (%s)", hit.get("device"), _client(req))
+        hit["mac_known"] = time.time()
+        _save_sessions(sessions)
+        await _to_telegram(f"🖥 A new device is controlling the Mac: {hit.get('device', 'a device')}, {where} ({_client(req)}). "
+                           "I'll only tell you once per device. If it isn't yours, send /logoutall here: it ends every "
+                           "app and website login.")
     return hit
 
 
