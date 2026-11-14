@@ -778,3 +778,23 @@ def test_the_search_is_only_for_our_own_flat():
 def test_asked_what_the_owner_wrote_it_quotes_them():
     """Ticket 1c810cf5: Sanjar asked "Show me what owner wrote" and got only a summary."""
     assert "owner's own words from the data exactly" in f.PROMPT
+
+
+# --- ticket 6e44d8eb: a nudge tags every member ---------------------------------------------------------------------
+
+def test_a_nudge_tags_every_member_but_jarvis(monkeypatch):
+    class Members(Group):
+        async def get_me(self):
+            return NS(id=1)
+
+        async def get_participants(self, chat):
+            return [NS(id=1, username="Jarvis_Sanjar", first_name="Jarvis", bot=False, deleted=False),
+                    NS(id=2, username="javohir", first_name="Javohir", bot=False, deleted=False),
+                    NS(id=3, username=None, first_name="Ikrom <C>", bot=False, deleted=False),
+                    NS(id=4, username="somebot", first_name="Bot", bot=True, deleted=False)]
+
+    tg = Members()
+    asyncio.run(f.post(tg, {"text": "👋 Nobody answered 3 flats & more", "mention": True}))
+    kind, to, text, kw = tg.sent[-1]
+    assert kw.get("parse_mode") == "html" and "@javohir" in text and 'tg://user?id=3">Ikrom &lt;C&gt;</a>' in text
+    assert "Jarvis_Sanjar" not in text and "somebot" not in text and "3 flats &amp; more" in text
