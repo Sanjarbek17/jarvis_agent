@@ -127,15 +127,16 @@ def is_flatmates(chat_id: int) -> bool:
     return chat_id == FLATMATES_GROUP_ID
 
 
-def drop(text: str, photos=(), viewing: bool = False, key: str = "", link: str = "", first: bool = False, reply_to: int = 0) -> None:
+def drop(text: str, photos=(), viewing: bool = False, key: str = "", link: str = "", first: bool = False, reply_to: int = 0,
+         mention: bool = False) -> None:
     """For the apartment search: queue a post for the topic. Doesn't wait. viewing: it's about a viewing.
     key, link: the flat it's about. first: this is that flat's post; otherwise it replies to that post.
-    reply_to: a member's message to answer instead."""
+    reply_to: a member's message to answer instead. mention: tag every member (a nudge nobody answered, ticket 6e44d8eb)."""
     QUEUE.mkdir(parents=True, exist_ok=True)
     name = f"{time.time():.6f}-{uuid.uuid4().hex[:6]}"
     tmp = QUEUE / f"{name}.tmp"
     tmp.write_text(json.dumps({"text": text, "photos": [str(p) for p in photos], "viewing": viewing, "key": key, "link": link,
-                                "first": first, "reply_to": reply_to}, ensure_ascii=False))
+                                "first": first, "reply_to": reply_to, "mention": mention}, ensure_ascii=False))
     tmp.rename(QUEUE / f"{name}.json")               # appears complete, never half-written
 
 
@@ -390,6 +391,18 @@ async def find_post(tg, key: str, link: str) -> int:
     return found
 
 
+async def mentions(tg) -> str:
+    """Every member of the group tagged (@username, or a name link for those without one), never Jarvis itself."""
+    import html
+    me = await tg.get_me()
+    tags = []
+    for u in await tg.get_participants(FLATMATES_GROUP_ID):
+        if getattr(u, "bot", False) or u.id == me.id or getattr(u, "deleted", False):
+            continue
+        tags.append(f"@{u.username}" if u.username else f'<a href="tg://user?id={u.id}">{html.escape(u.first_name or "friend")}</a>')
+    return " ".join(tags)
+
+
 async def _send(tg, text: str, photos: list, where: int):
     if photos:
         sent = await tg.send_file(FLATMATES_GROUP_ID, photos, caption=text[:1000], reply_to=where)
@@ -402,6 +415,15 @@ async def post(tg, note: dict) -> None:
     photos = [p for p in note.get("photos", []) if Path(p).is_file()]
     key = note.get("key", "")
     original = note.get("reply_to") or (0 if note.get("first") else await find_post(tg, key, note.get("link", "")))
+    if note.get("mention"):                          # a nudge: tag everyone, as HTML so the name links work
+        import html
+        with contextlib.suppress(Exception):
+            tags = await mentions(tg)
+            topic = await topic_id(tg, bool(note.get("viewing")))
+            sent = await tg.send_message(FLATMATES_GROUP_ID, f"{tags}\n{html.escape(note['text'])}"[:4000], reply_to=original or topic,
+                                         parse_mode="html", link_preview=False)
+            remember("Jarvis", note["text"], sent.id)
+            return
     try:
         topic = await topic_id(tg, bool(note.get("viewing")))
         try:
