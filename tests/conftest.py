@@ -1,3 +1,11 @@
+"""Every test run gets its own temporary data folder, set before any Jarvis code is imported (ticket 6ced33f0):
+Jarvis code reads it once (core/paths.py), so no test can write into the real data, whatever it forgets to patch."""
+import os
+import tempfile
+
+os.environ["JARVIS_VAR"] = tempfile.mkdtemp(prefix="jarvis-test-var-")
+os.environ.setdefault("HEAVY_LOCK", os.path.join(os.environ["JARVIS_VAR"], "heavy.lock"))
+
 import pytest
 
 from core import guard, localboard, macremote, runner, usagewatch
@@ -41,10 +49,3 @@ def isolated_runner_state(tmp_path, monkeypatch):
     from core import origin
     monkeypatch.setattr(origin, "FILE", tmp_path / "ticket_origin.json")
 
-
-@pytest.fixture(autouse=True)
-def isolated_app_state(tmp_path, monkeypatch):
-    """Tests never write into the phone's real notification feed (ticket 245df526: test answers like "Moved it."
-    reached Sanjar's phone as notifications for chats that don't exist)."""
-    from core import appserver
-    monkeypatch.setattr(appserver, "REPLIES", tmp_path / "app_replies.json")

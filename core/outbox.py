@@ -18,8 +18,9 @@ import time
 import uuid
 from pathlib import Path
 
+from .paths import VAR
+
 HERE = Path(__file__).parent.parent
-VAR = HERE / "var"
 OUTBOX = VAR / "outbox"
 LOCK = VAR / "jarvis.lock"            # held by the running Jarvis (single-instance lock)
 SECRET_2FA = VAR / "state" / "tg_2fa_pending"   # /2fa <password> lands here for a waiting login

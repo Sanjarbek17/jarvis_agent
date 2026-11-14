@@ -17,10 +17,13 @@ from telethon import TelegramClient
 
 HERE = Path(__file__).parent.parent
 sys.path.insert(0, str(HERE))
+from core.paths import VAR  # noqa: E402  (tests: a temporary folder, never the real one)
+
+sys.path.insert(0, str(HERE))
 from core import outbox  # noqa: E402
 
 load_dotenv(HERE / ".env")
-SESSION = HERE / "var" / "jarvis.session"
+SESSION = VAR / "jarvis.session"
 
 
 async def direct(path: Path, caption: str):

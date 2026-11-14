@@ -20,7 +20,7 @@ def test_push_lands_in_updates_chat_and_feed(tmp_path, monkeypatch):
     first = appserver.push("Ticket **done**: the login page works.")
     appserver.push("NO_REPLY")                       # silent replies are never pushed
     appserver.push("   ")
-    second = appserver.push("Needs you: which bot token?")
+    second = appserver.push("Needs you: which colour?")
 
     feed = client.get("/api/notifications", headers=auth).json()
     assert feed["chat"] == appserver.UPDATES

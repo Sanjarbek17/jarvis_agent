@@ -16,9 +16,12 @@ from telethon import TelegramClient
 from telethon.tl.functions.photos import GetUserPhotosRequest, UploadProfilePhotoRequest
 
 HERE = Path(__file__).parent.parent
+sys.path.insert(0, str(HERE))
+from core.paths import VAR  # noqa: E402  (tests: a temporary folder, never the real one)
+
 load_dotenv(HERE / ".env")
-SESSION = HERE / "var" / "jarvis.session"
-COPY = HERE / "var" / "set_avatar_tmp"
+SESSION = VAR / "jarvis.session"
+COPY = VAR / "set_avatar_tmp"
 
 
 async def main(image: Path):

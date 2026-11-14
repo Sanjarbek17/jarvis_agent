@@ -679,13 +679,21 @@ def note_reply(chat: dict, msg: dict) -> None:
 
 
 def replies_since(after: float, limit: int = 20) -> list[dict]:
-    """Only answers in chats that exist: a note for a chat that isn't there (tests once wrote into the real file,
-    ticket 245df526) would be a notification that opens nothing."""
     try:
         notes = json.loads(REPLIES.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return []
-    return [n for n in notes if n.get("ts", 0) > after and isinstance(n.get("chat"), str) and load_chat(n["chat"])][-limit:]
+    return [n for n in notes if n.get("ts", 0) > after][-limit:]
+
+
+_SECRETISH = re.compile(r"pass(word)?|parol|пароль|login\s*:|логин|token|secret|api[ _-]?key|2fa|kod:|code:", re.I)
+
+
+def preview(text: str) -> str:
+    """What a notification may show (ticket 6ced33f0): it can sit on the lock screen, so anything about logins,
+    passwords, tokens or codes shows only that there is an answer, never the answer."""
+    text = (text or "").strip()
+    return "New message. Open the chat to read it." if _SECRETISH.search(text) else text[:300]
 
 
 def updates_since(after: float, limit: int = 20) -> list[dict]:
@@ -895,8 +903,10 @@ async def notifications(req: Request):
         after = float(req.query_params.get("after") or 0)
     except ValueError:
         after = 0.0
-    return JSONResponse({"chat": UPDATES, "title": "Updates from Jarvis", "items": updates_since(after),
-                         "replies": replies_since(after)})
+    # for notifications only (the chats show the full text): previews, never credentials
+    items = [{**m, "text": preview(m.get("text", ""))} for m in updates_since(after)]
+    replies = [{**n, "text": preview(n.get("text", ""))} for n in replies_since(after)]
+    return JSONResponse({"chat": UPDATES, "title": "Updates from Jarvis", "items": items, "replies": replies})
 
 
 MAC_QUIET = 15 * 60                    # control after this long without any starts a new "session": a new alert

@@ -23,11 +23,14 @@ from dotenv import dotenv_values
 
 HERE = Path(__file__).parent.parent
 sys.path.insert(0, str(HERE))
+from core.paths import VAR  # noqa: E402  (tests: a temporary folder, never the real one)
+
+sys.path.insert(0, str(HERE))
 from core import localboard  # noqa: E402
 
 REMOTE = "git@github.com:Sanjarbek17/jarvis-boards.git"
-CLONE = HERE / "var" / "boards-backup"
-FAILED = HERE / "var" / "logs" / "board-backup-failed.txt"
+CLONE = VAR / "boards-backup"
+FAILED = VAR / "logs" / "board-backup-failed.txt"
 HIDDEN = "[hidden]"
 ENV_ROOT = Path.home() / "dev"
 SKIP_DIRS = {"node_modules", ".venv", "venv", ".git", "build", "dist", "__pycache__", ".worktrees", ".gradle"}

@@ -16,6 +16,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from .paths import VAR
+
 NORMAL = 1                 # kern.memorystatus_vm_pressure_level: 1 normal, 2 warning, 4 critical
 LEVELS = {1: "normal", 2: "warning", 4: "critical"}
 RESERVE_MB = 1024          # always left for macOS, Jarvis itself and the Claude brains
@@ -25,7 +27,7 @@ HEAVY_MB = 1500            # extra headroom while a heavy job holds var/heavy.lo
 SWAP_FULL = 0.9            # swap this full counts like "warning"
 LOW_FREE_PCT = 25          # "warning" from the kernel only counts when macOS's free percentage is below this
 TOTAL_MB = int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") // (1024 * 1024))
-HEAVY_LOCK = Path(__file__).resolve().parent.parent / "var" / "heavy.lock"
+HEAVY_LOCK = VAR / "heavy.lock"
 
 
 def _run(*cmd: str) -> str:

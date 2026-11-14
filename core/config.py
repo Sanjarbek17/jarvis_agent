@@ -7,8 +7,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .paths import VAR                   # everything made while running (not in git); tests get a temporary one
+
 HERE = Path(__file__).parent.parent      # the jarvis folder
-VAR = HERE / "var"                       # everything made while running (not in git)
 SESSION = VAR / "jarvis"                 # Telegram login of the Jarvis account (.session)
 load_dotenv(HERE / ".env")
 

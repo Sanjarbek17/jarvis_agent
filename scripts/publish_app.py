@@ -18,7 +18,10 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
-RELEASES = HERE / "var" / "state" / "app_release"
+sys.path.insert(0, str(HERE))
+from core.paths import VAR  # noqa: E402  (tests: a temporary folder, never the real one)
+
+RELEASES = VAR / "state" / "app_release"
 SDK = Path.home() / "Library" / "Android" / "sdk" / "build-tools"
 KEEP = 3
 
