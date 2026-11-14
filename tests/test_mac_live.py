@@ -49,6 +49,17 @@ def app(tmp_path, monkeypatch):
     return TestClient(appserver.app), frames, inputs, told
 
 
+def next_text(ws) -> str:
+    """The next text message, skipping frames: up to two frames go out before the first ack, so one can arrive
+    before an error the test waits for (a race that made these tests flaky under load)."""
+    while True:
+        msg = ws.receive()
+        if msg.get("text") is not None:
+            return msg["text"]
+        if msg.get("type") == "websocket.close":
+            raise AssertionError("socket closed")
+
+
 def frame_of(msg: bytes) -> tuple[dict, bytes]:
     n = int.from_bytes(msg[:4], "big")
     return json.loads(msg[4:4 + n]), msg[4 + n:]
@@ -74,7 +85,7 @@ def test_frames_only_when_changed_and_after_acks(app):
         ws.send_text(json.dumps({"t": "ack"}))
         assert frame_of(ws.receive_bytes())[1] == b"\xff\xd8\xff-same"
         ws.send_text(json.dumps({"t": "ack"}))
-        assert json.loads(ws.receive_text()) == {"t": "cursor", "cx": 5, "cy": 6}   # unchanged: no picture sent
+        assert json.loads(next_text(ws)) == {"t": "cursor", "cx": 5, "cy": 6}   # unchanged: no picture sent
     shots = [r for r in frames.got if r["op"] == "shot"]
     assert shots[0]["w"] == 800 and shots[0]["q"] == 0.4 and shots[1]["last"] == shots[0].get("last") or True
     assert len(told) == 1 and "Mi 11" in told[0]
@@ -87,7 +98,7 @@ def test_drag_and_release_on_disconnect(app):
         for msg in ({"action": "down", "x": 10, "y": 20}, {"action": "drag", "x": 30, "y": 40}, {"action": "drag", "x": 50, "y": 60}):
             ws.send_text(json.dumps(msg))
         ws.send_text(json.dumps({"action": "click", "x": "bad", "y": 1}))
-        assert json.loads(ws.receive_text())["t"] == "error"
+        assert json.loads(next_text(ws))["t"] == "error"
     ops = [(r["op"], r.get("x"), r.get("y")) for r in inputs.got]
     assert ops[:3] == [("down", 10, 20), ("drag", 30, 40), ("drag", 50, 60)]
     assert ops[-1] == ("up", 50, 60)                    # the phone went away mid-drag: the button is let go
@@ -100,7 +111,7 @@ def test_finished_drag_is_not_released_again(app):
         ws.send_text(json.dumps({"action": "down", "x": 1, "y": 2}))
         ws.send_text(json.dumps({"action": "up", "x": 3, "y": 4}))
         ws.send_text(json.dumps({"action": "key", "key": "nope;rm"}))
-        ws.receive_text()
+        next_text(ws)
     assert [r["op"] for r in inputs.got] == ["down", "up"]
 
 
@@ -166,3 +177,51 @@ def test_acks_are_not_held_up_by_slow_input(app, monkeypatch):
         ws.send_text(json.dumps({"action": "move", "x": 1, "y": 1}))      # stuck for 5 s
         ws.send_text(json.dumps({"t": "ack"}))
         assert frame_of(ws.receive_bytes())[1] == b"\xff\xd8\xff-same"  # the next frame came anyway
+
+
+
+def test_a_dark_display_is_woken_and_the_frame_comes_after_all(monkeypatch):
+    """Ticket 40f533c4: with the display dark the capture hung, the app showed nothing, Sanjar was locked out."""
+    import asyncio
+
+    class Dark(FakeHelper):
+        def __init__(self):
+            super().__init__([b"\xff\xd8\xff-awake"])
+            self.dark, self.stopped = True, 0
+
+        async def request(self, req, timeout=20):
+            if self.dark:
+                self.got.append(req)
+                return {"ok": False, "error": "The Mac helper stopped. Try again."}, b""
+            return await super().request(req, timeout)
+
+        async def stop(self):
+            self.stopped += 1
+
+    helper, woke = Dark(), []
+
+    async def wake():
+        woke.append(1)
+        helper.dark = False
+
+    monkeypatch.setattr(macremote, "frames", helper)
+    monkeypatch.setattr(macremote, "wake", wake)
+    monkeypatch.setattr(macremote, "_frames", {})
+    jpeg, w, h = asyncio.run(macremote.screen(800))
+    assert jpeg.endswith(b"-awake") and woke == [1] and helper.stopped == 1
+
+
+
+def test_an_asleep_display_is_woken_before_the_capture(monkeypatch):
+    import asyncio
+    helper, woke = FakeHelper([b"\xff\xd8\xff-awake"]), []
+
+    async def wake():
+        woke.append(1)
+
+    monkeypatch.setattr(macremote, "frames", helper)
+    monkeypatch.setattr(macremote, "wake", wake)
+    monkeypatch.setattr(macremote, "display_asleep", lambda: True)
+    monkeypatch.setattr(macremote, "_frames", {})
+    asyncio.run(macremote.screen(800))
+    assert woke == [1] and len(helper.got) == 1                   # woken first, one capture, no hang
