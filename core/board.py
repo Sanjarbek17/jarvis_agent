@@ -63,7 +63,7 @@ class Ticket:
     def line(self) -> str:
         jarvis = f"Jarvis {self.jarvis}" if self.jarvis else "not for Jarvis"
         if self.jarvis == "Needs me" and (age := asked_ago(self.edited)):
-            jarvis += f" (asked {age} ago: it may be done or out of date by now)"
+            jarvis += f" (asked {age} ago)"
         return (f"{self.ref} [{self.project}] {self.title} — {self.status or '?'}, {jarvis}"
                 + (f": {self.note[:200]}" if self.note else ""))
 

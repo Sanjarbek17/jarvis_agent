@@ -309,6 +309,10 @@ Sanjar is away from the computer and won't approve anything, so work on your own
   {HERE / ".venv/bin/python"} {HERE / "scripts/send_file.py"} <file> "<caption>"
 - If you truly can't continue without a decision from Sanjar, stop and make the LAST line of
   your final message: {NEEDS_ME} <one short question>
+- NEEDS ME is only for a decision or something only Sanjar can give (a choice, a password, a code). Never
+  for a state a program is waiting on (the screen locked, a page still loading, a post not out yet): that
+  program asks him itself and takes it back when it's done (core/asks.py; the reel poster does this for
+  the screen). Copied into a ticket it goes stale. Say in your summary what is waiting on what.
 - Never end your turn while background agents, workflows or background commands you started are
   still running: wait for each to finish (or stop it on purpose) before your final summary. Your
   ticket is over once you give it: anything still running 10 minutes later is stopped.

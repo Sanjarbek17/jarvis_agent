@@ -49,9 +49,7 @@ Act on them yourself with your tools, following Sanjar's standing rule: never as
 - Working with no live worker: its worker is gone; queue it again with queue_ticket.
 - A Due ticket that hasn't started: make sure it's queued (Due tickets go first).
 Before leaving anything for him, check memory / recall and the recent chat: if he already answered or
-did it, act on that instead of asking again. A question is only as current as when it was asked (its age is in
-the line): check the facts now (the Mac screen line above, live_stats, worker_progress) and if what it waits
-for already happened, answer_task with that instead of asking him.
+did it, act on that instead of asking again.
 Then write Sanjar a very short Telegram note: at most one line on what you did, and at most ONE thing
 he himself must do, in plain words (no ids, no worker text, no internal steps). If nothing is worth
 telling him, reply exactly NO_REPLY."""
@@ -89,9 +87,6 @@ async def gather(runner, runner_alive: Callable[[], bool]) -> tuple[list[str], l
     queued = await board.queued()
     nxt = runner.pick(queued)
     facts.append(f"queued: {len(queued)}" + (f" (next: {nxt[0].ref})" if nxt else ""))
-    from . import guard
-    if (locked := guard.screen_locked()) is not None:
-        facts.append(f"Mac screen right now: {'LOCKED' if locked else 'unlocked'}")
     facts.append(f"memory: {ramguard.describe()}" + (f"; {runner.wait_reason}" if runner.wait_reason else ""))
     if age is not None and age > HEARTBEAT_STALE and runner_alive():
         items.append(("runner-stale", f"the runner's loop hasn't ticked for {age / 60:.0f} min (its watchdog "

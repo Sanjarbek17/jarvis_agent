@@ -1,47 +1,84 @@
-"""Ticket 733814dd: at 12:14 Jarvis asked Sanjar to unlock the Mac for a reel that had posted hours before. The
-"Needs me" question was read off the board as if it were still true; nothing said how old it was, and Jarvis
-couldn't see whether the Mac was locked. Now the age is shown, the live screen state is a fact, and the brain
-and the self-check are told to check before passing a question on."""
+"""Ticket 733814dd / c2f2a3c7: at 12:14 Jarvis asked Sanjar to unlock the Mac for a reel that had posted hours before.
+The root cause: the request was a static note copied onto a ticket, so the poster, the only code that knew whether it
+still needed the screen, couldn't take it back. Now such requests are owned asks (core/asks.py): opened and withdrawn
+by the program itself, their message deleted when withdrawn."""
 import asyncio
-import time
 from datetime import datetime, timedelta, timezone
 
-from core import board, brain, guard, selfcheck
+from core import asks, board, outbox, selfcheck
 from core.board import Ticket
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def own_asks(tmp_path, monkeypatch):
+    monkeypatch.setattr(asks, "FILE", tmp_path / "asks.json")
 
 
 def needs(edited):
     return Ticket(page_id="local:x", ref="733814dd", project="Jarvis", title="guard", status="In progress",
-                  jarvis="Needs me", note="please unlock the Mac", sprint="", url="", edited=edited)
+                  jarvis="Needs me", note="which colour?", sprint="", url="", edited=edited)
 
 
-def test_a_needs_me_line_says_how_old_the_question_is():
+def test_a_needs_me_line_says_when_it_was_asked():
     old = (datetime.now(timezone.utc) - timedelta(hours=14)).isoformat()
-    assert "asked 14 h ago" in needs(old).line() and "out of date" in needs(old).line()
+    assert "asked 14 h ago" in needs(old).line()
     assert "asked" not in needs("").line()
-    done = Ticket(page_id="", ref="r", project="P", title="t", status="", jarvis="Done", note="", sprint="", url="",
-                  edited=old)
-    assert "asked" not in done.line()
     assert board.asked_ago((datetime.now(timezone.utc) - timedelta(minutes=40)).isoformat()) == "40 min"
     assert board.asked_ago((datetime.now(timezone.utc) - timedelta(days=3)).isoformat()) == "3 days"
 
 
-def test_screen_locked_reads_the_session(monkeypatch):
-    import Quartz
-    monkeypatch.setattr(Quartz, "CGSessionCopyCurrentDictionary", lambda: {"CGSSessionScreenIsLocked": 1})
-    assert guard.screen_locked() is True
-    monkeypatch.setattr(Quartz, "CGSessionCopyCurrentDictionary", lambda: {"kCGSSessionOnConsoleKey": True})
-    assert guard.screen_locked() is False                     # the key is only there while locked
-    monkeypatch.setattr(Quartz, "CGSessionCopyCurrentDictionary", lambda: 1 / 0)
-    assert guard.screen_locked() is None
+def outbox_spy(monkeypatch, running=True):
+    sent = []
+    monkeypatch.setattr(outbox, "jarvis_running", lambda: running)
+    monkeypatch.setattr(outbox, "send", lambda **kw: sent.append(kw) or {"ok": True})
+    return sent
 
 
-def test_the_brain_and_self_check_are_told_to_check_first():
-    assert "true when it was written, not necessarily now" in open(brain.__file__).read()
-    assert "only as current as when it was asked" in selfcheck.PROMPT
+def test_an_ask_is_sent_once_and_its_message_goes_when_its_owner_withdraws_it(monkeypatch):
+    sent = outbox_spy(monkeypatch)
+    assert asks.open_ask("haydovchi:unlock:r11", "Haydovchi poster", "Unlock the Mac: reel r11 is waiting") is True
+    assert asks.open_ask("haydovchi:unlock:r11", "Haydovchi poster", "Unlock the Mac: reel r11 is waiting") is False
+    assert [s["text"] for s in sent] == ["Unlock the Mac: reel r11 is waiting"] and sent[0]["key"] == "ask:haydovchi:unlock:r11"
+    assert "Haydovchi poster: Unlock the Mac" in asks.status_lines()
+    assert asks.close_ask("haydovchi:unlock:r11") is True
+    assert sent[-1] == {"wait": 30, "delete_key": "ask:haydovchi:unlock:r11"}
+    assert asks.close_ask("haydovchi:unlock:r11") is False and len(sent) == 2   # closing twice: nothing more
+    assert asks.status_lines() == "" and asks.open_asks() == {}
 
 
-def test_self_check_gives_the_age_and_the_screen(monkeypatch):
+def test_asks_still_count_when_jarvis_is_down(monkeypatch):
+    sent = outbox_spy(monkeypatch, running=False)
+    asks.open_ask("k", "P", "t")
+    assert sent == [] and "k" in asks.open_asks()
+
+
+def test_get_status_lists_open_asks(monkeypatch):
+    outbox_spy(monkeypatch)
+    from core import tools
+    from core.runner import Runner
+
+    async def status_text(project=""):
+        return "Jarvis has nothing queued or running."
+
+    monkeypatch.setattr(tools.board, "status_text", status_text)
+    tools.hooks.runner = Runner(lambda *a: None)
+    asks.open_ask("haydovchi:unlock:r11", "Haydovchi poster", "Unlock the Mac")
+    r = asyncio.run(tools.make_server("test").call_tool("get_status", {}))
+    assert "Waiting on Sanjar right now" in str(r) and "Haydovchi poster: Unlock the Mac" in str(r)
+    asks.close_ask("haydovchi:unlock:r11")
+    r = asyncio.run(tools.make_server("test").call_tool("get_status", {}))
+    assert "Waiting on Sanjar" not in str(r)
+
+
+def test_workers_are_told_not_to_copy_a_programs_wait_into_needs_me():
+    from core import runner
+    t = Ticket(page_id="local:a", ref="a", project="Jarvis", title="t", status="", jarvis="", note="", sprint="", url="")
+    assert "Never\n  for a state a program is waiting on" in runner._worker_prompt(t, runner.SHOTS)
+
+
+def test_self_check_gives_the_age(monkeypatch):
     old = (datetime.now(timezone.utc) - timedelta(hours=14)).isoformat()
 
     async def with_jarvis(state):
@@ -52,8 +89,6 @@ def test_self_check_gives_the_age_and_the_screen(monkeypatch):
 
     monkeypatch.setattr(board, "with_jarvis", with_jarvis)
     monkeypatch.setattr(board, "queued", queued)
-    monkeypatch.setattr(guard, "screen_locked", lambda: False)
     r = type("R", (), {"current": {}, "wait_reason": "", "pick": lambda self, q: []})()
-    facts, items = asyncio.run(selfcheck.gather(r, lambda: True))
-    assert "Mac screen right now: unlocked" in facts
-    assert items == [("needs:733814dd", "Needs me (asked 14 h ago): 733814dd [Jarvis] guard — please unlock the Mac")]
+    _, items = asyncio.run(selfcheck.gather(r, lambda: True))
+    assert items == [("needs:733814dd", "Needs me (asked 14 h ago): 733814dd [Jarvis] guard — which colour?")]
