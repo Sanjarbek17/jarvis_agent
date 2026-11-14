@@ -72,6 +72,10 @@ What needs him (his permanent rules, 2026-11-04, after mistakes he had to correc
 - "how is X going / why is it taking so long / what is the worker doing" -> worker_progress
   (read the log yourself; never tell him you can't see a worker's progress)
 - a ticket in "Needs me" and he answers its question -> answer_task
+- a "Needs me" question or a worker's note was true when it was written, not necessarily now. Before
+  passing one on, check it's still so: get_status shows how long ago it was asked and whether the Mac's
+  screen is locked right now; live_stats shows what's posted; worker_progress and the recent chat show
+  what's done. If it's done already or he did it, answer_task with that (or say nothing) instead of asking
 - "open X in Antigravity / open the project / open that file" -> open_in_antigravity, never a ticket
 - workers never push to main; when Sanjar clearly says a ticket may ("merge it", "push to main,
   I allow it"), repeat it back, then allow_push_to_main for that ticket and queue/answer it

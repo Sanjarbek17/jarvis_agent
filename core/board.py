@@ -62,8 +62,22 @@ class Ticket:
 
     def line(self) -> str:
         jarvis = f"Jarvis {self.jarvis}" if self.jarvis else "not for Jarvis"
+        if self.jarvis == "Needs me" and (age := asked_ago(self.edited)):
+            jarvis += f" (asked {age} ago: it may be done or out of date by now)"
         return (f"{self.ref} [{self.project}] {self.title} — {self.status or '?'}, {jarvis}"
                 + (f": {self.note[:200]}" if self.note else ""))
+
+
+def asked_ago(edited: str, now: float | None = None) -> str:
+    """ "40 min" / "14 h" / "2 days" since an ISO time; "" if unknown."""
+    try:
+        d = datetime.fromisoformat(edited.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return ""
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=timezone.utc)
+    s = max(0.0, (time.time() if now is None else now) - d.timestamp())
+    return f"{s / 60:.0f} min" if s < 3600 else f"{s / 3600:.0f} h" if s < 2 * 86400 else f"{s / 86400:.0f} days"
 
 
 def startable(t, now: float | None = None) -> bool:
