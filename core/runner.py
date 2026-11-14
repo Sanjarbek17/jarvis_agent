@@ -453,8 +453,6 @@ class Runner:
         self.held_logged = 0.0                          # last "held for RAM" log line (monotonic)
         self.last_start: dict[str, float] = {}          # project -> when its last worker started (fair turns)
         self.wait_reason = ""                           # why the next queued ticket isn't starting
-        self.done_recently: list[tuple[float, str]] = []   # (epoch, "ref [project] title") of tickets just Done:
-                                                        # the self-check re-checks open questions then (6a70f72e)
         self.started: dict[str, float] = {}             # project -> when its current ticket started (epoch)
         self._adopted: set[str] = set()                 # refs whose live worker was adopted after a restart
 
@@ -905,8 +903,6 @@ class Runner:
         if counts.pop(card.ref, None) is not None:   # it finished: earlier restarts don't count any more
             REQUEUED.write_text(json.dumps(counts))
         log.info("%s %s", card.ref, status)
-        if status == "Done":
-            self.done_recently = (self.done_recently + [(time.time(), f"{card.ref} [{card.project}] {card.title}")])[-30:]
         await self.notify(card, kind, question or result, photos)
 
     async def _pause_for_limit(self, card: Ticket, until: float, result: str):
