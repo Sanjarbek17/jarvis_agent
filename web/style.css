@@ -106,6 +106,9 @@ h1, h2, p { margin: 0; }
 .bubble .meta a { color: inherit; }
 .bubble .pic { display: block; margin: 4px 0; max-width: 100%; max-height: 360px; border-radius: 8px; cursor: zoom-in; }
 .bubble.typing { color: var(--muted); }
+/* a report that is old data (ticket 0a97efa8) */
+.bubble.stale { background: #23262d; color: var(--muted); filter: grayscale(1); opacity: .7; }
+.bubble.stale .meta { opacity: 1; color: var(--muted); }
 /* replies (ticket 256550ce) */
 .quote {
   display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: 100%; min-width: 0; text-align: left;

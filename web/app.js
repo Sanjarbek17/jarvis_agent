@@ -498,7 +498,7 @@ function drawMessages(chat) {
   const out = [];
   let before = null;
   for (const m of chat.msgs) {
-    const id = `${m.ts}|${m.role}`;      // keep drawn bubbles: redrawn images would jump the page
+    const id = `${m.ts}|${m.role}|${m.stale ? 1 : 0}`;   // keep drawn bubbles (redrawn images would jump the page); one turning old is redrawn
     const el = chat.bubbles.get(id) || bubble(m, before !== null && before !== m.role);
     chat.bubbles.set(id, el);
     el.classList.remove("first");
@@ -580,7 +580,8 @@ function jumpTo(ts) {
 }
 
 function bubble(m, gap) {
-  const el = h("div", { class: `bubble ${m.role === "me" ? "me" : ""} ${gap ? "gap" : ""}` });
+  // a report whose numbers are no longer current is greyed out (ticket 0a97efa8; the server decides)
+  const el = h("div", { class: `bubble ${m.role === "me" ? "me" : ""} ${gap ? "gap" : ""} ${m.stale ? "stale" : ""}` });
   if (m.ts) el.dataset.ts = String(m.ts);
   if (m.reply) {
     el.append(h("button", { class: "quote", title: "Show that message", onclick: () => jumpTo(m.reply.ts) },
@@ -598,7 +599,8 @@ function bubble(m, gap) {
     el.append(btn);
   }
   const from = m.chat_title ? `from ${m.chat_title}` : "";
-  const meta = [m.voice ? "voice" : "", m.ts ? clock(m.ts) : "sending"].filter(Boolean).join(" · ");
+  const read = m.report?.read_at ? `${m.stale ? "old data · " : ""}data read ${clock(m.report.read_at)}` : "";
+  const meta = [read, m.voice ? "voice" : "", m.ts ? clock(m.ts) : "sending"].filter(Boolean).join(" · ");
   const replyBtn = m.ts ? h("button", { class: "reply-btn", title: "Reply to this message", "aria-label": "Reply to this message",
     text: "↩ Reply", onclick: () => open?.startReply?.(m) }) : null;
   el.append(h("div", { class: "meta" }, replyBtn, from && m.chat_project ? h("a", { href: chatLink(m.chat_project, m.chat), text: from }) : from,

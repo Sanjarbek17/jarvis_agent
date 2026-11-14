@@ -424,14 +424,15 @@ async def _to_telegram(text: str) -> None:
         log.exception("couldn't copy a website message to Telegram")
 
 
-def telegram_said(role: str, text: str) -> None:
+def telegram_said(role: str, text: str, report: dict | None = None) -> None:
     """A message of the Telegram conversation (role "me" or "jarvis"): show it in the shared chat.
-    Not "pushed", so it never counts as news."""
+    Not "pushed", so it never counts as news. report: it answered a status question (livestats.live_for)."""
     text = (text or "").strip()
     if not text:
         return
     chat = _updates_chat()
-    chat["messages"] = (chat["messages"] + [{"role": role, "text": _kept(text)[:4000], "ts": time.time()}])[-KEEP_UPDATES:]
+    said = {"role": role, "text": _kept(text)[:4000], "ts": time.time(), **({"report": report} if report else {})}
+    chat["messages"] = (chat["messages"] + [said])[-KEEP_UPDATES:]
     chat["updated"] = chat["messages"][-1]["ts"]
     save_chat(chat)
 
@@ -506,10 +507,11 @@ async def ask(chat: dict, text: str, voice: bool = False, images: list[str] = ()
         attached = (f"[Sanjar attached {len(images)} image{'s' * (len(images) > 1)} in the app, saved on the Mac: "
                     f"{paths}. Look at {'them' if len(images) > 1 else 'it'} with Read before answering.]\n")
     brain = _brain(chat)
+    report = None
     try:
         replying = reply_context(answered) if answered else ""
         who = SIGNED_IN if signed_in else NOT_SIGNED_IN
-        live = await livestats.brief_for(chat["project"], text)    # status: live numbers first, in code (0960b065)
+        live, report = await livestats.live_for(chat["project"], text)    # status: live numbers first, in code (0960b065)
         with answering.mark(chat["id"]):                      # a restart waits for this answer (11ff3b8a)
             reply = await brain.reply(f"{context_line(chat['project'])} {who}\n{earlier}{live}{replying}{attached}{text}")
     except Exception:
@@ -519,7 +521,7 @@ async def ask(chat: dict, text: str, voice: bool = False, images: list[str] = ()
         reply = "(no reply)"
     chat = load_chat(chat["id"]) or chat               # another request may have added messages meanwhile
     shown = reply if signed_in else _kept(reply)     # not signed in: no secret leaves, whatever the brain said
-    msg = {"role": "jarvis", "text": _kept(reply), "ts": time.time()}
+    msg = {"role": "jarvis", "text": _kept(reply), "ts": time.time(), **({"report": report} if report else {})}
     if signed_in and msg["text"] != reply:
         msg[OWN] = reply                             # only his signed-in readers get it back (_for_reader)
     chat["messages"].append(msg)
@@ -624,7 +626,7 @@ def _updates_chat() -> dict:
                                   "created": time.time(), "session": "", "messages": []}
 
 
-def push(text: str, chat_id: str = "", photos=(), files=()) -> dict | None:
+def push(text: str, chat_id: str = "", photos=(), files=(), report: dict | None = None) -> dict | None:
     """Jarvis wrote to Sanjar first: keep a copy for the app (its notifications poll for these).
     chat_id: also put it into that app chat (the one he asked from), where its Claude conversation
     picks it up with his next message. photos: images shown with it (ticket 546d965e). files: from save_file."""
@@ -635,6 +637,8 @@ def push(text: str, chat_id: str = "", photos=(), files=()) -> dict | None:
     extra = {"images": images} if images else {}
     if files:
         extra["files"] = list(files)
+    if report:
+        extra["report"] = report
     target = load_chat(chat_id) if chat_id and chat_id != UPDATES else None
     if target:
         msg = {"role": "jarvis", "text": text[:4000], "ts": time.time(), "pushed": True, **extra}
@@ -648,6 +652,26 @@ def push(text: str, chat_id: str = "", photos=(), files=()) -> dict | None:
     chat["updated"] = msg["ts"]
     save_chat(chat)
     return msg
+
+
+REPORT_FRESH = 24 * 3600              # a report's numbers older than this are old data even if nothing newer came
+
+
+def mark_stale(messages: list[dict], now: float | None = None) -> list[dict]:
+    """Reports that are old data get "stale": true (ticket 0a97efa8): a newer report on any of the same things
+    came after it, or its numbers were read more than REPORT_FRESH ago. Decided here, once, for the app and the
+    website alike; the newest report on a thing stays current for a day."""
+    now = time.time() if now is None else now
+    out, seen = [], set()
+    for m in reversed(messages):                   # newest first: what's already been reported on later
+        r = m.get("report")
+        if isinstance(r, dict) and r.get("about"):
+            about = set(r["about"])
+            old = bool(about & seen) or now - float(r.get("read_at") or m.get("ts", now)) > REPORT_FRESH
+            seen |= about
+            m = {**m, "stale": True} if old else m
+        out.append(m)
+    return out[::-1]
 
 
 def _with_project(items: list[dict]) -> list[dict]:
@@ -768,7 +792,7 @@ async def messages(req: Request):
             return JSONResponse({"error": "empty"}, status_code=400)
         return JSONResponse(await ask(chat, text, images=images, reply_to=body.get("reply_to"),
                                       signed_in=_session_of(req) is not None))
-    recent = _for_reader(chat["messages"][-200:], _session_of(req) is not None)
+    recent = mark_stale(_for_reader(chat["messages"][-200:], _session_of(req) is not None))
     return JSONResponse(_with_project(recent) if chat["id"] == UPDATES else recent)
 
 
