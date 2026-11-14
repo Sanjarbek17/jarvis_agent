@@ -4,7 +4,9 @@
     .venv/bin/python scripts/board.py list <project> [--all]
     .venv/bin/python scripts/board.py show <ref>
     .venv/bin/python scripts/board.py add <project> <title> [--text-file F | --text T] [--sprint S] [--queue]
+                                          [--start-after "YYYY-MM-DD HH:MM" | HH:MM]
     .venv/bin/python scripts/board.py edit <ref> [--title T] [--text-file F | --text T] [--sprint S] [--status S]
+                                          [--start-after ...]
     .venv/bin/python scripts/board.py log <ref> <line>...
 
 --text-file - reads the text from stdin. Only Jarvis moves a ticket's Jarvis state; `add --queue` hands a
@@ -45,6 +47,8 @@ def main() -> int:
         p.add_argument("--sprint")
         p.add_argument("--status")
         p.add_argument("--queue", action="store_true")
+        p.add_argument("--start-after", help='not started before this local time: "YYYY-MM-DD HH:MM", or HH:MM '
+                                             '(today, or tomorrow if that time has passed); "" clears it')
     p = sub.add_parser("log")
     p.add_argument("ref")
     p.add_argument("lines", nargs="+")
@@ -63,7 +67,7 @@ def main() -> int:
             print(f"{a.project} isn't a board on the Mac", file=sys.stderr)
             return 1
         t = localboard.add_ticket(a.project, a.title, _text(a) or "", queued=a.queue, status=a.status or "",
-                                  sprint=a.sprint or "")
+                                  sprint=a.sprint or "", start_after=start_time(a.start_after or ""))
         print(t.ref)
         return 0
     t = localboard.get(a.ref)
@@ -73,7 +77,8 @@ def main() -> int:
     if a.cmd == "show":
         d = localboard.details(t.ref)
         print(f"{t.ref} [{t.project}] {t.title}\nStatus: {t.status or '?'}   Jarvis: {t.jarvis or '-'}"
-              f"   Sprint: {t.sprint or '-'}   Due: {t.due or '-'}")
+              f"   Sprint: {t.sprint or '-'}   Due: {t.due or '-'}"
+              + (f"   Starts after: {t.start_after}" if t.start_after else ""))
         if t.note:
             print(f"Note: {t.note}")
         if d["notion_url"]:
@@ -82,11 +87,28 @@ def main() -> int:
         if d["log"]:
             print("\n--- log ---\n" + "\n".join(e["line"] for e in d["log"]))
     elif a.cmd == "edit":
-        fields = {"title": a.new_title or a.title, "body": _text(a), "sprint": a.sprint, "status": a.status}
+        fields = {"title": a.new_title or a.title, "body": _text(a), "sprint": a.sprint, "status": a.status,
+                  "start_after": None if a.start_after is None else start_time(a.start_after)}
         localboard.set_fields(t.ref, **{k: v for k, v in fields.items() if v is not None})
     else:
         localboard.append_log(t.page_id, a.lines)
     return 0
+
+
+def start_time(text: str, now: float | None = None) -> str:
+    """--start-after as "YYYY-MM-DD HH:MM" local time. HH:MM alone: the next time it comes."""
+    import time
+    text = text.strip()
+    if not text:
+        return ""
+    now = time.time() if now is None else now
+    if len(text) <= 5:
+        day = time.strftime("%Y-%m-%d", time.localtime(now))
+        at = time.mktime(time.strptime(f"{day} {text}", "%Y-%m-%d %H:%M"))
+        if at <= now:
+            at += 86400
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(at))
+    return time.strftime("%Y-%m-%d %H:%M", time.strptime(text[:16], "%Y-%m-%d %H:%M"))
 
 
 if __name__ == "__main__":

@@ -55,11 +55,27 @@ class Ticket:
     url: str
     edited: str = ""    # last edited time (ISO), for spotting tickets stuck In Progress
     due: str = ""       # the board's "Due" date (ISO), if set: such tickets go ahead in the queue
+    start_after: str = ""   # "YYYY-MM-DD HH:MM" local time: not started before then (follow-up checks, ticket ac668ebe)
+
+    def startable(self, now: float | None = None) -> bool:
+        return startable(self, now)
 
     def line(self) -> str:
         jarvis = f"Jarvis {self.jarvis}" if self.jarvis else "not for Jarvis"
         return (f"{self.ref} [{self.project}] {self.title} — {self.status or '?'}, {jarvis}"
                 + (f": {self.note[:200]}" if self.note else ""))
+
+
+def startable(t, now: float | None = None) -> bool:
+    """False while a ticket's start_after time is still ahead (none, or a bad value, never blocks it)."""
+    when = (getattr(t, "start_after", "") or "").strip()
+    if not when:
+        return True
+    try:
+        at = time.mktime(time.strptime(when[:16], "%Y-%m-%d %H:%M"))
+    except ValueError:
+        return True
+    return (time.time() if now is None else now) >= at
 
 
 def boards() -> dict[str, str]:
