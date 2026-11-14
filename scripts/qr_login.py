@@ -28,9 +28,11 @@ from telethon.errors import PasswordHashInvalidError, SessionPasswordNeededError
 
 HERE = Path(__file__).parent.parent
 sys.path.insert(0, str(HERE))
+from core.paths import VAR  # noqa: E402  (tests: a temporary folder, never the real one)
+
+sys.path.insert(0, str(HERE))
 from core import outbox  # noqa: E402
 
-VAR = HERE / "var"
 load_dotenv(HERE / ".env")
 API_ID, API_HASH, OWNER = int(os.environ["TG_API_ID"]), os.environ["TG_API_HASH"], int(os.environ["OWNER_ID"])
 LIVE = VAR / "jarvis.session"

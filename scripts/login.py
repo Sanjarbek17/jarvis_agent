@@ -17,9 +17,12 @@ from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 
 HERE = Path(__file__).parent.parent
+sys.path.insert(0, str(HERE))
+from core.paths import VAR  # noqa: E402  (tests: a temporary folder, never the real one)
+
 load_dotenv(HERE / ".env")
-SESSION = str(HERE / "var" / "jarvis")
-PENDING = HERE / "var" / ".login_pending.json"
+SESSION = str(VAR / "jarvis")
+PENDING = VAR / ".login_pending.json"
 
 
 @asynccontextmanager

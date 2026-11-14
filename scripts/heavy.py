@@ -15,7 +15,10 @@ import sys
 import time
 from pathlib import Path
 
-LOCK = Path(os.environ.get("HEAVY_LOCK") or Path(__file__).resolve().parent.parent / "var" / "heavy.lock")  # tests set it
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.paths import VAR  # noqa: E402
+
+LOCK = Path(os.environ.get("HEAVY_LOCK") or VAR / "heavy.lock")  # tests set it
 LOCK2 = LOCK.with_name("heavy2.lock")
 PARALLEL_MB = int(os.environ.get("HEAVY_PARALLEL_MB", 3500))   # tests set it
 

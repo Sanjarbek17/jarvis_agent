@@ -21,7 +21,10 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
-OPENED = HERE / "var" / "state" / "opened_chrome.json"
+sys.path.insert(0, str(HERE))
+from core.paths import VAR  # noqa: E402  (tests: a temporary folder, never the real one)
+
+OPENED = VAR / "state" / "opened_chrome.json"
 
 
 def _osa(script: str) -> str:

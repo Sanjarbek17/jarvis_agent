@@ -53,13 +53,39 @@ def test_broken_file_is_no_problem(app):
     assert len(appserver.replies_since(0)) == 1
 
 
-def test_answers_in_missing_chats_are_left_out(app):
-    appserver.note_reply({"id": "gone12345678", "title": "Test", "project": "General"}, {"text": "Moved it.", "ts": 5.0})
-    chat = app.post("/api/chats", json={"project": "General", "title": "Real"}, headers=AUTH).json()
-    appserver.note_reply({"id": chat["id"], "title": "Real", "project": "General"}, {"text": "real one", "ts": 6.0})
-    assert [n["text"] for n in appserver.replies_since(0)] == ["real one"]
-
-
-def test_tests_never_touch_the_real_feed():
+def test_tests_use_a_temporary_data_folder():
+    """Ticket 6ced33f0: the root cause was tests writing the real data folder; now they can't."""
+    from core import paths
     from core.config import STATE
-    assert appserver.REPLIES != STATE / "app_replies.json"
+    real = paths.HERE / "var"
+    assert paths.VAR != real and not str(appserver.REPLIES).startswith(str(real)) and not str(STATE).startswith(str(real))
+
+
+def test_jarvis_refuses_the_real_folder_under_tests():
+    from core import paths
+    import os
+    import subprocess
+    import sys
+    env = {k: v for k, v in os.environ.items() if k != "JARVIS_VAR"} | {"PYTEST_CURRENT_TEST": "x"}
+    r = subprocess.run([sys.executable, "-c", "import core.paths"], cwd=paths.HERE, env=env, capture_output=True, text=True)
+    assert r.returncode != 0 and "real data folder" in r.stderr
+    env["JARVIS_VAR"] = os.environ["JARVIS_VAR"]
+    assert subprocess.run([sys.executable, "-c", "import core.paths"], cwd=paths.HERE, env=env).returncode == 0
+
+
+@pytest.mark.parametrize("text,shown", [
+    ("Here's the plan.", "Here's the plan."),
+    ("Login: inglizcha.oson.qoida, password: [secret]", "New message. Open the chat to read it."),
+    ("Your parol is ready", "New message. Open the chat to read it."),
+    ("The API key is in .env as GEMINI_API_KEY", "New message. Open the chat to read it."),
+    ("Kod: 12345", "New message. Open the chat to read it."),
+])
+def test_previews_never_show_credentials(text, shown):
+    assert appserver.preview(text) == shown
+
+
+def test_feed_texts_are_previews(app):
+    chat = app.post("/api/chats", json={"project": "General", "title": "Acc"}, headers=AUTH).json()
+    appserver.note_reply(appserver.load_chat(chat["id"]), {"text": "Login: me, password: hunter2", "ts": 7.0})
+    feed = app.get("/api/notifications", headers=AUTH).json()["replies"]
+    assert feed[-1]["text"] == "New message. Open the chat to read it."

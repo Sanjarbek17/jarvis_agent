@@ -24,10 +24,13 @@ from pathlib import Path
 import ApplicationServices as AS
 import Quartz as Q
 
-SHOTS = Path(__file__).parent.parent / "var" / "shots"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.paths import VAR  # noqa: E402
+
+SHOTS = VAR / "shots"
 # Every click and key this tool makes is Jarvis's, not a stranger at the Mac: the guard (core/guard.py) skips input
 # right after this marker changes (ticket 733814dd: the reel poster's clicks locked the Mac twice on 13 Nov).
-AUTOMATION = Path(__file__).parent.parent / "var" / "state" / "automation_input"
+AUTOMATION = VAR / "state" / "automation_input"
 _marked = [0.0]
 
 

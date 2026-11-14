@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable
 
+from .paths import VAR
 from . import autoanswer, board, grants, localboard, origin, ramguard, tgfmt, usagewatch
 from .brain import BRAIN_MODEL   # workers run on the same model as the Jarvis brain (Opus)
 from .board import Ticket
@@ -47,7 +48,7 @@ WRITE_TRIES = (0, 10, 30)                     # seconds to wait before each try 
 MAX_REQUEUES = 2
 FROM_SANJAR = STATE / "from_sanjar.json"      # refs of tickets he asked for himself (Telegram / call)
 HEARTBEAT = STATE / "runner_heartbeat"        # touched every runner loop; scripts/watchdog.sh watches it
-RESTART_PENDING = HERE / "var" / "restart_pending"   # restart_when_idle.sh is waiting: start no new workers
+RESTART_PENDING = VAR / "restart_pending"   # restart_when_idle.sh is waiting: start no new workers
 REQUEUE_AFTER = STATE / "requeue_after.json"   # {"ref": [refs]}: queue those again once "ref" has started
 AUTO_ANSWERS = STATE / "auto_answers.json"   # ticket ref -> how many questions Jarvis answered itself
 STUCK_TOLD = STATE / "stuck_told.json"   # ticket ref -> when Sanjar was last told it's stuck

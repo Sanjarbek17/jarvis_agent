@@ -44,6 +44,7 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.types import InputPeerChannel, MessageActionGroupCall
 
+from core.paths import VAR
 from core import answering, appserver, board, usagewatch, contacts, coremem, expenses, flatmates, google, guard, livestats, macremote, memory, origin, outbox, selfcheck, tgfmt, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
@@ -816,7 +817,7 @@ async def tgjobs(*args: str, detach: bool = False) -> str:
     return (lines[-1] if lines else "(no output)")[:500]
 
 
-FORMAT_SAMPLES = HERE / "var" / "state" / "send_format_samples"   # flag: send them once at the next start
+FORMAT_SAMPLES = VAR / "state" / "send_format_samples"   # flag: send them once at the next start
 
 
 async def send_format_samples():
@@ -1170,7 +1171,7 @@ def take_single_instance_lock(timeout: float = 90) -> bool:
     for the old one to die and release it, so two instances never both answer messages, poll the
     board, or fire the daily timers. Returns False if the old one won't let go."""
     global _lock_fd
-    _lock_fd = open(HERE / "var" / "jarvis.lock", "w")
+    _lock_fd = open(VAR / "jarvis.lock", "w")
     deadline = time.monotonic() + timeout
     while True:
         try:
