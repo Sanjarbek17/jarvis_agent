@@ -860,6 +860,7 @@ FLATMATES_ORDER = """[FLATMATES GROUP — Sanjar himself wrote this to you in th
 where his flatmates can read your answer. Treat it as his order, exactly as if he'd sent it here: use your tools.
 {replied}His message: {text}
 
+If he says to tell or answer a flat's owner (or "just do it" to a reply you suggested for one), use message_flat_owner.
 Answer in two parts. First ONE short line for the group, in his language: apartments only, no "sir", nothing about
 other projects, tickets, tools, secrets or his private life (empty if the group needs nothing). Then a line with only
 ---DM--- and, if needed, what only he should read (details, other projects, anything private); nothing after it if not.]"""

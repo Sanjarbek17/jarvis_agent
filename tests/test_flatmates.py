@@ -855,3 +855,43 @@ def test_strangers_and_late_private_answers_are_ignored():
     f.DMS.write_text(json.dumps(dms))
     assert asyncio.run(f.on_private(Reply(sender_id=2, raw_text="1"))) is False
     assert not list(f.QUEUE.glob("*.json"))
+
+
+# --- Sanjar's own message for an owner ------------------------------------------------------------------------------------
+
+def flats_view(*rows):
+    f.FLATMATES_VIEW.write_text(json.dumps(list(rows)))
+
+
+def test_the_flat_is_found_by_link_key_or_words(monkeypatch):
+    monkeypatch.setattr(f, "OWNER_ASKS", f.QUEUE.parent / "asks")
+    flats_view({"key": "tel1", "place": "🏠 2 rooms, Lux uy, $300 a month", "link": "https://t.me/g/7921", "chat": True},
+               {"key": "@b", "place": "🏠 2 rooms, Sartepo, $240 a month", "link": "https://t.me/g/1", "chat": True})
+    assert f.find_flat("https://t.me/g/7921")[0]["key"] == "tel1" and f.find_flat("tel1")[0]["key"] == "tel1"
+    assert f.find_flat("lux uy")[0]["key"] == "tel1"
+    row, unsure = f.find_flat("2 rooms")
+    assert row == {} and len(unsure) == 2
+    assert f.find_flat("Qorasuv") == ({}, [])
+
+
+def test_sanjars_message_is_queued_for_the_search(monkeypatch):
+    monkeypatch.setattr(f, "OWNER_ASKS", f.QUEUE.parent / "asks")
+    f.tell_owner("tel1", "Yo'q aka, oila emasmiz.")
+    req = f.owner_asks()[0][1]
+    assert req["key"] == "tel1" and req["say"] == "Yo'q aka, oila emasmiz." and req["asker"] == "Sanjar"
+
+
+def test_the_tool_sends_only_to_an_owner_we_talk_to(monkeypatch):
+    from core import tools
+    monkeypatch.setattr(f, "OWNER_ASKS", f.QUEUE.parent / "asks")
+    flats_view({"key": "tel1", "place": "🏠 Lux uy", "link": "L1", "chat": True}, {"key": "tel2", "place": "🏠 Phone only flat", "link": "L2", "chat": False})
+    server = tools.make_server("Telegram")
+
+    def call(**kw):
+        out = asyncio.run(server.call_tool("message_flat_owner", kw))
+        return str(out)
+
+    assert "Queued for the owner of 🏠 Lux uy" in call(flat="Lux uy", message="Yo'q, oila emasmiz.")
+    assert "isn't talking to that owner" in call(flat="Phone only", message="Salom")
+    assert "No flat" in call(flat="Qorasuv", message="Salom")
+    assert len(f.owner_asks()) == 1
