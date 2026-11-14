@@ -213,10 +213,10 @@ def make_server(source: str) -> MCPServer:
             return f"This chat will move to {chat['move_to']} as soon as that project exists."
         return f"Moved this chat to {chat['project']}."
 
-    def mac_screen_line() -> str:
-        from . import guard
-        locked = guard.screen_locked()
-        return "" if locked is None else f"\nMac screen right now: {'LOCKED' if locked else 'unlocked'}."
+    def asks_line() -> str:
+        from . import asks
+        lines = asks.status_lines()
+        return f"\n\n{lines}" if lines else ""
 
     @server.tool()
     async def get_status(project: str = "") -> str:
@@ -227,7 +227,7 @@ def make_server(source: str) -> MCPServer:
         from . import usagewatch
         if line := usagewatch.status_line():
             text += f"\n{line}"
-        return text + mac_screen_line()
+        return text + asks_line()
 
     @server.tool()
     async def project_board(project: str, sprint: str = "", status: str = "") -> str:

@@ -34,7 +34,7 @@ SEEN = STATE / "selfcheck.json"   # item key -> last time it was handed to the b
 
 PROMPT = """[SELF-CHECK] Scheduled self-check (every 15 min; Sanjar didn't write this). Facts:
 {facts}
-{changes}
+
 New things to handle:
 {items}
 
@@ -49,9 +49,7 @@ Act on them yourself with your tools, following Sanjar's standing rule: never as
 - Working with no live worker: its worker is gone; queue it again with queue_ticket.
 - A Due ticket that hasn't started: make sure it's queued (Due tickets go first).
 Before leaving anything for him, check memory / recall and the recent chat: if he already answered or
-did it, act on that instead of asking again. A question is only as current as when it was asked (its age is in
-the line): check the facts now (the Mac screen line above, live_stats, worker_progress) and if what it waits
-for already happened, answer_task with that instead of asking him.
+did it, act on that instead of asking again.
 Then write Sanjar a very short Telegram note: at most one line on what you did, and at most ONE thing
 he himself must do, in plain words (no ids, no worker text, no internal steps). If nothing is worth
 telling him, reply exactly NO_REPLY."""
@@ -89,9 +87,6 @@ async def gather(runner, runner_alive: Callable[[], bool]) -> tuple[list[str], l
     queued = await board.queued()
     nxt = runner.pick(queued)
     facts.append(f"queued: {len(queued)}" + (f" (next: {nxt[0].ref})" if nxt else ""))
-    from . import guard
-    if (locked := guard.screen_locked()) is not None:
-        facts.append(f"Mac screen right now: {'LOCKED' if locked else 'unlocked'}")
     facts.append(f"memory: {ramguard.describe()}" + (f"; {runner.wait_reason}" if runner.wait_reason else ""))
     if age is not None and age > HEARTBEAT_STALE and runner_alive():
         items.append(("runner-stale", f"the runner's loop hasn't ticked for {age / 60:.0f} min (its watchdog "
@@ -113,22 +108,6 @@ async def gather(runner, runner_alive: Callable[[], bool]) -> tuple[list[str], l
     return facts, items
 
 
-def what_changed(runner, seen: dict) -> list[str]:
-    """What happened since the last round that may answer an open question (ticket 6a70f72e: the Mac was unlocked
-    and the reel posted, but "please unlock the Mac" stayed and was passed on hours later). Updates seen's marks."""
-    from . import guard
-    changes, last = [], float(seen.get("_round", 0) or 0)
-    locked = guard.screen_locked()
-    if locked is False and seen.get("_screen") == "locked":
-        changes.append("the Mac's screen was unlocked")
-    if locked is not None:
-        seen["_screen"] = "locked" if locked else "unlocked"
-    if last:
-        changes += [f"finished: {what}" for at, what in getattr(runner, "done_recently", []) if at > last]
-    seen["_round"] = time.time()
-    return changes
-
-
 async def run_once(runner, runner_alive, restart_runner, ask: Callable[[str], Awaitable[str]],
                    send: Callable[[str], Awaitable[None]]) -> str:
     """One self-check round; returns what was sent to Sanjar ("" if nothing)."""
@@ -139,12 +118,8 @@ async def run_once(runner, runner_alive, restart_runner, ask: Callable[[str], Aw
         log.warning("self-check: runner task was dead, restarted it")
     facts, items = await gather(runner, runner_alive)
     seen, now = _load(), time.time()
-    changes = what_changed(runner, seen)
-    # a question waits for something; when something changed, it may be answered already: look again now, not in 12 h
-    new = [(k, line) for k, line in items
-           if now - seen.get(k, 0) > REPEAT_AFTER or (changes and k.startswith("needs:"))]
-    keep = {key for key, _ in items}
-    seen = {k: v for k, v in seen.items() if k in keep or k.startswith("_")}   # resolved items are forgotten
+    new = [(k, line) for k, line in items if now - seen.get(k, 0) > REPEAT_AFTER]
+    seen = {k: v for k, v in seen.items() if k in {key for key, _ in items}}   # resolved items are forgotten
     if not new:
         SEEN.write_text(json.dumps(seen))
         if note:
@@ -155,12 +130,8 @@ async def run_once(runner, runner_alive, restart_runner, ask: Callable[[str], Aw
         seen[k] = now
     SEEN.write_text(json.dumps(seen))
     log.info("self-check: %d new item(s): %s", len(new), ", ".join(k for k, _ in new))
-    reply = (await ask(PROMPT.format(
-        facts="\n".join(f"- {f}" for f in facts),
-        changes=("\nChanged since the last check, so the Needs me questions are brought up again now: "
-                 + "; ".join(changes) + ". For each, check whether what it waits for is done now; if so, "
-                 "answer_task saying so (that clears the question), and don't pass it on to him.\n") if changes else "",
-        items="\n".join(f"- {line}" for _, line in new)))).strip()
+    reply = (await ask(PROMPT.format(facts="\n".join(f"- {f}" for f in facts),
+                                     items="\n".join(f"- {line}" for _, line in new)))).strip()
     from .brain import is_silent
     text = "\n".join(p for p in (note, "" if is_silent(reply) else reply) if p)
     if text:
