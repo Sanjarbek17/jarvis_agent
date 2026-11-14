@@ -550,6 +550,25 @@ def make_server(source: str) -> MCPServer:
         return await _google(lambda: google.create_doc(google.which(account), title, sections))
 
     @server.tool()
+    async def message_flat_owner(flat: str, message: str) -> str:
+        """Send a message to the owner of a flat the apartment search found, in the search's own chat with them, only when
+        Sanjar says to (e.g. his "just do it" in the Flatmates group to a reply you suggested). flat: the flat's post link,
+        or words from its line ("Lux uy, 2 xona"). message: exactly what to send, short and polite, in the owner's language
+        (Uzbek unless they write Russian). Never say how many we are unless the owner asked; no money, payments or promises.
+        Their answer comes back under the flat's post in Flatmates."""
+        from . import flatmates
+        if not message.strip():
+            return "Nothing to send."
+        row, unsure = flatmates.find_flat(flat)
+        if not row:
+            return ("Which flat? " + " | ".join(unsure)) if unsure else f"No flat in the search matches \"{flat}\"."
+        if not row.get("chat"):
+            return f"The search isn't talking to that owner ({(row.get('place') or '').splitlines()[0]}): it can't write to them."
+        flatmates.tell_owner(row["key"], message.strip()[:600])
+        return (f"Queued for the owner of {(row.get('place') or '').splitlines()[0]}: the search sends it within a minute and "
+                "posts it under the flat in Flatmates; their answer follows there.")
+
+    @server.tool()
     async def flatmates_expenses() -> str:
         """Who spent how much: reads the expense topic of the Flatmates group as it is now and adds it up per person,
         with each person's lines and the ones it couldn't count. This is for Sanjar; it posts nothing."""

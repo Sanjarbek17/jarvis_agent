@@ -330,6 +330,29 @@ def ask_owner(key: str, question: str, asker: str, reply_to: int) -> None:
     tmp.rename(OWNER_ASKS / f"{name}.json")
 
 
+def find_flat(query: str) -> tuple[dict, list[str]]:
+    """The flat Sanjar means, from its post link, its search key or words of its line. (row, the candidates' lines if unsure)."""
+    q = (query or "").strip().lower()
+    rows = [r for r in _rows() if r.get("key")]
+    if not q:
+        return {}, []
+    exact = [r for r in rows if q == r["key"].lower() or (r.get("link") and (r["link"].lower() in q or q in r["link"].lower()))]
+    hits = exact or [r for r in rows if q in (r.get("place") or "").lower()]
+    with_chat = [r for r in hits if r.get("chat")] or hits
+    if len(with_chat) == 1:
+        return with_chat[0], []
+    return {}, [(r.get("place") or "").splitlines()[0] for r in with_chat[:8]]
+
+
+def tell_owner(key: str, message: str) -> None:
+    """Sanjar's own message for the owner of flat `key` (ticket eae5445d): the search sends it in our chat with them."""
+    OWNER_ASKS.mkdir(parents=True, exist_ok=True)
+    name = f"{int(time.time() * 1000)}-sanjar"
+    tmp = OWNER_ASKS / f"{name}.tmp"
+    tmp.write_text(json.dumps({"key": key, "say": message, "asker": "Sanjar", "reply_to": 0, "at": time.time()}, ensure_ascii=False))
+    tmp.rename(OWNER_ASKS / f"{name}.json")
+
+
 def owner_asks() -> list:
     """For the apartment search: [(file, ask)]. It removes the file once it has dealt with it."""
     out = []
