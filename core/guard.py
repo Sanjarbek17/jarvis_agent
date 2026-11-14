@@ -62,6 +62,17 @@ def automation_at() -> float:
         return 0.0
 
 
+def screen_locked() -> bool | None:
+    """Is the Mac's screen locked right now? None if it can't be told. Lets Jarvis check instead of repeating an old
+    "please unlock the Mac" (ticket 733814dd: he was asked at 12:14 when it had been unlocked for hours)."""
+    try:
+        import Quartz
+        d = Quartz.CGSessionCopyCurrentDictionary() or {}
+        return bool(d.get("CGSSessionScreenIsLocked", False))
+    except Exception:
+        return None
+
+
 def lock_screen() -> bool:
     """Lock the Mac for real (ticket 4946d461: "lock it, not just make it sleep"): the same as Control-Command-Q,
     the login window comes up and only his password opens it. No Accessibility permission needed."""
