@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from .config import HERE, LOGS, MAC_NEVER_DO, SHOTS, STATE
-from . import usagewatch
+from . import hookset, usagewatch
 from .runner import NEEDS_ME, progress_text
 
 log = logging.getLogger("jarvis.mac")
@@ -44,9 +44,10 @@ How to get things done, in this order of preference:
 - Commands that may trigger a macOS permission prompt (~/Documents, ~/Desktop, ~/Downloads, Photos,
   Contacts...) can hang forever: always wrap them as `timeout 20 <command>`. If one times out, take
   a shot: if a dialog is asking, you may click Allow on it for this task.
-- A web page you open only to do a step or look something up: {PY} {HERE / "scripts/real_chrome.py"} open <url>
-  [--profile "Profile 4"] (a new window), and `real_chrome.py close --window <id>` when you're done (they're also
-  closed after 30 min). Leave open only what he asked to see. Never pile up tabs (ticket 3a61de45).
+- Every page you open in his Chrome goes through {PY} {HERE / "scripts/real_chrome.py"} open <url>
+  [--profile "Profile 4"] (a new window; a raw `open <url>` is blocked). One you open only to do a step or look
+  something up: `real_chrome.py close --window <id>` when you're done (also closed after 30 min). One he asked to
+  see: add --keep, then it stays until he closes it. Never pile up tabs (tickets 3a61de45, 81332fee).
 - Never copy his Chrome profile's cookies, Login Data or Local State into another browser or folder: Google then
   signs him out of all his accounts (ticket c09280c2). Work in his real Chrome instead.
 - Save a screenshot of the end result as a PNG in {shots}/ when it's something visible.
@@ -80,7 +81,7 @@ class MacWorker:
             shots = SHOTS / f"mac-{stamp}"
             shots.mkdir(exist_ok=True)
             self.current, self.log_path = task, LOGS / f"mac-{stamp}.jsonl"
-            cmd = ["claude", "-p", _prompt(task, words, shots), "--output-format", "stream-json",
+            cmd = ["claude", "-p", _prompt(task, words, shots), "--settings", hookset.SETTINGS, "--output-format", "stream-json",
                    "--verbose", "--permission-mode", "bypassPermissions", "--add-dir", str(Path.home()),
                    "--disallowedTools", "Bash(sudo:*)", "Bash(rm -rf /:*)", "Bash(rm -rf ~:*)",
                    "Bash(diskutil erase:*)", "Bash(csrutil:*)"]
