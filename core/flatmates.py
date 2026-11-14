@@ -34,6 +34,8 @@ log = logging.getLogger("jarvis.flatmates")
 QUEUE = VAR / "flatmates_out"
 PROOFS = VAR / "flatmates_proofs"     # members asking for proof: the search, which has the owner chats, draws the picture
 DELETES = VAR / "flatmates_deletes"   # its own messages to take back
+DMS = STATE / "flatmates_dms.json"     # members Jarvis wrote to privately: {user id: {"at", "name", "flats"}} (ticket 521b9e14)
+DM_ANSWER_DAYS = 3                       # their private replies count as answers this long
 OWNER_ASKS = VAR / "flatmates_owner_asks"   # members' questions for an owner: the search asks them (ticket 08f0d3be)
 PINS = VAR / "flatmates_pins"         # owners' locations, sent as real map pins under each flat's post (ticket c3339264)
 QUIET = 10               # seconds without a new message: people send several in a row, and the next may answer the last
@@ -258,6 +260,66 @@ async def carry_out(event, text: str, replied: str) -> None:
             await event.client.send_message(OWNER_ID, f"🏠 Flatmates: \"{text[:200]}\"\n\n{private[:3500]}")
 
 
+def drop_dm(flats: list[str]) -> None:
+    """For the apartment search: the group ignored the flat posts and the tagged reminders: write to each member
+    privately with these flats (their one-line descriptions) and ask which are worth seeing."""
+    QUEUE.mkdir(parents=True, exist_ok=True)
+    name = f"{time.time():.6f}-{uuid.uuid4().hex[:6]}"
+    tmp = QUEUE / f"{name}.tmp"
+    tmp.write_text(json.dumps({"dm": [str(x)[:200] for x in flats][:8]}, ensure_ascii=False))
+    tmp.rename(QUEUE / f"{name}.json")
+
+
+def dm_text(first_name: str, flats: list[str]) -> str:
+    listed = "\n".join(f"{i}. {f}" for i, f in enumerate(flats, 1))
+    return (f"Hi {first_name}! Jarvis from the Flatmates group here 🙂 Nobody has answered about these flats yet:\n{listed}\n\n"
+            "Which ones are worth seeing? Reply here with the numbers, or \"none\", and I'll pass it to the group. "
+            "(O'zbekcha javob bersangiz ham bo'ladi.)")
+
+
+def _dms() -> dict:
+    try:
+        return json.loads(DMS.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+async def dm_members(tg, flats: list[str]) -> int:
+    """Each member (not Sanjar, not Jarvis, not bots) gets the flats privately. Returns how many were written to."""
+    me, sent, dms = await tg.get_me(), 0, _dms()
+    for u in await tg.get_participants(FLATMATES_GROUP_ID):
+        if getattr(u, "bot", False) or getattr(u, "deleted", False) or u.id in (me.id, OWNER_ID):
+            continue
+        try:
+            await tg.send_message(u.id, dm_text(u.first_name or "there", flats))
+        except Exception as e:
+            log.warning("Flatmates: couldn't write to %s privately: %r", u.id, e)
+            continue
+        dms[str(u.id)] = {"at": time.time(), "name": u.first_name or "someone", "flats": flats}
+        sent += 1
+    DMS.parent.mkdir(parents=True, exist_ok=True)
+    DMS.write_text(json.dumps(dms, ensure_ascii=False))
+    log.info("Flatmates: asked %d member(s) privately about %d flat(s)", sent, len(flats))
+    return sent
+
+
+async def on_private(event) -> bool:
+    """A member's private reply to Jarvis's question about the flats: it goes to the group as their answer (so it also
+    counts as a member speaking: the hold lifts) and they get a thank-you. False: not someone we asked, or too late."""
+    asked = _dms().get(str(getattr(event, "sender_id", "")))
+    text = (getattr(event, "raw_text", "") or "").strip()
+    if not asked or not text or time.time() - asked.get("at", 0) > DM_ANSWER_DAYS * 86400:
+        return False
+    listed = "\n".join(f"{i}. {f}" for i, f in enumerate(asked.get("flats", []), 1))
+    name = asked.get("name", "A member")
+    drop(f"💬 {name} answered privately about:\n{listed}\n\n«{text[:800]}»")
+    remember(name, text[:800], 0, ts=time.time())
+    with contextlib.suppress(Exception):
+        await event.reply("Thanks! I've passed your answer to the group 👍")
+    log.info("Flatmates: %s answered privately: %r", name, text[:120])
+    return True
+
+
 def ask_owner(key: str, question: str, asker: str, reply_to: int) -> None:
     """A member's question for the owner of flat `key`: the apartment search, which has the owner chats, asks it."""
     OWNER_ASKS.mkdir(parents=True, exist_ok=True)
@@ -412,6 +474,9 @@ async def _send(tg, text: str, photos: list, where: int):
 
 async def post(tg, note: dict) -> None:
     global _topic
+    if note.get("dm"):                               # not a group post: write to each member privately
+        await dm_members(tg, note["dm"])
+        return
     photos = [p for p in note.get("photos", []) if Path(p).is_file()]
     key = note.get("key", "")
     original = note.get("reply_to") or (0 if note.get("first") else await find_post(tg, key, note.get("link", "")))

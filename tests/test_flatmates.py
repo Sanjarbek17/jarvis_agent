@@ -25,6 +25,7 @@ def clean(tmp_path, monkeypatch):
     monkeypatch.setattr(f, "_last_reply", {"at": 0.0})
     monkeypatch.setattr(f, "_last_request", {"text": "", "at": 0.0})
     monkeypatch.setattr(f, "OWNER_ASKS", tmp_path / "owner_asks")
+    monkeypatch.setattr(f, "DMS", tmp_path / "dms.json")
 
 
 class Tg:
@@ -798,3 +799,59 @@ def test_a_nudge_tags_every_member_but_jarvis(monkeypatch):
     kind, to, text, kw = tg.sent[-1]
     assert kw.get("parse_mode") == "html" and "@javohir" in text and 'tg://user?id=3">Ikrom &lt;C&gt;</a>' in text
     assert "Jarvis_Sanjar" not in text and "somebot" not in text and "3 flats &amp; more" in text
+
+
+
+# --- ticket 521b9e14: still ignored after tagging: ask each member privately, post their answer to the group ------------
+
+class Private:
+    def __init__(self, fail=()):
+        self.fail, self.sent = fail, []
+
+    async def get_me(self):
+        return NS(id=1)
+
+    async def get_participants(self, chat):
+        return [NS(id=1, first_name="Jarvis", bot=False, deleted=False), NS(id=f.OWNER_ID, first_name="Sanjar", bot=False, deleted=False),
+                NS(id=2, first_name="Javohir", bot=False, deleted=False), NS(id=3, first_name="Ikrom", bot=False, deleted=False),
+                NS(id=4, first_name="Bot", bot=True, deleted=False)]
+
+    async def send_message(self, to, text, **kw):
+        if to in self.fail:
+            raise ValueError("privacy")
+        self.sent.append((to, text))
+
+
+def test_ignored_flats_go_to_each_member_privately():
+    f.drop_dm(["Chilonzor, 2 rooms, $300", "Yunusobod, 3 rooms, $320"])
+    note = json.loads(next(f.QUEUE.glob("*.json")).read_text())
+    tg = Private(fail={3})
+    asyncio.run(f.post(tg, note))
+    assert [to for to, _ in tg.sent] == [2]                              # not Jarvis, Sanjar, the bot; Ikrom's privacy failed
+    assert "1. Chilonzor, 2 rooms, $300\n2. Yunusobod" in tg.sent[0][1] and "Javohir" in tg.sent[0][1]
+    assert set(json.loads(f.DMS.read_text())) == {"2"}
+
+
+class Reply(NS):
+    async def reply(self, text):
+        self.replied = text
+
+
+def test_a_private_answer_is_posted_to_the_group_and_lifts_the_hold():
+    asyncio.run(f.dm_members(Private(), ["Chilonzor, 2 rooms, $300"]))
+    ev = Reply(sender_id=2, raw_text="1 is good, let's see it")
+    assert asyncio.run(f.on_private(ev)) is True and "passed" in ev.replied
+    note = json.loads(next(f.QUEUE.glob("*.json")).read_text())
+    assert note["text"].startswith("💬 Javohir answered privately") and "1. Chilonzor" in note["text"]
+    assert "«1 is good, let's see it»" in note["text"]
+    assert [m["name"] for m in f.recent(0)] == ["Javohir"]               # counts as a member answering
+
+
+def test_strangers_and_late_private_answers_are_ignored():
+    asyncio.run(f.dm_members(Private(), ["Chilonzor"]))
+    assert asyncio.run(f.on_private(Reply(sender_id=99, raw_text="hi"))) is False
+    dms = json.loads(f.DMS.read_text())
+    dms["2"]["at"] -= 4 * 86400
+    f.DMS.write_text(json.dumps(dms))
+    assert asyncio.run(f.on_private(Reply(sender_id=2, raw_text="1"))) is False
+    assert not list(f.QUEUE.glob("*.json"))
