@@ -131,6 +131,10 @@ def type_text(text: str) -> None:
         for down in (True, False):
             e = Q.CGEventCreateKeyboardEvent(None, 0, down)
             Q.CGEventKeyboardSetUnicodeString(e, len(ch.encode("utf-16-le")) // 2, ch)
+            # No modifiers on typed text. Without this the event takes the system's current modifier state, which a
+            # key("cmd+v") just before leaves holding Cmd, so every "n" typed became Cmd+N (dozens of empty Chrome
+            # windows, 2026-11-10 and 11-14, ticket 4445813a).
+            Q.CGEventSetFlags(e, 0)
             _post(e)
         time.sleep(0.01)
 
