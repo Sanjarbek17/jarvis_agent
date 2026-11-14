@@ -40,3 +40,11 @@ def isolated_runner_state(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "online", lambda timeout=3: True)
     from core import origin
     monkeypatch.setattr(origin, "FILE", tmp_path / "ticket_origin.json")
+
+
+@pytest.fixture(autouse=True)
+def isolated_app_state(tmp_path, monkeypatch):
+    """Tests never write into the phone's real notification feed (ticket 245df526: test answers like "Moved it."
+    reached Sanjar's phone as notifications for chats that don't exist)."""
+    from core import appserver
+    monkeypatch.setattr(appserver, "REPLIES", tmp_path / "app_replies.json")

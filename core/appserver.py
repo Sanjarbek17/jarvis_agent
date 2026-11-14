@@ -679,11 +679,13 @@ def note_reply(chat: dict, msg: dict) -> None:
 
 
 def replies_since(after: float, limit: int = 20) -> list[dict]:
+    """Only answers in chats that exist: a note for a chat that isn't there (tests once wrote into the real file,
+    ticket 245df526) would be a notification that opens nothing."""
     try:
         notes = json.loads(REPLIES.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return []
-    return [n for n in notes if n.get("ts", 0) > after][-limit:]
+    return [n for n in notes if n.get("ts", 0) > after and isinstance(n.get("chat"), str) and load_chat(n["chat"])][-limit:]
 
 
 def updates_since(after: float, limit: int = 20) -> list[dict]:
