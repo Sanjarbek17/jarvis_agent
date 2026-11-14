@@ -1032,6 +1032,14 @@ async def on_message(event):
         await chat_turn(event, await reply_context(event) + text, shown=text)
 
 
+@tg.on(events.NewMessage(incoming=True, func=lambda e: e.is_private and e.sender_id != OWNER_ID))
+async def on_member_private(event):
+    """Only a Flatmates member's reply to Jarvis's private question about the flats (ticket 521b9e14); every other
+    private message from someone else is ignored, as before."""
+    with contextlib.suppress(Exception):
+        await flatmates.on_private(event)
+
+
 @tg.on(events.NewMessage(incoming=True, func=lambda e: e.is_group and bool((e.raw_text or "").strip())))
 async def on_group_message(event):
     """Follow the whole group conversation (read-only). Jarvis keeps the recent messages so it has
