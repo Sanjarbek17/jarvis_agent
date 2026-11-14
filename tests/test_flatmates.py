@@ -772,3 +772,9 @@ def test_his_answer_is_split_into_group_line_and_dm():
 def test_the_search_is_only_for_our_own_flat():
     """Ticket 68816936: Jarvis offered family flats to a member who asked; Sanjar: "find yourself"."""
     assert "only for our own flat" in f.PROMPT and "never offer them listings" in f.PROMPT
+
+
+
+def test_asked_what_the_owner_wrote_it_quotes_them():
+    """Ticket 1c810cf5: Sanjar asked "Show me what owner wrote" and got only a summary."""
+    assert "owner's own words from the data exactly" in f.PROMPT

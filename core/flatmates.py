@@ -86,6 +86,8 @@ How to write:
   Russian gets Russian ("300$ в месяц"), Uzbek gets Uzbek ("oyiga 300$"). Earlier messages don't matter.
 - Only facts from the data. For "how do you know", "are you sure", "qayerdan bilasan", "откуда знаешь": say the owner told us, or
   that it was in the post, with the owner's own words in quotes if the data has them. Only [voice] lines were voice messages.
+- Asked what the owner wrote or said ("show me what the owner wrote", "egasi nima dedi", "что написал хозяин"): give the
+  owner's own words from the data exactly, each in «», voice messages marked 🎙; never only a summary (ticket 1c810cf5).
 - If they ask you and the data doesn't say, just say you don't know yet, in a few words.
 - Don't explain yourself and don't repeat what you said before.
 - "Where did you get these?", "where is this from?": it's about the flat or photos it replies to. Say where they came from, from
