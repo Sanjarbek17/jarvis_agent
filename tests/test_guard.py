@@ -265,3 +265,30 @@ def test_the_guard_makes_no_sound():
     """Ticket 62fce184: "Remove alert sound, we don't need it"."""
     src = open(guard.__file__).read()
     assert "afplay" not in src and "set volume" not in src and not hasattr(guard, "play_warning")
+
+
+# --- ticket 52d168c3: decided by when the input happened, not by whether the guard looked in time -----------------
+
+def test_his_app_input_is_his_even_when_the_guard_looks_late(tmp_path, monkeypatch):
+    monkeypatch.setattr(guard, "FILE", tmp_path / "guard.json")
+    texts, locks = [], []
+
+    async def text(t):
+        texts.append(t)
+
+    async def nothing(*a):
+        return tmp_path / "x.png"
+
+    clicked = {"at": 0.0}
+    g = guard.Guard(text, nothing, nothing, ours_at=lambda: clicked["at"])
+    g.lock = lambda: locks.append(1) or True
+    g.arm(grace=0)
+    time.sleep(0.01)
+    clicked["at"] = time.time()                         # he clicks from the app; the guard doesn't look (busy Jarvis)
+    time.sleep(0.05)
+    touched(monkeypatch, time.time() - clicked["at"])   # it looks later: the last input is that click
+    assert not asyncio.run(g.check()) and locks == [] and texts == []
+    touched(monkeypatch, 0)                             # someone touches it now, long after his click
+    monkeypatch.setattr(guard, "OURS_SLACK", 0)         # (no slack, so "now" counts as after his click)
+    time.sleep(0.01)
+    assert asyncio.run(g.check()) and locks == [1]
