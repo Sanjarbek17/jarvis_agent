@@ -85,3 +85,37 @@ def test_the_hook_blocks_copying_his_real_chrome_profile():
         assert hook.touches_real_profile(c), c
     for c in ('sqlite3 marketing/chrome-profile/Default/Cookies "select 1"', 'open -a Calculator', 'git status'):
         assert not hook.touches_real_profile(c), c
+
+
+# --- ticket 81332fee: every Claude Jarvis starts gets the hook; pages he asked to see stay ----------------------
+
+def test_mac_tasks_run_with_the_same_hook(monkeypatch, tmp_path):
+    from core import hookset, mac
+    seen = {}
+
+    async def exec_(*cmd, **kw):
+        seen["cmd"] = list(cmd)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(mac.asyncio, "create_subprocess_exec", exec_)
+    monkeypatch.setattr(mac, "LOGS", tmp_path)
+    monkeypatch.setattr(mac, "SHOTS", tmp_path)
+    w = mac.MacWorker()
+    asyncio.run(w.run("open the weather site", "show me the weather"))
+    assert seen["cmd"][seen["cmd"].index("--settings") + 1] == hookset.SETTINGS
+    assert runner.WORKER_SETTINGS == hookset.SETTINGS
+    assert "--keep" in seen["cmd"][seen["cmd"].index("-p") + 1]
+
+
+def test_a_page_he_asked_to_see_survives_sweeps_but_not_a_direct_close(monkeypatch, tmp_path):
+    monkeypatch.setattr(rc, "OPENED", tmp_path / "opened.json")
+    monkeypatch.setattr(rc, "automation_running", lambda: False)
+    monkeypatch.setattr(rc, "window_ids", lambda: {5, 6})
+    calls = []
+    monkeypatch.setattr(rc, "_osa", lambda s: calls.append(s) or "")
+    hour_ago = __import__("time").time() - 3600
+    rc._save([{"url": "https://weather", "owner": "mac", "at": hour_ago, "window": 5, "keep": True},
+              {"url": "https://step", "owner": "mac", "at": hour_ago, "window": 6}])
+    assert rc.close("mac", older_than=60) == 1 and "whose id is 6" in calls[-1]       # the sweep: only the step page
+    assert [r["url"] for r in rc._load()] == ["https://weather"]
+    assert rc.close("", window=5) == 1 and rc._load() == []                           # closed on purpose: yes

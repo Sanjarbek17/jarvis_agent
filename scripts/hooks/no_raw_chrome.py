@@ -24,7 +24,8 @@ HELP = ("Blocked: don't open pages in Sanjar's own Chrome with `open` / AppleScr
         "(ticket 3a61de45). Use a headless browser (Playwright) for anything that doesn't need his logins. If it truly "
         "needs his logged-in Chrome: /Users/sanjarbek/dev/side_project/projects/jarvis/.venv/bin/python "
         "/Users/sanjarbek/dev/side_project/projects/jarvis/scripts/real_chrome.py open <url> [--profile \"Profile 4\"], "
-        "and `real_chrome.py close --window <id>` as soon as you're done (it's also closed when your ticket ends).")
+        "and `real_chrome.py close --window <id>` as soon as you're done (it's also closed when your ticket ends). "
+        "A page Sanjar asked to see: add --keep and it stays open for him.")
 
 
 def blocked(command: str) -> bool:

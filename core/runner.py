@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from .paths import VAR
-from . import autoanswer, board, grants, localboard, origin, ramguard, tgfmt, usagewatch
+from . import autoanswer, board, hookset, grants, localboard, origin, ramguard, tgfmt, usagewatch
 from .brain import BRAIN_MODEL   # workers run on the same model as the Jarvis brain (Opus)
 from .board import Ticket
 from .config import (rules_text, GIT_FLOW, HERE, LOGS, NEVER_DO, NEVER_DO_MAIN_OK, POLL_SECONDS,
@@ -60,8 +60,7 @@ USAGE_LIMIT = STATE / "usage_limit.json"
 WORKERS = STATE / "workers.json"   # ref -> {pid, project, log, attempt}: live workers, adopted after a restart
 ONLINE_HOST = ("api.anthropic.com", 443)
 # workers can't open pages in Sanjar's real Chrome with `open` (30 tabs were left open, ticket 3a61de45)
-WORKER_SETTINGS = json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
-    {"type": "command", "command": f"{HERE / '.venv/bin/python'} {HERE / 'scripts/hooks/no_raw_chrome.py'}"}]}]}})
+WORKER_SETTINGS = hookset.SETTINGS
 REAL_CHROME = HERE / "scripts" / "real_chrome.py"
 
 

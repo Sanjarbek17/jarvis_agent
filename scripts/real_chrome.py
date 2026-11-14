@@ -4,7 +4,8 @@ Chrome windows with `open -na "Google Chrome" ...` and never closed them: 30 tab
 
 Prefer a headless browser (Playwright) for anything that doesn't need his logged-in Chrome. When it does:
 
-    scripts/real_chrome.py open <url> [--profile "Profile 4"]   # a NEW window; prints its id; remembered
+    scripts/real_chrome.py open <url> [--profile "Profile 4"] [--keep]   # a NEW window; prints its id; remembered
+                                                                # --keep: he asked to see it; sweeps leave it
     scripts/real_chrome.py close [--owner REF] [--window ID]    # closes only windows opened through this script
     scripts/real_chrome.py sweep [--older-than SECONDS] [--owner X]   # closes remembered windows older than that
     scripts/real_chrome.py list
@@ -25,6 +26,7 @@ sys.path.insert(0, str(HERE))
 from core.paths import VAR  # noqa: E402  (tests: a temporary folder, never the real one)
 
 OPENED = VAR / "state" / "opened_chrome.json"
+KEEP_FORGET = 7 * 86400     # a --keep window is forgotten (not closed) after this; he closes it himself
 
 
 def _osa(script: str) -> str:
@@ -83,14 +85,14 @@ def _save(rows: list[dict]) -> None:
     OPENED.write_text(json.dumps(rows, indent=1))
 
 
-def open_page(url: str, profile: str = "", owner: str = "") -> dict:
+def open_page(url: str, profile: str = "", owner: str = "", keep: bool = False) -> dict:
     sure = wait_for_his_chrome_only()
     before = window_ids() if sure else set()
     cmd = ["open", "-na", "Google Chrome", "--args", "--new-window"]
     if profile:
         cmd.insert(4, f"--profile-directory={profile}")
     subprocess.run(cmd + [url], check=True, timeout=30)
-    row = {"url": url, "profile": profile, "owner": owner, "at": time.time()}
+    row = {"url": url, "profile": profile, "owner": owner, "at": time.time(), **({"keep": True} if keep else {})}
     for _ in range(40 if sure else 0):            # Chrome needs a moment to make the window
         time.sleep(0.25)
         new = window_ids() - before
@@ -129,6 +131,10 @@ def close(owner: str = "", window: int = 0, older_than: float = -1) -> int:
     for row in _load():
         mine = (not owner or row.get("owner") == owner) and (not window or row.get("window") == window)
         old = older_than < 0 or time.time() - row.get("at", 0) > older_than
+        if row.get("keep") and older_than >= 0:        # he asked to see it: a sweep never closes it, he does
+            if time.time() - row.get("at", 0) < KEEP_FORGET:
+                keep.append(row)
+            continue
         if mine and old:
             try:
                 done = _close(row)
@@ -147,13 +153,14 @@ def main(argv: list[str]) -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     o = sub.add_parser("open"); o.add_argument("url"); o.add_argument("--profile", default="")
+    o.add_argument("--keep", action="store_true", help="Sanjar asked to see it: sweeps leave it open")
     c = sub.add_parser("close"); c.add_argument("--owner", default=None); c.add_argument("--window", type=int, default=0)
     s = sub.add_parser("sweep"); s.add_argument("--older-than", type=float, default=3 * 3600); s.add_argument("--owner", default="")
     sub.add_parser("list")
     a = p.parse_args(argv)
     owner = os.environ.get("JARVIS_OWNER", "")
     if a.cmd == "open":
-        row = open_page(a.url, a.profile, owner)
+        row = open_page(a.url, a.profile, owner, a.keep)
         print(f"opened window {row.get('window', '?')} (close it with: scripts/real_chrome.py close --window {row.get('window', 0)})")
     elif a.cmd == "close":
         who = owner if a.owner is None else a.owner
