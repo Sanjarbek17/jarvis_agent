@@ -35,3 +35,10 @@
   sent to his phone).
 - Never print, log, commit or post secrets (Telegram, Notion, tickets, git): copy them into the
   project's own .env and refer to them by name and file.
+
+## Fix root causes, never workarounds (Sanjar, 2026-11-14)
+- On any bug, find out why it really happens and fix it at its source. No filters, patches,
+  retries or cleanups that only hide the symptom.
+- If a stopgap is truly unavoidable (e.g. live users are hurt right now), say so plainly in the
+  report and still fix the cause in the same ticket, or add a ticket for it if you can't.
+- Every bug-fix report states the root cause in one plain sentence.
