@@ -24,7 +24,9 @@ def setup(monkeypatch, tmp_path, queued=(), states=None):
     monkeypatch.setattr(selfcheck.board, "queued", q)
     monkeypatch.setattr(selfcheck.board, "with_jarvis", wj)
     runner_mod.HEARTBEAT.touch()
-    return NS(current={}, wait_reason="", pick=lambda q: list(q))
+    from core import guard
+    monkeypatch.setattr(guard, "screen_locked", lambda: None)
+    return NS(current={}, wait_reason="", pick=lambda q: list(q), done_recently=[])
 
 
 def run(r, alive=True, reply="Did it.", asked=None, sent=None, restarted=None):
@@ -86,3 +88,34 @@ def test_live_worker_is_not_lost(monkeypatch, tmp_path):
     asked, sent = [], []
     run(r, asked=asked, sent=sent)
     assert asked == []
+
+
+
+# --- ticket 6a70f72e: when what a question waits for happens, it's looked at again right away -------------------
+
+def test_open_questions_are_rechecked_when_the_mac_is_unlocked(monkeypatch, tmp_path):
+    from core import guard
+    r = setup(monkeypatch, tmp_path, states={"Needs me": [T("n1", note="please unlock the Mac")]})
+    screen = {"locked": True}
+    monkeypatch.setattr(guard, "screen_locked", lambda: screen["locked"])
+    asked, sent = [], []
+    run(r, asked=asked, sent=sent)
+    assert len(asked) == 1 and "Changed since" not in asked[0]
+    run(r, asked=asked, sent=sent)                       # nothing changed: not again for 12 h
+    assert len(asked) == 1
+    screen["locked"] = False
+    run(r, asked=asked, sent=sent)                       # unlocked: the question is looked at again now
+    assert len(asked) == 2 and "the Mac's screen was unlocked" in asked[1] and "Needs me: n1" in asked[1]
+    assert "answer_task saying so" in asked[1]
+    run(r, asked=asked, sent=sent)                       # still unlocked: no change any more
+    assert len(asked) == 2
+
+
+def test_open_questions_are_rechecked_when_a_ticket_finishes(monkeypatch, tmp_path):
+    r = setup(monkeypatch, tmp_path, states={"Needs me": [T("n1", note="post the reel?")], "Failed": [T("f1")]})
+    asked, sent = [], []
+    run(r, asked=asked, sent=sent)
+    r.done_recently.append((time.time() + 1, "d674 [Haydovchi darslari] post today's reel"))
+    run(r, asked=asked, sent=sent)
+    assert len(asked) == 2 and "finished: d674 [Haydovchi darslari]" in asked[1]
+    assert "Needs me: n1" in asked[1] and "Failed: f1" not in asked[1]   # only questions come back, not the rest
