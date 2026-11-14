@@ -1,6 +1,6 @@
 import pytest
 
-from core import guard, localboard, runner, usagewatch
+from core import guard, localboard, macremote, runner, usagewatch
 
 
 @pytest.fixture(autouse=True)
@@ -17,6 +17,12 @@ def isolated_runner_state(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "USAGE_LIMIT", tmp_path / "usage_limit.json")
     monkeypatch.setattr(runner, "WORKERS", tmp_path / "workers.json")
     monkeypatch.setattr(usagewatch, "FILE", tmp_path / "usage_watch.json")   # never the real usage state
+
+    async def _no_caffeinate(*cmd, stdin="", timeout=30):
+        return 0, ""
+
+    monkeypatch.setattr(macremote, "_run", _no_caffeinate)             # tests never wake the real display
+    monkeypatch.setattr(macremote, "display_asleep", lambda: False)
 
     async def _no_chrome(owner, older_than=-1):
         pass

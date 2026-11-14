@@ -157,6 +157,31 @@ class Helper:
 
 frames = Helper("frames")
 inputs = Helper("input")
+SHOT_TIMEOUT = 6           # a dark display makes the capture hang instead of failing (14 Nov: live view stayed black)
+
+
+def display_asleep() -> bool:
+    try:
+        import Quartz
+        return bool(Quartz.CGDisplayIsAsleep(Quartz.CGMainDisplayID()))
+    except Exception:
+        return False
+
+
+async def grab(req: dict) -> tuple[dict, bytes]:
+    """One frame from the frames helper. If the capture fails or hangs, the display is most likely dark: wake it
+    (as the app's wake button does), start a fresh helper and try once more (ticket 40f533c4: the app showed
+    nothing to control, so Sanjar was "locked out" of an unlocked Mac)."""
+    if display_asleep():                                  # known at once: no waiting for a capture to hang
+        log.info("mac remote: the display is asleep, waking it")
+        await wake()
+    head, jpeg = await frames.request(req, timeout=SHOT_TIMEOUT)
+    if head.get("ok") and (jpeg or head.get("same")):
+        return head, jpeg
+    log.info("mac remote: no picture (%s), waking the display", head.get("error", "?")[:80])
+    await wake()
+    await frames.stop()
+    return await frames.request(req, timeout=SHOT_TIMEOUT * 2)
 
 
 def last_input_at() -> float:
@@ -210,7 +235,7 @@ async def screen(width: int = 1280) -> tuple[bytes, int, int]:
         hit = _frames.get(width)
         if hit and time.monotonic() - hit[0] < FRAME_AGE:
             return hit[1], hit[2], hit[3]
-        head, jpeg = await frames.request({"op": "shot", "w": width, "q": 0.6})
+        head, jpeg = await grab({"op": "shot", "w": width, "q": 0.6})
         if not head.get("ok") or not jpeg:
             raise RuntimeError(head.get("error") or "Screenshot failed: the display may be asleep.")
         _frames.clear()
@@ -235,6 +260,7 @@ async def live(ws, width: int = 1024, quality: float = 0.5) -> None:
     """Stream frames to `ws` (only when the picture changed, at most 2 waiting for the phone) and do its input.
     Text messages from the phone: {"t": "ack"} after showing a frame, {"t": "size", "w", "q"} to change the
     picture, or an input {"action": ...} like POST /api/mac/input. Ends when the socket closes."""
+    await wake()                                          # he's here to use it: a dark display gives no picture
     credit = asyncio.Semaphore(2)
     waiting: collections.deque = collections.deque()   # inputs in order; a run of moves keeps only its newest
     arrived = asyncio.Event()
@@ -290,7 +316,7 @@ async def live(ws, width: int = 1024, quality: float = 0.5) -> None:
         while True:
             await credit.acquire()
             started = time.monotonic()
-            head, jpeg = await frames.request({"op": "shot", "w": state["w"], "q": state["q"], "last": last})
+            head, jpeg = await grab({"op": "shot", "w": state["w"], "q": state["q"], "last": last})
             if not head.get("ok"):
                 await ws.send_text(json.dumps({"t": "error", "error": head.get("error", "no picture")}))
                 credit.release()
