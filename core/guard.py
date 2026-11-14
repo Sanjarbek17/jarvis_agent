@@ -32,6 +32,7 @@ CAMERA = ["-f", "avfoundation", "-framerate", "30", "-video_size", "1280x720", "
 WARM_UP_FRAMES = 30               # the first frames of a Mac camera are dark
 AUTOMATION = STATE / "automation_input"   # scripts/mac.py marks every click and key it makes (ticket 733814dd)
 AUTOMATION_GRACE = 15                        # seconds after Jarvis's own input that a touch isn't counted
+OURS_SLACK = 15                              # an input this soon after our own (by its time, not when we looked) is ours
 LOGIN_FRAMEWORK = "/System/Library/PrivateFrameworks/login.framework/Versions/Current/login"
 NO_CAMERA = ("the camera didn't answer: macOS is probably waiting for someone to allow it for Jarvis "
              "(a prompt on the Mac, or System Settings > Privacy & Security > Camera)")
@@ -51,6 +52,14 @@ def automation_recent(grace: float = AUTOMATION_GRACE) -> bool:
         return time.time() - AUTOMATION.stat().st_mtime < grace
     except OSError:
         return False
+
+
+def automation_at() -> float:
+    """When scripts/mac.py last clicked or typed (0 if never)."""
+    try:
+        return AUTOMATION.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def lock_screen() -> bool:
@@ -95,8 +104,11 @@ take_photo = capture_photo        # what the guard calls; tests swap it (they mu
 
 class Guard:
     def __init__(self, send_text: Callable[[str], Awaitable], send_photos: Callable[[list[Path], str], Awaitable],
-                 screenshot: Callable[[], Awaitable[Path]], busy: Callable[[], bool] = lambda: False):
+                 screenshot: Callable[[], Awaitable[Path]], busy: Callable[[], bool] = lambda: False,
+                 ours_at: Callable[[], float] = lambda: 0.0):
+        """ours_at: when Jarvis or Sanjar's app last sent input to the Mac (epoch seconds)."""
         self.send_text, self.send_photos, self.screenshot, self.busy = send_text, send_photos, screenshot, busy
+        self.ours_at = ours_at
         self.lock = lock_screen          # replaced in tests: they must never lock the real Mac
 
     def state(self) -> dict:
@@ -151,10 +163,20 @@ class Guard:
             self._save(s)
             return False
         since = max(s["watch_from"], s["last_alert"] + REPEAT_AFTER if s["last_alert"] else 0)
-        if now < since or now - idle_seconds() <= since:
+        input_at = now - idle_seconds()
+        if now < since or input_at <= since:
+            return False
+        # Compare times, not "were we busy when we looked": a check that came late (Jarvis busy, a hung screenshot)
+        # missed the app's grace window and locked the Mac under Sanjar at 07:19 on 14 Nov (ticket 52d168c3)
+        ours = max(self.ours_at(), automation_at())
+        if ours and input_at <= ours + OURS_SLACK:
+            s["watch_from"] = max(s["watch_from"], input_at + 0.001)
+            self._save(s)
             return False
         s["last_alert"] = now
         self._save(s)
+        log.warning("guard: touch at %s; our last input %s; idle %.1f s", time.strftime("%H:%M:%S", time.localtime(input_at)),
+                    time.strftime("%H:%M:%S", time.localtime(ours)) if ours else "never", now - input_at)
         await self.alert(now)
         return True
 

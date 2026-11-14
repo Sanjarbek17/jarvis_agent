@@ -942,6 +942,7 @@ async def mac_input(req: Request):
     body = await _json(req)
     if body.get("action") == "wake":
         await macremote.wake()
+        log.info("Mac remote: wake from %s", _client(req))
         return JSONResponse({"ok": True})
     try:
         err = await macremote.do_input(body)

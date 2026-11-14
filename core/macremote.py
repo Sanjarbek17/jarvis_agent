@@ -159,6 +159,11 @@ frames = Helper("frames")
 inputs = Helper("input")
 
 
+def last_input_at() -> float:
+    """When Sanjar last sent input (or a wake) from the app / website, epoch seconds."""
+    return _last_remote["at"]
+
+
 def controlling(grace: float = REMOTE_GRACE) -> bool:
     """Is Sanjar driving the Mac from the app right now? The guard must not lock it under him (ticket 70e8ad2f):
     his remote clicks and keys look exactly like someone at the keyboard. Only input counts: just watching the

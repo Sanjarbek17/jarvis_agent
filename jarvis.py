@@ -1192,7 +1192,8 @@ async def main():
     tools.hooks.post_expenses = lambda: expenses.post(tg)
     tools.hooks.guard = guard.Guard(guard_alert, guard_photos, tools.take_screenshot,
                                     # the Mac worker's clicks, or Sanjar driving it from the app (ticket 70e8ad2f)
-                                    busy=lambda: bool(tools.hooks.mac.current) or macremote.controlling())
+                                    busy=lambda: bool(tools.hooks.mac.current) or macremote.controlling(),
+                                    ours_at=macremote.last_input_at)          # by time too (ticket 52d168c3)
     runner_task = {"t": asyncio.create_task(runner.run_forever(), name="runner")}
 
     def restart_runner():                 # the self-check found the runner's task dead: start it again
