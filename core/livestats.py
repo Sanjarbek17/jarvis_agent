@@ -69,18 +69,28 @@ def projects_of(text: str) -> list[str]:
 async def brief_for(project: str, text: str) -> str:
     """The live-stats block to put in front of this message, or "" (not a status question / no live data here).
     project: the app chat's project ("" or General: worked out from the words)."""
+    return (await live_for(project, text))[0]
+
+
+async def live_for(project: str, text: str) -> tuple[str, dict | None]:
+    """brief_for, and what the answer will be a report on (ticket 0a97efa8): {"about": [projects], "read_at": when
+    the oldest of its numbers was read}, or None. The chat keeps it with the answer, so a later report on the same
+    projects (or a day passing) shows this one as old data."""
     if not is_status(text):
-        return ""
+        return "", None
     wanted = [project] if project in PROJECTS else projects_of(text)
-    out = []
+    out, read = [], []
     for p in wanted:
         try:
-            out.append(brief(await asyncio.wait_for(fetch(p), 4 * PER_ACCOUNT_TIMEOUT)))
+            res = await asyncio.wait_for(fetch(p), 4 * PER_ACCOUNT_TIMEOUT)
+            out.append(brief(res))
+            read.append(res.get("at", time.time()))
         except Exception as e:
             log.exception("live stats for %s failed", p)
             out.append(f"[LIVE STATS for {p} could not be read just now ({e!s:.120}). Say so; don't present saved "
                        f"numbers as current: name their time.]\n")
-    return "".join(out)
+    report = {"about": sorted(wanted), "read_at": min(read)} if wanted and read else None
+    return "".join(out), report
 
 
 def _load() -> dict:

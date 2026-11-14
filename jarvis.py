@@ -370,7 +370,7 @@ async def daily_summary_text():
                              "anything that needs him. A few lines.")
     if reply.strip():
         await tgfmt.send(tg, OWNER_ID, tgfmt.daily(reply), link_preview=False)
-        app_push(reply)
+        app_push(reply, report={"about": ["daily summary"], "read_at": time.time()})   # 0a97efa8
 
 
 async def daily_call():
@@ -619,11 +619,11 @@ something only he can do, a failure that blocks him), reply with 1-2 plain lines
 ticket ids, no worker text, no lists. Otherwise reply exactly NO_REPLY."""
 
 
-def app_push(text: str, chat_id: str = "", photos=()):
+def app_push(text: str, chat_id: str = "", photos=(), report: dict | None = None):
     """What Jarvis tells Sanjar on its own also goes to the phone app (its notifications, ticket e028892d);
-    chat_id: into that app chat too."""
+    chat_id: into that app chat too. report: it's a report on something (an older one then shows as old data)."""
     try:
-        appserver.push(text, chat_id, photos)
+        appserver.push(text, chat_id, photos, report=report)
     except Exception:
         log.exception("app push failed")
 
@@ -848,10 +848,10 @@ _inbox: list[tuple] = []        # (event, text) that came in while the brain was
 _inbox_running = False
 
 
-def show_on_site(role: str, text: str):
+def show_on_site(role: str, text: str, report: dict | None = None):
     """The website's Telegram chat shows this conversation too."""
     try:
-        appserver.telegram_said(role, text)
+        appserver.telegram_said(role, text, report)
     except Exception:
         log.exception("couldn't copy a Telegram message to the website")
 
@@ -906,11 +906,11 @@ async def chat_turn(event, text: str, shown: str = ""):
                 + "\n\n---\n\n".join(t for _, t in batch))
             async with tg.action(OWNER_ID, "typing"):
                 # a status question about the Instagram projects: live numbers first, in code (ticket 0960b065)
-                live = await livestats.brief_for("", "\n".join(t for _, t in batch))
+                live, report = await livestats.live_for("", "\n".join(t for _, t in batch))
                 with answering.mark("telegram"):            # a restart waits for this answer (11ff3b8a)
                     reply = await chat.reply(live + msg)
             await tgfmt.reply(batch[-1][0], tgfmt.md(reply) if reply else "(no reply)")
-            show_on_site("jarvis", reply)
+            show_on_site("jarvis", reply, report)
     finally:
         _inbox_running = False
 
