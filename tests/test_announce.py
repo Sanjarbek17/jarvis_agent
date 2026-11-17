@@ -93,3 +93,32 @@ def test_post_deleted_at_once_still_counts_as_done(tmp_path):
     assert not r["ok"] and r["removed"] and not r["stop"]
     again = run(announce.post(tg, "metan_gaz_urgut", "Salom", str(pic)))          # never resent
     assert "already" in again["error"] and len(tg.sent) == 1
+
+
+class SpamBotTG:
+    def __init__(self, answer, hang=False):
+        self.answer, self.hang = answer, hang
+
+    async def send_message(self, chat, text):
+        if self.hang:
+            await asyncio.Event().wait()
+
+    async def get_messages(self, chat, limit=1):
+        return [SimpleNamespace(message=self.answer)]
+
+
+def test_spambot_limited_answer_stops_all_later_posts():
+    r = run(announce.spambot_check(SpamBotTG("I'm afraid some Telegram users found your messages annoying ... limited")))
+    assert r["ok"] and not r["free"]
+    assert "limited" in json.loads(announce.ALLOW.read_text())["stopped"]
+    assert "stopped" in run(announce.post(FakeTG(), "Jizzax_metan_24", "Salom"))["error"]
+
+
+def test_spambot_free_answer_keeps_going():
+    r = run(announce.spambot_check(SpamBotTG("Good news, no limits are currently applied to your account.")))
+    assert r["free"] and not json.loads(announce.ALLOW.read_text())["stopped"]
+
+
+def test_spambot_check_never_hangs_the_outbox():
+    r = run(announce.spambot_check(SpamBotTG("", hang=True), timeout=0.05))
+    assert not r["ok"] and "Timeout" in r["error"]

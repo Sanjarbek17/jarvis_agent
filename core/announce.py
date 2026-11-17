@@ -74,14 +74,24 @@ async def post(tg, chat: str, text: str, file: str = "") -> dict:
         return {"ok": False, "error": f"{name}: {str(e)[:200]}", "stop": bool(d.get("stopped"))}
 
 
-async def spambot_check(tg) -> dict:
-    """Ask @SpamBot about this account; its answer says whether the account is limited."""
-    try:
+async def spambot_check(tg, timeout: float = 90) -> dict:
+    """Ask @SpamBot about this account; its answer says whether the account is limited.
+    A limited answer stops every later post for good (saved in the allow file), so the guard never depends on the
+    caller still waiting for the reply. Bounded by `timeout` so a stuck connection can't freeze the outbox."""
+    async def ask() -> dict:
         await tg.send_message("SpamBot", "/start")
         await asyncio.sleep(6)
         msgs = await tg.get_messages("SpamBot", limit=1)
         text = msgs[0].message if msgs else ""
-        free = any(w in text.lower() for w in ("no limits", "good news", "не ограничен", "свободен", "free"))
+        free = any(w in text.lower() for w in ("no limits", "good news", "не ограничен", "свободен", "free as a bird"))
         return {"ok": True, "text": text[:500], "free": free}
+    try:
+        r = await asyncio.wait_for(ask(), timeout)
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+    if not r["free"]:
+        d = _load()
+        if not d.get("stopped"):
+            d["stopped"] = f"SpamBot says the account is limited: {r['text'][:200]}"
+            _save(d)
+    return r
