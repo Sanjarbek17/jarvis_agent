@@ -82,7 +82,7 @@ def test_due_soon_and_not_started_is_flagged(monkeypatch, tmp_path):
 
 def test_live_worker_is_not_lost(monkeypatch, tmp_path):
     r = setup(monkeypatch, tmp_path, states={"Working": [T("w1")]})
-    r.current = {"P": T("w1")}
+    r.current = {"w1": T("w1")}
     asked, sent = [], []
     run(r, asked=asked, sent=sent)
     assert asked == []

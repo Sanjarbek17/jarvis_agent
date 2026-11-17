@@ -83,7 +83,7 @@ async def gather(runner, runner_alive: Callable[[], bool]) -> tuple[list[str], l
     facts.append(f"runner: {'alive' if runner_alive() else 'STOPPED'}, last loop "
                  f"{'never' if age is None else f'{age:.0f} s ago'}")
     live = {t.ref for t in runner.current.values()}
-    facts.append("working now: " + (", ".join(f"{t.ref} [{p}]" for p, t in runner.current.items()) or "none"))
+    facts.append("working now: " + (", ".join(f"{t.ref} [{t.project}]" for t in runner.current.values()) or "none"))
     queued = await board.queued()
     nxt = runner.pick(queued)
     facts.append(f"queued: {len(queued)}" + (f" (next: {nxt[0].ref})" if nxt else ""))

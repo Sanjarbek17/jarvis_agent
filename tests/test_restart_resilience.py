@@ -84,8 +84,8 @@ def test_worker_survives_a_jarvis_stop_and_is_adopted(monkeypatch, tmp_path):
     async def second_jarvis():
         r = runner.Runner(notify)
         await r._recover()                         # adopts instead of re-queueing
-        assert "Yugur" in r.running
-        await r.running["Yugur"]
+        assert "r-1" in r.running
+        await r.running["r-1"]
 
     asyncio.run(second_jarvis())
     assert log["told"] == ["done"]
@@ -119,7 +119,7 @@ def test_stop_ends_the_detached_worker_and_its_group(monkeypatch, tmp_path):
         r = runner.Runner(notify)
         task = asyncio.create_task(r._work(card()))
         await asyncio.sleep(1.0)
-        pid = r.procs["Yugur"].pid
+        pid = r.procs["r-1"].pid
         assert r.stop_project("Yugur", "test")
         await asyncio.wait_for(task, 10)
         return pid

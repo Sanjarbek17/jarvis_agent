@@ -72,14 +72,14 @@ def test_runner_holds_second_ticket_when_memory_is_tight(monkeypatch):
     async def go():
         r = runner.Runner(lambda *a: None)
 
-        async def work(t):
+        async def work(t, adopt=None):
             started.append(t.ref)
             await asyncio.sleep(0.2)
 
         r._work = work
         await r._tick()
         await asyncio.sleep(0)
-        assert started == ["a1"] and list(r.running) == ["A"]      # B held: pressure is critical
+        assert started == ["a1"] and list(r.running) == ["a1"]      # B held: pressure is critical
         monkeypatch.setattr(runner.ramguard, "snapshot", lambda worker_pids=None: OK)
         monkeypatch.setattr(runner, "START_GAP", 0)
         await r._tick()
@@ -115,9 +115,10 @@ def test_pick_one_per_project_in_queue_order():
     assert [t.ref for t in r.pick(q)] == ["a1", "b1", "c1"]
 
 
-def test_pick_skips_running_projects_and_gives_turns_fairly():
+def test_pick_skips_running_projects_and_gives_turns_fairly(monkeypatch):
+    monkeypatch.setattr(runner, "can_parallel", lambda p: False)       # A has no git repo: one worker at a time
     r = runner.Runner(lambda *a: None)
-    r.running = {"A": object()}
+    r.project_of = {"a0": "A"}
     r.last_start = {"B": 200.0, "C": 100.0}       # C waited longest since its last worker
     q = [T("a1", "A"), T("b1", "B"), T("c1", "C"), T("d1", "D")]     # D never ran: first
     assert [t.ref for t in r.pick(q)] == ["d1", "c1", "b1"]
@@ -149,7 +150,7 @@ def test_starts_as_many_as_memory_allows_one_at_a_time(monkeypatch):
     async def go():
         r = box["r"] = runner.Runner(lambda *a: None)
 
-        async def work(t):
+        async def work(t, adopt=None):
             started.append(t.ref)
             await asyncio.sleep(0.3)
 
@@ -174,7 +175,7 @@ def test_one_start_per_gap(monkeypatch):
     async def go():
         r = runner.Runner(lambda *a: None)
 
-        async def work(t):
+        async def work(t, adopt=None):
             started.append(t.ref)
             await asyncio.sleep(0.2)
 
@@ -201,7 +202,7 @@ def test_no_new_workers_while_a_restart_waits(monkeypatch, tmp_path):
     async def go():
         r = runner.Runner(lambda *a: None)
 
-        async def work(t):
+        async def work(t, adopt=None):
             started.append(t.ref)
 
         r._work = work
