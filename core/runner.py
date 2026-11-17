@@ -132,6 +132,7 @@ async def close_chrome_of(owner: str, older_than: float = -1) -> None:
                                                     stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
         await asyncio.wait_for(proc.wait(), 60)   # workers need it; no new worker starts while it's unreachable
 LIMIT_MARGIN = 120           # start again this long after the announced reset
+PROBE_EVERY = 10 * 60        # while held for the limit, read the live usage this often (an early reset ends the hold)
 LIMIT_FALLBACK = 30 * 60     # no reset time known: try again after this long
 _LIMIT_TEXT = re.compile(r"hit your (\S+ )?limit|usage limit reached|out of (extra )?usage", re.I)
 # a "done" result whose ending says it is waiting on Sanjar (a merge, approval, decision...)
@@ -537,6 +538,7 @@ class Runner:
         self.wait_reason = ""                           # why the next queued ticket isn't starting
         self.started: dict[str, float] = {}             # ref -> when its ticket started (epoch)
         self._adopted: set[str] = set()                 # refs whose live worker was adopted after a restart
+        self._probed = 0.0                              # last live usage reading asked for (monotonic)
 
     async def run_forever(self, recover: bool = True):
         """recover: at Jarvis's start (workers of the old process are gone). False when the self-check
@@ -689,7 +691,13 @@ class Runner:
                 self.held_logged = time.monotonic()
             return
         until = limited_until()
+        if until > time.time() and usagewatch.allowed_since(self._hold_since()):
+            log.info("Claude usage was reset early: ending the hold now")
+            until = 1.0                      # the "it has reset" branch below clears it
         if until > time.time():              # the usage limit: every worker would stop at once
+            if time.monotonic() - self._probed > PROBE_EVERY:
+                self._probed = time.monotonic()
+                asyncio.create_task(usagewatch.probe())     # its reading may end the hold on a later tick
             nxt = self.pick(await board.queued())
             if nxt:
                 self._waiting(nxt[0], "the Claude usage limit; it resets at "
@@ -1048,12 +1056,24 @@ class Runner:
         log.info("%s %s", card.ref, status)
         await self.notify(card, kind, question or result, photos)
 
+    @staticmethod
+    def _hold_since() -> float:
+        """When the current usage-limit hold began (older holds without set_at: when the file was written)."""
+        state = limit_state()
+        if state.get("set_at"):
+            return float(state["set_at"])
+        try:
+            return USAGE_LIMIT.stat().st_mtime
+        except OSError:
+            return time.time()
+
     async def _pause_for_limit(self, card: Ticket, until: float, result: str):
         """The usage limit stopped this worker: back to Queued (not Failed), no new starts until the
         reset, then it continues in the same session (Sanjar, 2026-11-04: "when reset we should make
         them continue")."""
         state = limit_state()
         state["until"] = max(float(state.get("until") or 0), until)
+        state.setdefault("set_at", time.time())          # readings after this can end the hold early
         state["refs"] = sorted(set(state.get("refs", [])) | {card.ref})
         first = time.time() - float(state.get("told") or 0) > 3600
         if first:

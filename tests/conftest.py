@@ -26,6 +26,10 @@ def isolated_runner_state(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "WORKERS", tmp_path / "workers.json")
     monkeypatch.setattr(usagewatch, "FILE", tmp_path / "usage_watch.json")   # never the real usage state
 
+    async def no_probe(*a, **kw):          # never a real Claude call from a test (ticket 59f4e775)
+        return False
+    monkeypatch.setattr(usagewatch, "probe", no_probe)
+
     async def _no_caffeinate(*cmd, stdin="", timeout=30):
         return 0, ""
 
