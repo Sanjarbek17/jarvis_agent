@@ -973,7 +973,8 @@ function showBoard(project) {
       h("button", { class: "new", title: "New ticket", "aria-label": "New ticket", text: "+", onclick: () => { boardOn.adding = !boardOn.adding; drawBoardForm(); } })),
     h("div", { class: "board-bar" },
       h("input", { class: "field", type: "search", placeholder: "Find a ticket", "aria-label": "Find a ticket", value: boardOn.find,
-        oninput: e => { boardOn.find = e.target.value; drawBoard(); } })),
+        oninput: e => { boardOn.find = e.target.value; drawBoard(); } }),
+      h("div", { class: "seg", id: "board-views", role: "group", "aria-label": "Board view" })),
     h("div", { id: "board-form" }),
     h("div", { class: "board", id: "board" }));
   drawBoardForm();
@@ -992,31 +993,70 @@ async function loadBoard(project) {
   }
 }
 
+// The board's views (ticket db7f17c7, the same as the app's BoardActivity.viewSections, ticket bd877414).
+const BOARD_VIEWS = [["status", "Status"], ["jarvis", "Jarvis"], ["recent", "Recent"], ["sprint", "Sprint"]];
+
+/** [name, tickets][] for a view. Closed tickets (board status, or Jarvis Done) end up folded in "Closed" in every
+ *  view but Recent: one list of everything, newest edit first. */
+function viewSections(view, tickets, columns) {
+  const isClosed = t => CLOSED.test(t.status || "") || /^done$/i.test(t.jarvis || "");
+  const open = tickets.filter(t => !isClosed(t));
+  const closed = tickets.filter(isClosed);
+  const tail = closed.length ? [["Closed", closed]] : [];
+  const nonEmpty = groups => groups.filter(([, rows]) => rows.length);
+  if (view === "jarvis") {
+    const order = ["Needs me", "Working", "Queued", "Failed"];
+    const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+    return [...nonEmpty([
+      ...order.map(s => [s, open.filter(t => same(t.jarvis || "", s))]),
+      ["Other", open.filter(t => t.jarvis && !order.some(s => same(s, t.jarvis)))],
+      ["Not for Jarvis", open.filter(t => !t.jarvis)],
+    ]), ...tail];
+  }
+  if (view === "recent") return [["Newest first", [...tickets].sort((a, b) => (b.edited || "").localeCompare(a.edited || ""))]];
+  if (view === "sprint") {
+    const sprints = [...new Set(open.map(t => (t.sprint || "").trim()).filter(Boolean))].sort();
+    return [...nonEmpty([...sprints.map(s => [s, open.filter(t => (t.sprint || "").trim() === s)]),
+      ["No sprint", open.filter(t => !(t.sprint || "").trim())]]), ...tail];
+  }
+  // status: a section per open status, then one "Closed" for the finished ones (ticket ad3f2a0c)
+  const closedCols = columns.filter(c => CLOSED.test(c));
+  return nonEmpty([...columns.filter(c => !CLOSED.test(c)).map(c => [c, tickets.filter(t => (t.status || "No status") === c)]),
+    ...(closedCols.length ? [["Closed", tickets.filter(t => closedCols.includes(t.status || "No status"))]] : [])]);
+}
+
 function drawBoard() {
   const box = document.getElementById("board");
   if (!box) return;
   const data = boards.get(boardOn.project);
+  const view = store.get(`jarvis.boardview.${boardOn.project}`) || "status";
+  document.getElementById("board-views")?.replaceChildren(...BOARD_VIEWS.map(([key, label]) =>
+    h("button", { class: key === view ? "on" : "", text: label, "aria-pressed": String(key === view),
+      onclick: () => { store.set(`jarvis.boardview.${boardOn.project}`, key); drawBoard(); } })));
   if (!data) { if (!box.firstChild) box.append(h("p", { class: "empty", text: "Loading…" })); return; }
   const open_ = data.tickets.filter(t => !CLOSED.test(t.status)).length;
   document.getElementById("board-sub").textContent = `${open_} open of ${data.tickets.length}${data.local ? "" : " · still on Notion"}`;
   const words = boardOn.find.toLowerCase().split(/\s+/).filter(Boolean);
   const shown = data.tickets.filter(t => words.every(w => `${t.title} ${t.ref} ${t.sprint}`.toLowerCase().includes(w)));
-  // a section per open status, then one "Closed" for the finished ones, folded at first (ticket ad3f2a0c)
-  const closedCols = data.columns.filter(c => CLOSED.test(c));
-  const sections = [...data.columns.filter(c => !CLOSED.test(c)).map(c => [c, [c]]), ...(closedCols.length ? [["Closed", closedCols]] : [])];
-  const groups = sections.map(([name, cols]) => [name, cols, shown.filter(t => cols.includes(t.status || "No status"))]).filter(([, , rows]) => rows.length);
-  const folds = JSON.parse(store.get(`jarvis.folds.${boardOn.project}`) || "{}");
+  const groups = viewSections(view, shown, data.columns);
+  const folds = JSON.parse(store.get(`jarvis.folds.${boardOn.project}.${view}`) || store.get(`jarvis.folds.${boardOn.project}`) || "{}");
+  const card = t => {
+    const edited = view === "recent" && t.edited ? `edited ${ago(Date.parse(t.edited) / 1000)}` : "";
+    return h("a", { class: "card", href: ticketLink(boardOn.project, t.ref) },
+      h("div", { class: "title", text: t.title || "Untitled" }),
+      h("div", { class: "meta" }, pill(t.jarvis), h("span", { class: "muted", text:
+        [edited, view !== "status" && t.status, t.sprint, t.due && `due ${t.due.slice(0, 10)}`, t.ref].filter(Boolean).join(" · ") })));
+  };
   const top = box.scrollTop;
-  box.replaceChildren(...(groups.length ? groups.map(([name, cols, rows]) => {
+  box.replaceChildren(...(groups.length ? groups.map(([name, rows]) => {
+    if (view === "recent") return h("section", { class: "column" }, ...rows.map(card));
     const section = h("details", { class: "column", open: words.length > 0 || !(folds[name] ?? name === "Closed") },
       h("summary", {}, h("span", { text: name }), h("span", { class: "muted", text: String(rows.length) })),
-      ...rows.map(t => h("a", { class: "card", href: ticketLink(boardOn.project, t.ref) },
-        h("div", { class: "title", text: t.title || "Untitled" }),
-        h("div", { class: "meta" }, pill(t.jarvis), h("span", { class: "muted", text: [cols.length > 1 && t.status, t.sprint, t.due && `due ${t.due.slice(0, 10)}`, t.ref].filter(Boolean).join(" · ") })))));
+      ...rows.map(card));
     section.addEventListener("toggle", () => {
       if (words.length) return;                        // opened by a search: not his choice
       folds[name] = !section.open;
-      store.set(`jarvis.folds.${boardOn.project}`, JSON.stringify(folds));
+      store.set(`jarvis.folds.${boardOn.project}.${view}`, JSON.stringify(folds));
     });
     return section;
   }) : [h("p", { class: "empty", text: words.length ? "No ticket matches that." : "No tickets here." })]));
