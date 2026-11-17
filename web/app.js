@@ -628,21 +628,37 @@ function rich(text) {
   return out;
 }
 
-function inline(text, out) {
-  const marks = /\*\*(.+?)\*\*|`([^`\n]+)`|(https?:\/\/[^\s<>()\]]+)/g;
+// Endings a bare address must have to be a web address, so file names (appserver.py, README.md) never become
+// links (ticket 0de513e6; the app's Ui.kt findLinks uses the same rule).
+const WEB_ENDINGS = "com|org|net|io|uz|ru|dev|app|ai|me|co|uk|de|info|xyz|site|online|tech|gg|tv|ly|tj|kz|kg|su|eu|us|biz|pro|link|page|live|cloud|store|shop|blog";
+const LINK = new RegExp(`https?:\\/\\/[^\\s<>()\\]*\`]+|(?<![@\\w./-])(?:[a-z0-9-]+\\.)+(?:${WEB_ENDINGS})\\b(?:\\/[^\\s<>()\\]*\`]*)?`, "gi");
+
+/** Text with its web addresses as links: full ones, and bare ones like taxi-plan.sanjarbek17.uz (opened as https). */
+function linkify(text, out) {
   let at = 0;
-  for (const m of text.matchAll(marks)) {
+  for (const m of text.matchAll(LINK)) {
+    const shown = m[0].replace(/[.,;:!?'"]+$/, "");
     out.append(text.slice(at, m.index));
-    at = m.index + m[0].length;
-    if (m[1]) out.append(h("strong", { text: m[1] }));
-    else if (m[2]) out.append(h("code", { text: m[2] }));
-    else {
-      const url = m[3].replace(/[.,;:!?'"]+$/, "");
-      at -= m[3].length - url.length;
-      out.append(h("a", { href: url, target: "_blank", rel: "noopener noreferrer", text: url }));
-    }
+    at = m.index + shown.length;
+    const href = /^https?:/i.test(shown) ? shown : `https://${shown}`;
+    out.append(h("a", { href, target: "_blank", rel: "noopener noreferrer", text: shown }));
   }
   out.append(text.slice(at));
+}
+
+function inline(text, out) {
+  const marks = /\*\*(.+?)\*\*|`([^`\n]+)`/g;
+  let at = 0;
+  for (const m of text.matchAll(marks)) {
+    linkify(text.slice(at, m.index), out);
+    at = m.index + m[0].length;
+    if (m[1]) {
+      const strong = h("strong");
+      linkify(m[1], strong);                 // a bold address is still a link (the one that failed was bold)
+      out.append(strong);
+    } else out.append(h("code", { text: m[2] }));   // code stays as it is
+  }
+  linkify(text.slice(at), out);
 }
 
 function composer(chat) {
