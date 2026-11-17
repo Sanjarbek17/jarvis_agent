@@ -144,7 +144,10 @@ GIT_FLOW = """When your ticket changes code in a git repo:
 - If you made a git worktree for this ticket, clean it up once your branch is merged into `dev` and
   pushed: from the main checkout (not inside the worktree) run `git worktree remove <path>` (add
   `--force` only if it refuses over the merged work), then delete your now-merged local branch. Never
-  remove the main checkout, another ticket's worktree, or one with unmerged changes."""
+  remove the main checkout, another ticket's worktree, or one with unmerged changes.
+- Other workers may work on the same project at the same time, each on its own branch (the extra ones in
+  their own worktree). Never touch another ticket's branch or worktree. If `git checkout dev` says dev is
+  already checked out somewhere else, another worker is merging right now: wait a minute and try again."""
 # the Mac worker (core/mac.py) may do anything on the Mac except these
 MAC_NEVER_DO = """Never, even if asked in this task: erase or format disks, turn off SIP / FileVault /
 the firewall, delete user folders or large sets of files (move to the Trash instead, never `rm -rf`

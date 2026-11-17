@@ -109,7 +109,7 @@ def test_no_new_workers_until_reset_then_resume(monkeypatch):
     async def go():
         r = runner.Runner(lambda *a: None)
 
-        async def work(t):
+        async def work(t, adopt=None):
             started.append(t.ref)
 
         r._work = work

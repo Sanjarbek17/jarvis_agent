@@ -34,9 +34,9 @@ def test_last_step_reads_the_latest_tool_call(tmp_path):
 def test_snapshot_and_route(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "LOGS", tmp_path)
     r = runner.Runner(notify=None)
-    r.current = {"Jarvis App": _ticket("0815c76f", "Jarvis App", "Show worker status"),
-                 "Gas Finder": _ticket("11112222", "Gas Finder", "Map pins")}
-    r.started = {"Jarvis App": 200.0, "Gas Finder": 100.0}
+    r.current = {"0815c76f": _ticket("0815c76f", "Jarvis App", "Show worker status"),
+                 "11112222": _ticket("11112222", "Gas Finder", "Map pins")}
+    r.started = {"0815c76f": 200.0, "11112222": 100.0}
     _log(tmp_path / "Jarvis App-0815c76f.jsonl",
          {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "1", "name": "Edit",
                                                          "input": {"file_path": "/x/Ui.kt"}}]}})

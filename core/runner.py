@@ -28,6 +28,65 @@ from .config import (rules_text, GIT_FLOW, HERE, LOGS, NEVER_DO, NEVER_DO_MAIN_O
 
 log = logging.getLogger("jarvis.runner")
 SESSIONS = STATE / "sessions.json"
+MAX_PER_PROJECT = 3   # workers on one project at once (projects.json "max_workers" overrides); RAM still caps the total
+
+
+def project_cap(project: str) -> int:
+    from .config import PROJECTS, reload_projects
+    reload_projects()
+    try:
+        return max(1, int(PROJECTS.get(project, {}).get("max_workers", MAX_PER_PROJECT)))
+    except (TypeError, ValueError):
+        return MAX_PER_PROJECT
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=60)
+
+
+def git_root(folder: Path) -> Path | None:
+    try:
+        r = _git(folder, "rev-parse", "--show-toplevel")
+    except Exception:
+        return None
+    return Path(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+
+
+def can_parallel(project: str) -> bool:
+    """A second worker needs its own copy of the code: only projects whose main folder is a git repo."""
+    return git_root(project_dirs(project)[0]) is not None
+
+
+def add_worktree(repo: Path, ref: str) -> Path:
+    """A worktree of `repo` for one ticket, on branch ticket-<ref> made from dev (ticket e60b042f)."""
+    path = repo.parent / f"{repo.name}-wt-{ref}"
+    if (path / ".git").exists():
+        return path
+    branch = f"ticket-{ref}"
+    has = lambda b: _git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{b}").returncode == 0  # noqa: E731
+    args = (["worktree", "add", str(path), branch] if has(branch)
+            else ["worktree", "add", "-b", branch, str(path), "dev" if has("dev") else "HEAD"])
+    r = _git(repo, *args)
+    if r.returncode != 0:
+        raise RuntimeError(f"git worktree add failed in {repo}: {r.stderr.strip()[:300]}")
+    return path
+
+
+def remove_worktree(repo: Path, path: Path, ref: str) -> str:
+    """After the worker: its worktree goes unless it holds uncommitted work, its branch only if merged.
+    Returns why something was kept ('' = all gone)."""
+    if not path.exists():
+        return ""
+    r = _git(repo, "worktree", "remove", str(path))
+    if r.returncode != 0:
+        return f"its worktree {path} was kept ({r.stderr.strip()[:160]})"
+    branch = f"ticket-{ref}"
+    # "merged" means merged into dev (plain -d asks about whatever the main checkout has checked out)
+    base = "dev" if _git(repo, "rev-parse", "--verify", "--quiet", "refs/heads/dev").returncode == 0 else "HEAD"
+    merged = _git(repo, "branch", "--merged", base, "--format=%(refname:short)").stdout.split()
+    if branch in merged:
+        _git(repo, "branch", "-D", branch)
+    return ""
 NEEDS_ME = "NEEDS ME:"
 MAX_CONTINUES = 3            # resume a worker this many times if its background work was cut off
 BG_AFTER_RESULT = 10 * 60    # the claude CLI keeps a worker alive after its final answer while background work
@@ -285,6 +344,23 @@ def hit_limit(result: str, is_error: bool, rejected_until: float) -> float:
     return 0.0
 
 
+def parallel_note(ref: str, worktrees: list[tuple[Path, Path]]) -> str:
+    """What a worker running beside another one on the same project must know (ticket e60b042f)."""
+    lines = "\n".join(f"  - {wt} (your copy of {repo})" for repo, wt in worktrees)
+    return f"""
+
+Another worker is busy on this project right now, so you work in your own git worktree(s), on branch
+`ticket-{ref}` made from dev:
+{lines}
+Make every change there, never in the main checkouts (the other worker is using them). When you're done:
+commit on `ticket-{ref}` and merge it into dev. If dev isn't checked out anywhere (`git worktree list`), run
+`git checkout dev` in your worktree, merge, push dev. If dev is checked out in the main checkout and that
+checkout is clean (`git -C <main checkout> status --porcelain` prints nothing), merge there instead
+(`git -C <main checkout> merge --no-ff ticket-{ref}`) and push. Otherwise another worker is busy with dev:
+wait a minute and try again. Jarvis removes your worktree after you finish (it keeps one with uncommitted
+work), so don't remove it yourself."""
+
+
 def _worker_prompt(t: Ticket, shots: Path) -> str:
     return f"""{_ticket_intro(t)}
 Sanjar is away from the computer and won't approve anything, so work on your own until it's done.
@@ -446,17 +522,20 @@ class Runner:
 
     def __init__(self, notify: Notify):
         self.notify = notify
-        self.running: dict[str, asyncio.Task] = {}      # project -> worker
+        # all keyed by ticket ref: several workers may run on one project at once (ticket e60b042f)
+        self.running: dict[str, asyncio.Task] = {}      # ref -> worker task
+        self.project_of: dict[str, str] = {}            # ref -> its project (set when the task starts)
         self.procs: dict[str, WorkerProc] = {}
-        self.current: dict[str, Ticket] = {}            # project -> ticket being worked on
-        self.stop_reasons: dict[str, str] = {}          # project -> why its worker was stopped on purpose
+        self.current: dict[str, Ticket] = {}            # ref -> ticket being worked on
+        self.stop_reasons: dict[str, str] = {}          # ref -> why its worker was stopped on purpose
+        self.in_main: dict[str, str] = {}               # project -> ref of the worker in its main checkout
         self.finished: dict[str, float] = {}            # ticket ref -> when it finished (monotonic)
         self.message: Callable[[str], Awaitable] | None = None   # plain Telegram text to Sanjar
         self.last_sweep = 0.0
         self.held_logged = 0.0                          # last "held for RAM" log line (monotonic)
         self.last_start: dict[str, float] = {}          # project -> when its last worker started (fair turns)
         self.wait_reason = ""                           # why the next queued ticket isn't starting
-        self.started: dict[str, float] = {}             # project -> when its current ticket started (epoch)
+        self.started: dict[str, float] = {}             # ref -> when its ticket started (epoch)
         self._adopted: set[str] = set()                 # refs whose live worker was adopted after a restart
 
     async def run_forever(self, recover: bool = True):
@@ -538,10 +617,22 @@ class Runner:
         """A worker that outlived the old Jarvis: follow its log to the end like any other (ticket 2475b845)."""
         log.info("%s: adopted its running worker (pid %s) after the restart", t.ref, w.get("pid"))
         self._adopted.add(t.ref)
-        task = asyncio.create_task(self._work(t, adopt=w), name=f"worker:{t.project}")
+        self._launch(t, adopt=w)
+
+    def _launch(self, t: Ticket, adopt: dict | None = None) -> None:
+        task = asyncio.create_task(self._work(t, adopt=adopt), name=f"worker:{t.project}:{t.ref}")
         self.last_start[t.project] = time.monotonic()
-        self.running[t.project] = task
-        task.add_done_callback(lambda _t, p=t.project: self.running.pop(p, None))
+        self.running[t.ref] = task
+        self.project_of[t.ref] = t.project
+
+        def done(_t, ref=t.ref):
+            self.running.pop(ref, None)
+            self.project_of.pop(ref, None)
+        task.add_done_callback(done)
+
+    def count(self, project: str) -> int:
+        """Workers running (or starting) on this project."""
+        return sum(1 for p in self.project_of.values() if p == project)
 
     async def _write(self, card: Ticket, *, jarvis: str | None = None, note: str | None = None,
                      stage: str | None = None, log_lines: list[str] | None = None, keep: bool = True) -> bool:
@@ -622,10 +713,7 @@ class Runner:
                 self._waiting(t, why)
                 return
             self._waiting(None, "")
-            task = asyncio.create_task(self._work(t), name=f"worker:{t.project}")
-            self.last_start[t.project] = time.monotonic()
-            self.running[t.project] = task
-            task.add_done_callback(lambda _t, p=t.project: self.running.pop(p, None))
+            self._launch(t)
 
     def _waiting(self, t: Ticket | None, why: str):
         """Remember (and log, at most every 5 min) why the next ticket waits; Jarvis shows it in get_status."""
@@ -659,12 +747,14 @@ class Runner:
 
     def pick(self, queued: list[Ticket]) -> list[Ticket]:
         """Which queued tickets to start, best first (Sanjar, 2026-11-04: no project starves the rest):
-        one per project (its own order, or its earliest deadline), tickets with a "Due" date first
+        one per project per check (its own order, or its earliest deadline; a project may run up to
+        project_cap() workers at once, the extra ones in git worktrees), tickets with a "Due" date first
         (soonest first), then the project whose last worker started longest ago, so a project with
         a long queue can't keep the slots from the others."""
         heads: dict[str, tuple[int, Ticket]] = {}
         for i, t in enumerate(queued):
-            if t.project in self.running:
+            n = self.count(t.project)
+            if n and (n >= project_cap(t.project) or not can_parallel(t.project)):
                 continue
             if not board.startable(t):               # a follow-up waiting for its time (start_after)
                 continue
@@ -682,41 +772,51 @@ class Runner:
     def snapshot(self) -> dict:
         """For the phone app (ticket 0815c76f): how many workers run and what each is doing right now."""
         workers = []
-        for project, card in sorted(self.current.items(), key=lambda it: self.started.get(it[0], 0)):
-            path = worker_log(project, card.ref)
+        for ref, card in sorted(self.current.items(), key=lambda it: self.started.get(it[0], 0)):
+            path = worker_log(card.project, ref)
             step, active = last_step(path) if path else ("starting", 0.0)
-            workers.append({"project": project, "ref": card.ref, "title": card.title, "url": card.url,
-                            "started": self.started.get(project, 0.0), "step": step, "active": active})
+            workers.append({"project": card.project, "ref": ref, "title": card.title, "url": card.url,
+                            "started": self.started.get(ref, 0.0), "step": step, "active": active})
         return {"count": len(workers), "workers": workers, "waiting": self.wait_reason, "at": time.time()}
 
     def progress(self, project: str, ticket: str = "") -> str:
         """For the worker_progress tool: the live log of a project's worker (or a past ticket's)."""
-        name = next((p for p in {*self.current, *board.boards(), *(l.stem.rsplit("-", 1)[0] for l in LOGS.glob("*-*.jsonl"))}
+        live = {t.project for t in self.current.values()}
+        name = next((p for p in {*live, *board.boards(), *(l.stem.rsplit("-", 1)[0] for l in LOGS.glob("*-*.jsonl"))}
                      if p.lower() == project.strip().lower()), project)
-        current = self.current.get(name)
+        current = next((t for t in self.current.values() if t.project == name and (not ticket or t.ref == ticket)), None)
         path = worker_log(name, ticket or (current.ref if current else ""))
         if not path:
             return f"No worker log for {project!r}" + (f" ticket {ticket}" if ticket else "") + "."
         return progress_text(path, running=current is not None and path.stem.endswith(current.ref))
 
-    def stop_project(self, project: str, reason: str = "Sanjar used /stop") -> bool:
-        """Stop a project's worker on purpose: its ticket goes off the queue (not "Failed")."""
-        proc = self.procs.get(project)
-        if proc and proc.returncode is None:
-            self.stop_reasons[project] = reason
-            proc.terminate()
-            return True
-        return False
+    def targets(self, target: str) -> list[str]:
+        """Refs of the running workers a name means: a ticket ref, or a project (all its workers)."""
+        t = target.strip().lower()
+        return [ref for ref, c in self.current.items() if ref.lower() == t or c.project.lower() == t]
 
-    async def stop_and_wait(self, project: str, reason: str, timeout: float = 30) -> Ticket | None:
-        """stop_project, then wait until the worker has wrapped up; returns the ticket it was on."""
-        card = self.current.get(project)
-        if not self.stop_project(project, reason):
-            return None
+    def stop_project(self, target: str, reason: str = "Sanjar used /stop") -> bool:
+        """Stop workers on purpose (a project: all of its workers; a ticket ref: that one). Their tickets go off
+        the queue (not "Failed")."""
+        hit = False
+        for ref in self.targets(target):
+            proc = self.procs.get(ref)
+            if proc and proc.returncode is None:
+                self.stop_reasons[ref] = reason
+                proc.terminate()
+                hit = True
+        return hit
+
+    async def stop_and_wait(self, target: str, reason: str, timeout: float = 30) -> list[Ticket]:
+        """stop_project, then wait until those workers have wrapped up; returns the tickets they were on."""
+        refs = self.targets(target)
+        cards = [self.current[r] for r in refs if r in self.current]
+        if not self.stop_project(target, reason):
+            return []
         end = time.monotonic() + timeout
-        while project in self.current and time.monotonic() < end:
+        while any(r in self.current for r in refs) and time.monotonic() < end:
             await asyncio.sleep(0.5)
-        return card
+        return cards
 
     async def _work(self, card: Ticket, adopt: dict | None = None):
         """adopt: a worker still running from before a Jarvis restart (WORKERS entry): follow it, don't start one."""
@@ -726,13 +826,42 @@ class Runner:
         shots.mkdir(exist_ok=True)
         if adopt:
             log.info("following %s's worker again (pid %s)", card.ref, adopt.get("pid"))
+            if not adopt.get("worktrees"):
+                self.in_main[card.project] = card.ref
         else:
             log.info("start %s in %s", card.line(), dirs[0])
             if not await self._write(card, jarvis="Working", note="starting", stage="doing", keep=False):
                 self.finished[card.ref] = time.monotonic()   # board unreachable: leave it Queued, retry later
                 return
-        self.current[card.project] = card
-        self.started[card.project] = time.time()
+        # the first worker of a project works in its main checkout; others (ticket e60b042f) each get a git
+        # worktree of every repo the project has, on their own branch, so nobody edits another one's files
+        worktrees: list[tuple[Path, Path]] = [(Path(a), Path(b)) for a, b in (adopt or {}).get("worktrees", [])]
+        busy_main = self.in_main.get(card.project)
+        if not adopt and busy_main and busy_main != card.ref and busy_main in self.current:
+            try:
+                for d in dirs:
+                    repo = await asyncio.to_thread(git_root, d)
+                    if repo and all(r != repo for r, _ in worktrees):
+                        worktrees.append((repo, await asyncio.to_thread(add_worktree, repo, card.ref)))
+            except Exception as e:
+                log.warning("%s: no worktree, back to the queue: %s", card.ref, e)
+                for repo, wt in worktrees:
+                    await asyncio.to_thread(remove_worktree, repo, wt, card.ref)
+                await self._write(card, jarvis="Queued", note=f"waiting: couldn't make its own worktree ({str(e)[:200]})")
+                self.finished[card.ref] = time.monotonic()
+                return
+        elif not worktrees:
+            self.in_main[card.project] = card.ref
+
+        def in_tree(d: Path) -> Path:
+            for repo, wt in worktrees:
+                if d == repo or repo in d.parents:
+                    return wt / d.relative_to(repo)
+            return d
+        dirs = [in_tree(d) for d in dirs]
+        session_key = f"{card.project}#{card.ref}" if worktrees else card.project
+        self.current[card.ref] = card
+        self.started[card.ref] = time.time()
 
         def make_cmd(prompt: str) -> list[str]:
             cmd = ["claude", "-p", prompt, "--model", BRAIN_MODEL, "--settings", WORKER_SETTINGS,
@@ -742,13 +871,15 @@ class Runner:
                    "Bash(rm -rf /:*)", "Bash(rm -rf ~:*)"]
             for extra in dirs[1:]:
                 cmd += ["--add-dir", str(extra)]
-            session = _load_sessions().get(card.project)
+            session = _load_sessions().get(session_key)
             if session:
                 cmd += ["--resume", session]
             return cmd
 
         result, is_error, last_push, pending = "", False, 0.0, []
         prompt, attempt = _worker_prompt(card, shots), int((adopt or {}).get("attempt", 0))
+        if worktrees:
+            prompt += parallel_note(card.ref, worktrees)
         state = limit_state()
         if card.ref in state.get("refs", []) and not adopt:     # it was cut off by the usage limit: carry on
             prompt += ("\n\nNote: you already started this ticket and were stopped mid-work by the Claude "
@@ -780,15 +911,16 @@ class Runner:
                             stdout=out, stderr=asyncio.subprocess.STDOUT, start_new_session=True)
                     handle = WorkerProc(proc.pid, proc)
                     _set_worker(card.ref, {"pid": proc.pid, "project": card.project, "log": str(path),
-                                           "offset": offset, "attempt": attempt, "started": time.time()})
-                self.procs[card.project] = handle
+                                           "offset": offset, "attempt": attempt, "started": time.time(),
+                                           "worktrees": [[str(a), str(b)] for a, b in worktrees]})
+                self.procs[card.ref] = handle
                 async for line, replayed in _follow(path, offset, handle, replay_until):
                     try:
                         event = json.loads(line)
                     except json.JSONDecodeError:
                         continue
                     if event.get("session_id"):
-                        _save_session(card.project, event["session_id"])
+                        _save_session(session_key, event["session_id"])
                     kind = event.get("type")
                     if kind == "assistant":
                         handle.end_by = 0.0    # woken again (a background task ended): it's working, no deadline
@@ -841,7 +973,7 @@ class Runner:
                                "the final answer, so Jarvis stopped it: " + "; ".join(unfinished[:6] or ["?"]))
                     break
                 if (is_error or paused or not unfinished or attempt >= MAX_CONTINUES or rc < 0
-                        or card.project in self.stop_reasons):
+                        or card.ref in self.stop_reasons):
                     if unfinished and not is_error:
                         result += ("\n\nNote: background work was still unfinished after "
                                    f"{attempt} continuation(s): " + "; ".join(unfinished[:6]))
@@ -870,13 +1002,21 @@ class Runner:
             if not cancelled:
                 _set_worker(card.ref, None)
                 await close_chrome_of(card.ref)          # the Chrome windows it opened for this ticket
-            self.procs.pop(card.project, None)
-            stopped = self.stop_reasons.pop(card.project, None)
+                kept = [why for repo, wt in worktrees
+                        if (why := await asyncio.to_thread(remove_worktree, repo, wt, card.ref))]
+                if kept:
+                    log.warning("%s: %s", card.ref, "; ".join(kept))
+                    result += "\n\nNote: " + "; ".join(kept)
+            self.procs.pop(card.ref, None)
+            if self.in_main.get(card.project) == card.ref:
+                self.in_main.pop(card.project, None)
+            stopped = self.stop_reasons.pop(card.ref, None)
             if stopped is not None:          # stopped on purpose: off the queue, not "Failed"
                 with contextlib.suppress(Exception):
                     await board.unqueue(card, f"stopped: {stopped}")
                 self.finished[card.ref] = time.monotonic()
-            self.current.pop(card.project, None)
+            self.current.pop(card.ref, None)
+            self.started.pop(card.ref, None)
         if stopped is not None:
             log.info("%s stopped: %s", card.ref, stopped)
             await self.notify(card, "stopped", f"Stopped the worker ({stopped}). It's off the queue; "
