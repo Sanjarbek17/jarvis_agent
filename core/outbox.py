@@ -44,19 +44,22 @@ def jarvis_running() -> bool:
 
 def send(text: str = "", file: str | Path = "", caption: str = "", key: str = "",
          delete_key: str = "", document: bool = False, whoami: bool = False, accept_login: bytes = b"",
-         wait: float = 120, app: bool = False, chat: str = "") -> dict:
+         wait: float = 120, app: bool = False, chat: str = "", announce: dict | None = None,
+         spambot: bool = False) -> dict:
     """Queue a message for Jarvis to send to Sanjar and wait for the result.
     key: name this message; a later message with the same key replaces it (old one deleted).
     delete_key: just delete the message saved under that key.
     whoami: also return the Jarvis account as "me": {"id", "username"}.
     accept_login: a QR login token; Jarvis approves it, like scanning it on a logged-in phone.
     app: the file also shows in the Jarvis app and website, in app chat `chat` or else in Updates.
+    announce: {"chat", "text", "file"} - one post in an approved group (core/announce.py); spambot: ask @SpamBot.
     Returns {"ok": bool, ...}."""
     OUTBOX.mkdir(parents=True, exist_ok=True)
     name = f"{time.time():.6f}-{uuid.uuid4().hex[:6]}"
     note = {"text": text, "file": str(Path(file).resolve()) if file else "", "caption": caption,
             "key": key, "delete_key": delete_key, "document": document, "whoami": whoami,
-            "accept_login": base64.b64encode(accept_login).decode(), "app": app, "chat": chat}
+            "accept_login": base64.b64encode(accept_login).decode(), "app": app, "chat": chat,
+            "announce": announce, "spambot": spambot}
     tmp = OUTBOX / f"{name}.tmp"
     tmp.write_text(json.dumps(note, ensure_ascii=False))
     tmp.rename(OUTBOX / f"{name}.json")            # appears complete, never half-written
@@ -84,6 +87,17 @@ async def run(tg, owner_id: int, on_file=None) -> None:
                 if note.get("accept_login"):
                     from telethon.tl.functions.auth import AcceptLoginTokenRequest
                     await tg(AcceptLoginTokenRequest(base64.b64decode(note["accept_login"])))
+                if note.get("announce"):             # ticket ee89e121: one approved post in another group
+                    from . import announce
+                    a = note["announce"]
+                    result = await announce.post(tg, a.get("chat", ""), a.get("text", ""), a.get("file", ""))
+                    f.with_suffix(".done").write_text(json.dumps(result)); f.unlink(missing_ok=True)
+                    continue
+                if note.get("spambot"):
+                    from . import announce
+                    result = await announce.spambot_check(tg)
+                    f.with_suffix(".done").write_text(json.dumps(result)); f.unlink(missing_ok=True)
+                    continue
                 if note.get("whoami"):
                     me = await tg.get_me()
                     result["me"] = {"id": me.id, "username": me.username}
