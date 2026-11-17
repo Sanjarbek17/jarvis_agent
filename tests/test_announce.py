@@ -13,8 +13,9 @@ class Rights(SimpleNamespace):
 
 
 class FakeTG:
-    def __init__(self, rights=None, fail=None):
+    def __init__(self, rights=None, fail=None, removed=False):
         self.rights, self.fail, self.sent, self.joined = rights or Rights(), fail, [], []
+        self.removed = removed
 
     async def __call__(self, req):
         name = type(req).__name__
@@ -29,7 +30,7 @@ class FakeTG:
         self.sent.append(("text", chat, text)); return SimpleNamespace(id=101)
 
     async def send_file(self, chat, file, caption=""):
-        self.sent.append(("photo", chat, caption)); return SimpleNamespace(id=102)
+        self.sent.append(("photo", chat, caption)); return None if self.removed else SimpleNamespace(id=102)
 
 
 @pytest.fixture(autouse=True)
@@ -82,3 +83,13 @@ def test_flood_error_stops_everything():
     r2 = run(announce.post(FakeTG(), "Jizzax_metan_24", "Salom"))                  # nothing more after a flood
     assert not r2["ok"] and "stopped" in r2["error"]
     assert json.loads(announce.ALLOW.read_text())["stopped"].startswith("PeerFloodError")
+
+
+def test_post_deleted_at_once_still_counts_as_done(tmp_path):
+    # Telethon returns None when Telegram answers with MessageEmpty (the group's anti-spam deleted the post at once)
+    pic = tmp_path / "map.png"; pic.write_bytes(b"png")
+    tg = FakeTG(removed=True)
+    r = run(announce.post(tg, "metan_gaz_urgut", "Salom", str(pic)))
+    assert not r["ok"] and r["removed"] and not r["stop"]
+    again = run(announce.post(tg, "metan_gaz_urgut", "Salom", str(pic)))          # never resent
+    assert "already" in again["error"] and len(tg.sent) == 1

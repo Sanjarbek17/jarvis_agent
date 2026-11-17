@@ -58,6 +58,11 @@ async def post(tg, chat: str, text: str, file: str = "") -> dict:
             msg = await tg.send_file(chat, file, caption=text[:1024])
         else:
             msg = await tg.send_message(chat, text, link_preview=False)
+        if msg is None:
+            # Telegram took the post but answered with an empty message: the group (its anti-spam or a bot)
+            # deleted it at once. It still counts as our one post there, so mark it done - never resend.
+            entry.update(done=True, removed=True, at=time.time(), photo=photo_ok); _save(d)
+            return {"ok": False, "removed": True, "error": "sent, but the group deleted it at once", "stop": False}
         link = f"https://t.me/{getattr(ch, 'username', None) or chat}/{msg.id}"
         entry.update(done=True, link=link, at=time.time(), photo=photo_ok); _save(d)
         return {"ok": True, "link": link, "photo": photo_ok}
