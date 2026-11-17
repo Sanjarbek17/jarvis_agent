@@ -8,6 +8,8 @@ utilization and reset time. observe() reads them; at most one note per window an
 - reset: the reset time passed after a hit (checked by the runner every loop): work goes on.
 Notes go straight to him (Telegram + app), not through the brain, so they're never held back.
 """
+import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -52,7 +54,10 @@ def observe(info: dict) -> list[str]:
     util = float(win.get("utilization") or 0)
     rejected = win.get("status") == "rejected" or (info.get("status") == "rejected" and info.get("rateLimitType") == "five_hour")
     s, notes = _load(), []
-    s.update(window=window, util=util, seen_at=time.time())
+    now = time.time()
+    s.update(window=window, util=util, seen_at=now, allowed=not rejected)
+    if not rejected and float(s.get("reset_due") or 0) > now:
+        s["reset_due"] = now          # reset early (e.g. Sanjar reset it): "work goes on" now, not at the old time
     if rejected and s.get("hit") != window:
         s.update(hit=window, warned=window, reset_due=window)
         notes.append(f"⛔ The Claude 5-hour limit is used up. Workers pause and carry on by themselves after {_at(window)}.")
@@ -96,6 +101,40 @@ async def report(info: dict) -> None:
 
 async def report_reset() -> None:
     await _send(check_reset())
+
+
+def allowed_since(ts: float) -> bool:
+    """A reading taken after `ts` says Claude takes work again (ticket 59f4e775: the limit was reset early)."""
+    s = _load()
+    return s.get("allowed") is True and float(s.get("seen_at") or 0) > ts
+
+
+PROBE_CMD = ["claude", "-p", "Reply with the single word: ok", "--model", "haiku", "--output-format", "stream-json",
+             "--verbose", "--tools", "", "--setting-sources", "", "--no-session-persistence"]
+
+
+async def probe(timeout: float = 90) -> bool:
+    """One tiny Claude call, only to read the live 5-hour window (its rate_limit_event). While the runner holds
+    work for the limit nothing else may call Claude, so without this an early reset would go unnoticed."""
+    try:
+        proc = await asyncio.create_subprocess_exec(*PROBE_CMD, stdin=asyncio.subprocess.DEVNULL,
+                                                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+    except Exception as e:
+        log.warning("usage probe failed: %r", e)
+        with contextlib.suppress(Exception):
+            proc.kill()
+        return False
+    got = False
+    for line in out.splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if e.get("type") == "rate_limit_event":
+            await report(e.get("rate_limit_info") or {})
+            got = True
+    return got
 
 
 def recently_hit(window_s: float = 6 * 3600) -> bool:

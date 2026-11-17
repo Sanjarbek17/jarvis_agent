@@ -32,10 +32,13 @@ def test_used_up_then_reset_each_once():
     hit = u.observe(info(1.0, r, "rejected"))
     assert len(hit) == 1 and "used up" in hit[0] and time.strftime("%H:%M", time.localtime(r)) in hit[0]
     assert u.observe(info(1.0, r, "rejected")) == [] and u.recently_hit()
-    assert u.observe(info(0.95, r)) == []                         # no "close" after "used up"
-    assert u.check_reset(now=r - 1) == []
+    assert u.check_reset(now=r - 1) == []                          # still used up: no note before the reset time
     done = u.check_reset(now=r + 1)
     assert len(done) == 1 and "reset" in done[0] and u.check_reset(now=r + 60) == []
+    # ticket 59f4e775: an "allowed" reading after a hit = it was reset early: the note comes now
+    u.observe(info(1.0, r + 7, "rejected"))
+    assert u.observe(info(0.95, r + 7)) == []                      # no "close" note after "used up"
+    assert len(u.check_reset()) == 1
 
 
 def test_old_style_event_without_windows():

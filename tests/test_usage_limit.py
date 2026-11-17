@@ -4,8 +4,10 @@ import json
 import time
 from types import SimpleNamespace as NS
 
-from core import runner
+from core import runner, usagewatch as _uw
 from core.board import Ticket
+
+REAL_PROBE = _uw.probe        # tests/conftest.py swaps it for a no-op per test; one test runs the real one
 
 RESET = time.time() + 3600
 LIMIT_STREAM = [
@@ -122,3 +124,89 @@ def test_no_new_workers_until_reset_then_resume(monkeypatch):
         assert started == ["a1"] and "until" not in json.loads(runner.USAGE_LIMIT.read_text())
 
     asyncio.run(go())
+
+
+# --- ticket 59f4e775: Sanjar reset the usage early, but the runner kept waiting for the old reset time ------------
+
+def hold_run(monkeypatch, set_at, reading):
+    from core import usagewatch
+    tickets = [NS(ref="a1", project="A", due="")]
+
+    async def queued():
+        return tickets
+
+    monkeypatch.setattr(runner.board, "queued", queued)
+    started, probes = [], []
+
+    async def probe():
+        probes.append(1)
+        return True
+
+    monkeypatch.setattr(usagewatch, "probe", probe)
+
+    async def go():
+        r = runner.Runner(lambda *a: None)
+
+        async def work(t, adopt=None):
+            started.append(t.ref)
+
+        r._work = work
+        runner.USAGE_LIMIT.write_text(json.dumps({"until": time.time() + 7200, "set_at": set_at, "refs": ["a1"]}))
+        if reading:
+            usagewatch.observe(reading)
+        await r._tick()
+        await asyncio.sleep(0)
+        return r
+
+    r = asyncio.run(go())
+    return r, started, probes
+
+
+def test_an_early_reset_ends_the_hold_at_once(monkeypatch):
+    allowed = {"status": "allowed", "rateLimitType": "five_hour", "resetsAt": time.time() + 18000, "utilization": 0.0}
+    r, started, probes = hold_run(monkeypatch, time.time() - 60, allowed)
+    assert started == ["a1"] and "until" not in json.loads(runner.USAGE_LIMIT.read_text())
+
+
+def test_while_held_the_live_usage_is_read_now_and_then(monkeypatch):
+    r, started, probes = hold_run(monkeypatch, time.time() - 60, None)
+    assert started == [] and probes == [1] and "usage limit" in r.wait_reason
+
+
+def test_a_reading_from_before_the_hit_does_not_end_it(monkeypatch):
+    from core import usagewatch
+    allowed = {"status": "allowed", "rateLimitType": "five_hour", "resetsAt": time.time() + 18000, "utilization": 0.5}
+    usagewatch.observe(allowed)
+    r, started, probes = hold_run(monkeypatch, time.time() + 5, None)    # the hit came after that reading
+    assert started == []
+
+
+def test_an_early_reset_also_sends_the_reset_note_now():
+    from core import usagewatch
+    hit = time.time() + 7200
+    usagewatch.observe({"status": "rejected", "rateLimitType": "five_hour", "resetsAt": hit})
+    assert usagewatch.check_reset() == []
+    usagewatch.observe({"status": "allowed", "rateLimitType": "five_hour", "resetsAt": time.time() + 18000})
+    assert usagewatch.check_reset() == ["✅ The Claude 5-hour limit has reset. Workers are running again."]
+
+
+def test_the_probe_reads_the_rate_limit_event(monkeypatch):
+    from core import usagewatch
+    lines = [json.dumps({"type": "system", "subtype": "init"}),
+             json.dumps({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "rateLimitType": "five_hour",
+                                                                          "resetsAt": time.time() + 18000, "utilization": 0.02}}),
+             json.dumps({"type": "result", "result": "ok"})]
+
+    class P:
+        async def communicate(self):
+            return ("\n".join(lines)).encode(), b""
+
+    seen = {}
+
+    async def exec_(*cmd, **kw):
+        seen["cmd"] = cmd
+        return P()
+
+    monkeypatch.setattr(usagewatch.asyncio, "create_subprocess_exec", exec_)
+    assert asyncio.run(REAL_PROBE()) is True and "haiku" in seen["cmd"]
+    assert usagewatch.allowed_since(time.time() - 5) and usagewatch.status_line().startswith("Claude 5-hour usage: 2%")
