@@ -1025,7 +1025,8 @@ async def workers(req: Request):
 
 def _ticket_json(t: board.Ticket) -> dict:
     return {"ref": t.ref, "project": t.project, "title": t.title, "status": t.status, "jarvis": t.jarvis,
-            "note": t.note, "sprint": t.sprint, "due": t.due, "url": t.url, "edited": t.edited}
+            "note": t.note, "sprint": t.sprint, "due": t.due, "url": t.url, "edited": t.edited,
+            "waits": board.waits_for(t) if t.jarvis == "Queued" else ""}
 
 
 def _column_rank(name: str) -> tuple[int, str]:
