@@ -409,6 +409,8 @@ Sanjar is away from the computer and won't approve anything, so work on your own
   a later check on a board on the Mac add a queued follow-up that waits until then:
   `{HERE / '.venv/bin/python'} {HERE / 'scripts/board.py'} add "<project>" "Check <what>" --text "<what to check and why>" --queue --start-after HH:MM`
   (or "YYYY-MM-DD HH:MM"). Otherwise say in your summary what's still to check and when.
+  If the follow-up must wait for another ticket (one still queued or running), use `--after <its ref>`
+  instead of a guessed time: it starts as soon as that ticket is Done.
 - The same if your work is done for now but the next step waits on him: a push to main, an
   approval, a choice, a key or account. Never finish quietly and wait — end with {NEEDS_ME} saying
   exactly what he needs to do. (Merging into `dev` is never a reason to wait: do it yourself.)
@@ -776,7 +778,7 @@ class Runner:
             n = self.count(t.project)
             if n and (n >= project_cap(t.project) or not can_parallel(t.project)):
                 continue
-            if not board.startable(t):               # a follow-up waiting for its time (start_after)
+            if not board.startable(t):               # a follow-up waiting for its time or for another ticket
                 continue
             if t.ref in self.finished:
                 # just finished (the board may still read as Queued for a moment); don't re-run it

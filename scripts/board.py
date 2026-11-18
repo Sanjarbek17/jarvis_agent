@@ -4,13 +4,14 @@
     .venv/bin/python scripts/board.py list <project> [--all]
     .venv/bin/python scripts/board.py show <ref>
     .venv/bin/python scripts/board.py add <project> <title> [--text-file F | --text T] [--sprint S] [--queue]
-                                          [--start-after "YYYY-MM-DD HH:MM" | HH:MM]
+                                          [--start-after "YYYY-MM-DD HH:MM" | HH:MM] [--after <ref>]
     .venv/bin/python scripts/board.py edit <ref> [--title T] [--text-file F | --text T] [--sprint S] [--status S]
-                                          [--start-after ...]
+                                          [--start-after ...] [--after <ref>]
     .venv/bin/python scripts/board.py log <ref> <line>...
 
 --text-file - reads the text from stdin. Only Jarvis moves a ticket's Jarvis state; `add --queue` hands a
-new ticket to it.
+new ticket to it. --after <ref>: not started before that ticket is finished (Done); use it, not a guessed
+--start-after time, when a ticket must wait for another one.
 """
 import argparse
 import sys
@@ -49,6 +50,7 @@ def main() -> int:
         p.add_argument("--queue", action="store_true")
         p.add_argument("--start-after", help='not started before this local time: "YYYY-MM-DD HH:MM", or HH:MM '
                                              '(today, or tomorrow if that time has passed); "" clears it')
+        p.add_argument("--after", help='not started before this other ticket (its ref) is finished; "" clears it')
     p = sub.add_parser("log")
     p.add_argument("ref")
     p.add_argument("lines", nargs="+")
@@ -66,8 +68,12 @@ def main() -> int:
         if not localboard.is_local(a.project):
             print(f"{a.project} isn't a board on the Mac", file=sys.stderr)
             return 1
+        if a.after and not localboard.get(a.after):
+            print(f"No ticket {a.after} on the boards on the Mac", file=sys.stderr)
+            return 1
         t = localboard.add_ticket(a.project, a.title, _text(a) or "", queued=a.queue, status=a.status or "",
-                                  sprint=a.sprint or "", start_after=start_time(a.start_after or ""))
+                                  sprint=a.sprint or "", start_after=start_time(a.start_after or ""),
+                                  after=(a.after or "").strip().lower())
         print(t.ref)
         return 0
     t = localboard.get(a.ref)
@@ -78,7 +84,8 @@ def main() -> int:
         d = localboard.details(t.ref)
         print(f"{t.ref} [{t.project}] {t.title}\nStatus: {t.status or '?'}   Jarvis: {t.jarvis or '-'}"
               f"   Sprint: {t.sprint or '-'}   Due: {t.due or '-'}"
-              + (f"   Starts after: {t.start_after}" if t.start_after else ""))
+              + (f"   Starts after: {t.start_after}" if t.start_after else "")
+              + (f"   After ticket: {t.after}" if t.after else ""))
         if t.note:
             print(f"Note: {t.note}")
         if d["notion_url"]:
@@ -88,7 +95,11 @@ def main() -> int:
             print("\n--- log ---\n" + "\n".join(e["line"] for e in d["log"]))
     elif a.cmd == "edit":
         fields = {"title": a.new_title or a.title, "body": _text(a), "sprint": a.sprint, "status": a.status,
-                  "start_after": None if a.start_after is None else start_time(a.start_after)}
+                  "start_after": None if a.start_after is None else start_time(a.start_after),
+                  "after": None if a.after is None else a.after.strip().lower()}
+        if fields["after"] and not localboard.get(fields["after"]):
+            print(f"No ticket {a.after} on the boards on the Mac", file=sys.stderr)
+            return 1
         localboard.set_fields(t.ref, **{k: v for k, v in fields.items() if v is not None})
     else:
         localboard.append_log(t.page_id, a.lines)

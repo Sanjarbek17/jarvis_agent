@@ -56,6 +56,7 @@ class Ticket:
     edited: str = ""    # last edited time (ISO), for spotting tickets stuck In Progress
     due: str = ""       # the board's "Due" date (ISO), if set: such tickets go ahead in the queue
     start_after: str = ""   # "YYYY-MM-DD HH:MM" local time: not started before then (follow-up checks, ticket ac668ebe)
+    after: str = ""         # another ticket's ref: not started before that one is finished (ticket 5290b190)
 
     def startable(self, now: float | None = None) -> bool:
         return startable(self, now)
@@ -64,6 +65,8 @@ class Ticket:
         jarvis = f"Jarvis {self.jarvis}" if self.jarvis else "not for Jarvis"
         if self.jarvis == "Needs me" and (age := asked_ago(self.edited)):
             jarvis += f" (asked {age} ago)"
+        if self.jarvis == "Queued" and (why := waits_for(self)):
+            jarvis += f" (waits for {why})"
         return (f"{self.ref} [{self.project}] {self.title} — {self.status or '?'}, {jarvis}"
                 + (f": {self.note[:200]}" if self.note else ""))
 
@@ -81,15 +84,33 @@ def asked_ago(edited: str, now: float | None = None) -> str:
 
 
 def startable(t, now: float | None = None) -> bool:
-    """False while a ticket's start_after time is still ahead (none, or a bad value, never blocks it)."""
+    """False while a ticket still waits: its start_after time is ahead, or the ticket it comes after
+    isn't finished yet. Nothing set, a bad time, or an `after` ticket that doesn't exist never blocks it."""
+    return not waits_for(t, now)
+
+
+def waits_for(t, now: float | None = None) -> str:
+    """Why a ticket can't start yet ("ticket e0d69965 to finish", "2026-11-18 21:00"), or "" if it can."""
+    after = (getattr(t, "after", "") or "").strip()
+    if after:
+        from . import localboard
+        first = localboard.get(after)
+        if first and not finished(first):
+            return f"ticket {after} to finish"
     when = (getattr(t, "start_after", "") or "").strip()
-    if not when:
-        return True
-    try:
-        at = time.mktime(time.strptime(when[:16], "%Y-%m-%d %H:%M"))
-    except ValueError:
-        return True
-    return (time.time() if now is None else now) >= at
+    if when:
+        try:
+            at = time.mktime(time.strptime(when[:16], "%Y-%m-%d %H:%M"))
+        except ValueError:
+            return ""
+        if (time.time() if now is None else now) < at:
+            return when[:16]
+    return ""
+
+
+def finished(t) -> bool:
+    """A ticket that's over: closed on its board, or Jarvis finished it."""
+    return (t.status or "").lower() in FINISHED or t.jarvis == "Done"
 
 
 def boards() -> dict[str, str]:

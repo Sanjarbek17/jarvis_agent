@@ -21,13 +21,14 @@ from .config import PROJECTS, STATE, reload_projects
 DB = STATE / "boards.db"
 SITE = "https://jarvis.sanjarbek17.uz"
 STAGES = {"todo": "To do", "doing": "In progress", "done": "Done"}
-EDITABLE = {"title", "body", "status", "sprint", "due", "jarvis", "note", "start_after"}
+EDITABLE = {"title", "body", "status", "sprint", "due", "jarvis", "note", "start_after", "after"}
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tickets (
     ref TEXT PRIMARY KEY, project TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT '', jarvis TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
     sprint TEXT NOT NULL DEFAULT '', due TEXT NOT NULL DEFAULT '', notion_url TEXT NOT NULL DEFAULT '',
-    created TEXT NOT NULL, edited TEXT NOT NULL, start_after TEXT NOT NULL DEFAULT '');
+    created TEXT NOT NULL, edited TEXT NOT NULL, start_after TEXT NOT NULL DEFAULT '',
+    after TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS tickets_project ON tickets (project, created);
 CREATE INDEX IF NOT EXISTS tickets_jarvis ON tickets (jarvis);
 CREATE TABLE IF NOT EXISTS log (
@@ -48,6 +49,8 @@ def _db():
             cols = {r[1] for r in con.execute("PRAGMA table_info(tickets)")}
             if "start_after" not in cols:            # a board from before follow-up checks (ticket ac668ebe)
                 con.execute("ALTER TABLE tickets ADD COLUMN start_after TEXT NOT NULL DEFAULT ''")
+            if "after" not in cols:                  # a board from before waiting on another ticket (ticket 5290b190)
+                con.execute("ALTER TABLE tickets ADD COLUMN after TEXT NOT NULL DEFAULT ''")
             _ready.add(str(DB))
         with con:
             yield con
@@ -68,7 +71,8 @@ def _ticket(row):
     return Ticket(page_id=f"local:{row['ref']}", ref=row["ref"], project=row["project"], title=row["title"],
                   status=row["status"], jarvis=row["jarvis"], note=row["note"], sprint=row["sprint"],
                   url=f"{SITE}/#/t/{quote(row['project'], safe='')}/{row['ref']}", edited=row["edited"], due=row["due"],
-                  start_after=row["start_after"] if "start_after" in row.keys() else "")
+                  start_after=row["start_after"] if "start_after" in row.keys() else "",
+                  after=row["after"] if "after" in row.keys() else "")
 
 
 def is_local(project: str) -> bool:
@@ -103,13 +107,13 @@ def details(ref: str) -> dict:
 
 
 def add_ticket(project: str, title: str, body: str, queued: bool = True, status: str = "", sprint: str = "",
-               note: str = "", start_after: str = ""):
+               note: str = "", start_after: str = "", after: str = ""):
     ref, now = secrets.token_hex(4), _now()
     with _db() as con:
         con.execute("INSERT INTO tickets (ref, project, title, body, status, jarvis, note, sprint, created, edited, "
-                    "start_after) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "start_after, after) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (ref, project, title[:200], body, status or STAGES["todo"], "Queued" if queued else "",
-                     note, sprint, now, now, start_after))
+                     note, sprint, now, now, start_after, after))
     return get(ref)
 
 

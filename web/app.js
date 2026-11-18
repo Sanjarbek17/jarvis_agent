@@ -1045,7 +1045,7 @@ function drawBoard() {
     return h("a", { class: "card", href: ticketLink(boardOn.project, t.ref) },
       h("div", { class: "title", text: t.title || "Untitled" }),
       h("div", { class: "meta" }, pill(t.jarvis), h("span", { class: "muted", text:
-        [edited, view !== "status" && t.status, t.sprint, t.due && `due ${t.due.slice(0, 10)}`, t.ref].filter(Boolean).join(" · ") })));
+        [edited, view !== "status" && t.status, t.waits && `waits for ${t.waits}`, t.sprint, t.due && `due ${t.due.slice(0, 10)}`, t.ref].filter(Boolean).join(" · ") })));
   };
   const top = box.scrollTop;
   box.replaceChildren(...(groups.length ? groups.map(([name, rows]) => {
@@ -1148,7 +1148,7 @@ function drawTicket(data, editing = false) {
   const working = t.jarvis === "Working";
   const steps = data.log.filter(l => !l.line.startsWith("• "));
   box.replaceChildren(...[
-    h("div", { class: "meta" }, status, pill(t.jarvis), h("span", { class: "muted small", text: [t.sprint, t.due && `due ${t.due.slice(0, 10)}`, t.ref].filter(Boolean).join(" · ") })),
+    h("div", { class: "meta" }, status, pill(t.jarvis), h("span", { class: "muted small", text: [t.waits && `waits for ${t.waits}`, t.sprint, t.due && `due ${t.due.slice(0, 10)}`, t.ref].filter(Boolean).join(" · ") })),
     t.note ? h("p", { class: "note", text: t.note }) : null,
     h("div", { class: "actions" },
       t.jarvis === "Queued" || working ? null : act("Queue for Jarvis", "queue", "btn primary"),
