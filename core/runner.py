@@ -236,12 +236,17 @@ def _workers() -> dict:
 
 
 def _set_worker(ref: str, entry: dict | None) -> None:
+    """Remember (or forget) a live worker for adoption after a restart. Only bookkeeping: a failed write (disk
+    full) is logged, never raised: it ended the following of a healthy worker on 18 Nov (ticket 9304deae)."""
     data = _workers()
     if entry is None:
         data.pop(ref, None)
     else:
         data[ref] = entry
-    WORKERS.write_text(json.dumps(data))
+    try:
+        WORKERS.write_text(json.dumps(data))
+    except OSError as e:
+        log.warning("couldn't save workers.json (%s): %s", ref, e)
 
 
 def _has_result(path: Path) -> bool:
@@ -286,9 +291,16 @@ def _load_sessions() -> dict[str, str]:
 
 
 def _save_session(project: str, session_id: str) -> None:
+    """Called for every event a worker prints: writes only when the session changes, and a failed write (disk
+    full) is logged, never raised, so it can't end the following of a running worker (ticket 9304deae)."""
     sessions = _load_sessions()
+    if sessions.get(project) == session_id:
+        return
     sessions[project] = session_id
-    SESSIONS.write_text(json.dumps(sessions, indent=2))
+    try:
+        SESSIONS.write_text(json.dumps(sessions, indent=2))
+    except OSError as e:
+        log.warning("couldn't save the session of %s: %s", project, e)
 
 
 def _ticket_intro(t: Ticket) -> str:
@@ -1007,24 +1019,30 @@ class Runner:
             log.exception("worker crashed for %s", card.ref)
             is_error, result = True, f"Worker crashed: {e}"
         finally:
-            if not cancelled:
-                _set_worker(card.ref, None)
-                await close_chrome_of(card.ref)          # the Chrome windows it opened for this ticket
-                kept = [why for repo, wt in worktrees
-                        if (why := await asyncio.to_thread(remove_worktree, repo, wt, card.ref))]
-                if kept:
-                    log.warning("%s: %s", card.ref, "; ".join(kept))
-                    result += "\n\nNote: " + "; ".join(kept)
+            # the slot is always given back, whatever fails below: a failed write here once left a finished
+            # ticket "working" for hours and blocked its board (ticket 9304deae)
             self.procs.pop(card.ref, None)
             if self.in_main.get(card.project) == card.ref:
                 self.in_main.pop(card.project, None)
             stopped = self.stop_reasons.pop(card.ref, None)
-            if stopped is not None:          # stopped on purpose: off the queue, not "Failed"
-                with contextlib.suppress(Exception):
-                    await board.unqueue(card, f"stopped: {stopped}")
-                self.finished[card.ref] = time.monotonic()
             self.current.pop(card.ref, None)
             self.started.pop(card.ref, None)
+            if stopped is not None:          # stopped on purpose: off the queue, not "Failed"
+                self.finished[card.ref] = time.monotonic()
+            if not cancelled:
+                _set_worker(card.ref, None)
+                try:
+                    await close_chrome_of(card.ref)          # the Chrome windows it opened for this ticket
+                    kept = [why for repo, wt in worktrees
+                            if (why := await asyncio.to_thread(remove_worktree, repo, wt, card.ref))]
+                except Exception as e:
+                    kept = [f"cleanup failed: {e}"]
+                if kept:
+                    log.warning("%s: %s", card.ref, "; ".join(kept))
+                    result += "\n\nNote: " + "; ".join(kept)
+            if stopped is not None:
+                with contextlib.suppress(Exception):
+                    await board.unqueue(card, f"stopped: {stopped}")
         if stopped is not None:
             log.info("%s stopped: %s", card.ref, stopped)
             await self.notify(card, "stopped", f"Stopped the worker ({stopped}). It's off the queue; "
