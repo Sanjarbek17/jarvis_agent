@@ -64,6 +64,8 @@ MODS = {"cmd": Q.kCGEventFlagMaskCommand, "command": Q.kCGEventFlagMaskCommand,
         "ctrl": Q.kCGEventFlagMaskControl, "control": Q.kCGEventFlagMaskControl,
         "alt": Q.kCGEventFlagMaskAlternate, "option": Q.kCGEventFlagMaskAlternate,
         "shift": Q.kCGEventFlagMaskShift, "fn": Q.kCGEventFlagMaskSecondaryFn}
+# the modifier keys themselves, pressed and let go around a combo (ticket 59c7e073)
+MOD_KEYS = {"cmd": 55, "command": 55, "shift": 56, "alt": 58, "option": 58, "ctrl": 59, "control": 59, "fn": 63}
 
 
 def check() -> None:
@@ -94,6 +96,9 @@ def shot(path: str = "") -> None:
 def _mouse(kind: int, x: float, y: float, button: int = Q.kCGMouseButtonLeft, clicks: int = 1) -> None:
     e = Q.CGEventCreateMouseEvent(None, kind, (x, y), button)
     Q.CGEventSetIntegerValueField(e, Q.kCGMouseEventClickState, clicks)
+    # A plain click: no modifiers. A new event otherwise takes whatever macOS thinks is held right now, and a click
+    # that carried Cmd turned a Dock click into "Show in Finder" (ticket 59c7e073).
+    Q.CGEventSetFlags(e, 0)
     _post(e)
 
 
@@ -143,13 +148,29 @@ def key(combo: str) -> None:
     *mods, name = combo.lower().split("+")
     if name not in KEYS:
         sys.exit(f"Unknown key {name!r}. Known: {', '.join(sorted(KEYS))}")
-    flags = 0
     for m in mods:
-        flags |= MODS[m]
-    for down in (True, False):
-        e = Q.CGEventCreateKeyboardEvent(None, KEYS[name], down)
+        if m not in MODS:
+            sys.exit(f"Unknown modifier {m!r}. Known: {', '.join(sorted(MODS))}")
+    for keycode, down, flags in combo_events(mods, KEYS[name]):
+        e = Q.CGEventCreateKeyboardEvent(None, keycode, down)
         Q.CGEventSetFlags(e, flags)
         _post(e)
+
+
+def combo_events(mods: list[str], keycode: int) -> list[tuple[int, bool, int]]:
+    """A key combo as real fingers do it (ticket 59c7e073): each modifier key down, the key down and up, the
+    modifiers up in reverse, every event with the modifiers held at that moment. macOS keeps the modifiers of the
+    last event as "held"; sending only the key with Cmd set left Cmd held after every shortcut, so the next click
+    was a Cmd-click (a Dock icon opened in Finder) and typed letters were shortcuts (4445813a)."""
+    events, held = [], 0
+    for m in mods:
+        held |= MODS[m]
+        events.append((MOD_KEYS[m], True, held))
+    events += [(keycode, True, held), (keycode, False, held)]
+    for m in reversed(mods):
+        held &= ~MODS[m]
+        events.append((MOD_KEYS[m], False, held))
+    return events
 
 
 # --- serve: a long-running helper, so remote control doesn't start Python for every click -------
