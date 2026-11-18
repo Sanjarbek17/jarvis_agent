@@ -781,9 +781,10 @@ async def reply_context(event) -> str:
     if not body and (r.voice or r.video_note or r.audio):
         try:
             body = await transcribe_audio(await r.download_media(file=bytes))
-            body = f"(voice) {body}" if body else ""
-        except Exception:
-            body = ""
+            body = f"(voice) {body}" if body else "(a silent voice message)"
+        except Exception as e:
+            log.warning("couldn't transcribe the replied-to voice message: %s", e)
+            body = f"(a voice message that I failed to transcribe: {e})"
     if _has_file(r):
         saved = await save_incoming_file(r)
         body = f"{body}\n{saved}".strip() if saved else (body or "[a file]")
@@ -938,10 +939,16 @@ async def remember_history():
 async def on_message(event):
     text = (event.raw_text or "").strip()
     if not text and (event.message.voice or event.message.video_note or event.message.audio):
-        async with tg.action(OWNER_ID, "typing"):
-            text = await transcribe_audio(await tg.download_media(event.message, file=bytes))
+        try:
+            async with tg.action(OWNER_ID, "typing"):
+                text = await transcribe_audio(await tg.download_media(event.message, file=bytes))
+        except Exception as e:                      # download or transcription failed: our side, not his recording
+            log.warning("voice message %s: transcription failed: %s", event.message.id, e)
+            await event.reply(f"⚠️ Transcribing that voice message failed on my side, sir ({e}). "
+                              "Please send it again, or as text.")
+            return
         if not text:
-            await event.reply("I couldn't make out that voice message, sir.")
+            await event.reply("That voice message was silent, sir: no sound came through.")
             return
         await event.reply(f"🎙 I heard: {text}")
     file_note = await save_incoming_file(event.message)
