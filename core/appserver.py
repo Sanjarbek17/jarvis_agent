@@ -88,7 +88,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from . import answering, board, livestats, localboard, macremote
 from .brain import Brain, is_silent
 from .config import PROJECTS, STATE, reload_projects
-from .voice import transcribe_audio
+from .voice import TranscriptionFailed, transcribe_audio
 
 log = logging.getLogger("jarvis.app")
 PORT = 8790
@@ -829,9 +829,14 @@ async def voice(req: Request):
     audio = await req.body()
     if not audio or len(audio) > 25_000_000:
         return JSONResponse({"error": "no audio or too big"}, status_code=400)
-    heard = (await transcribe_audio(audio) or "").strip()
+    try:
+        heard = (await transcribe_audio(audio) or "").strip()
+    except TranscriptionFailed as e:                # our side failed, not the recording
+        log.warning("app voice message: transcription failed: %s", e)
+        return JSONResponse({"heard": "", "reply": {"role": "jarvis", "ts": time.time(),
+                             "text": f"Transcribing that voice message failed on my side ({e}). Please try again, or type it."}})
     if not heard:
-        return JSONResponse({"heard": "", "reply": {"role": "jarvis", "text": "I couldn't make out that voice message.",
+        return JSONResponse({"heard": "", "reply": {"role": "jarvis", "text": "That voice message was silent: no sound came through.",
                                                      "ts": time.time()}})
     return JSONResponse({"heard": heard, "reply": await ask(chat, heard, voice=True,
                                                            reply_to=req.query_params.get("reply_to"),

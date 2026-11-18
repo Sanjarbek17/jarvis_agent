@@ -220,49 +220,98 @@ class Ears:
                     await self.on_sentence(sc.input_transcription.text.strip())
 
 
+class TranscriptionFailed(Exception):
+    """Turning a recording into text went wrong (bad audio, service error, no text for real speech).
+    Callers must tell Sanjar it failed, never blame his recording."""
+
+
+SILENT_RMS = 50          # s16le RMS below this is silence / background hiss, not speech
+DRAFT_SETTLE = 3.0       # seconds the text must stay unchanged after everything was sent: the model is done
+
+
 async def transcribe_audio(data: bytes) -> str:
     """A whole recording (e.g. a Telegram voice message, any format ffmpeg reads) -> text.
 
-    Uses the same live transcription model as calls (no daily limit on the free plan):
-    streams the audio a bit faster than real time and collects every finished sentence.
+    Uses the same live transcription model as calls (no daily limit on the free plan): streams the
+    audio a bit faster than real time and collects what it hears. The model sends a growing draft of
+    the sentence it is hearing (interim) and, only once it decides the sentence is over, the final
+    text; for the last sentence of a recording that final often never comes, and the model can run
+    seconds behind the audio we send. So the draft counts too, and we wait until the text stops
+    changing, not for a final.
+
+    Returns "" only for a silent recording. Raises TranscriptionFailed for everything else that
+    leaves no text (undecodable audio, a service error, speech the model returned nothing for).
     """
     ffmpeg = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-loglevel", "quiet", "-i", "pipe:0", "-f", "s16le", "-ar", "16000", "-ac", "1", "pipe:1",
-        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
-    pcm, _ = await ffmpeg.communicate(data)
+        "ffmpeg", "-loglevel", "error", "-i", "pipe:0", "-f", "s16le", "-ar", "16000", "-ac", "1", "pipe:1",
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    pcm, err = await ffmpeg.communicate(data)
     if not pcm:
+        raise TranscriptionFailed(f"couldn't decode the audio ({len(data)} bytes): "
+                                  f"{err.decode(errors='replace').strip()[-200:] or 'no output'}")
+    seconds = len(pcm) / 32000
+    rms = float(np.sqrt(np.mean(np.frombuffer(pcm, dtype=np.int16).astype(np.float64) ** 2)))
+    if rms < SILENT_RMS:
+        log.info("voice message of %.1f s is silent (rms %.0f)", seconds, rms)
         return ""
     pcm += bytes(16000 * 2 * 2)  # 2 s of silence so the last sentence gets finished
     config = types.LiveConnectConfig(input_audio_transcription=types.AudioTranscriptionConfig(language_codes=TRANSCRIBE_LANGUAGES, custom_vocabulary=TRANSCRIBE_VOCAB))
     sentences: list[str] = []
-    async with gemini.aio.live.connect(model=TRANSCRIBE_MODEL, config=config) as session:
-        async def send():
-            chunk = 6400  # 200 ms
-            for i in range(0, len(pcm), chunk):
-                await session.send_realtime_input(
-                    audio=types.Blob(data=pcm[i:i + chunk], mime_type="audio/pcm;rate=16000"))
-                await asyncio.sleep(0.05)  # 4x real time
+    draft = ""            # the model's current draft of the sentence it is still hearing
+    try:
+        async with gemini.aio.live.connect(model=TRANSCRIBE_MODEL, config=config) as session:
+            async def send():
+                chunk = 6400  # 200 ms
+                for i in range(0, len(pcm), chunk):
+                    await session.send_realtime_input(
+                        audio=types.Blob(data=pcm[i:i + chunk], mime_type="audio/pcm;rate=16000"))
+                    await asyncio.sleep(0.05)  # 4x real time
+                return time.monotonic()
 
-        async def receive(texts: asyncio.Queue):
-            while True:  # receive() ends after each turn; long messages have several
-                async for msg in session.receive():
-                    sc = msg.server_content
-                    if sc and sc.input_transcription and sc.input_transcription.text.strip():
-                        await texts.put(sc.input_transcription.text.strip())
+            async def receive(texts: asyncio.Queue):
+                while True:  # receive() ends after each turn; long messages have several
+                    async for msg in session.receive():
+                        sc = msg.server_content
+                        if not sc:
+                            continue
+                        if sc.interim_input_transcription and sc.interim_input_transcription.text.strip():
+                            await texts.put(("draft", sc.interim_input_transcription.text.strip()))
+                        if sc.input_transcription and sc.input_transcription.text.strip():
+                            await texts.put(("final", sc.input_transcription.text.strip()))
 
-        texts: asyncio.Queue[str] = asyncio.Queue()
-        sender, receiver = asyncio.create_task(send()), asyncio.create_task(receive(texts))
-        deadline = time.monotonic() + len(pcm) / 32000 + 10   # never wait longer than this
-        try:
-            while time.monotonic() < deadline:
-                try:
-                    sentences.append(await asyncio.wait_for(texts.get(), 1.5))
-                except TimeoutError:
-                    if sender.done():   # everything sent and nothing new for 1.5 s: finished
+            texts: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+            sender, receiver = asyncio.create_task(send()), asyncio.create_task(receive(texts))
+            # the model may run up to real time behind what we send: never wait longer than that and more
+            deadline = time.monotonic() + 2 * len(pcm) / 32000 + 15
+            changed = time.monotonic()      # when the text last changed (the draft repeats itself)
+            try:
+                while time.monotonic() < deadline:
+                    if receiver.done():     # the session broke: its error is the reason
+                        receiver.result()
                         break
-        finally:
-            sender.cancel()
-            receiver.cancel()
+                    try:
+                        kind, text = await asyncio.wait_for(texts.get(), 0.5)
+                    except TimeoutError:
+                        kind = text = ""
+                    if kind == "final":
+                        sentences.append(text)
+                        draft, changed = "", time.monotonic()
+                    elif kind == "draft" and text != draft and (not sentences or text != sentences[-1]):
+                        draft, changed = text, time.monotonic()
+                    # everything sent and the text stopped changing: the model has caught up
+                    if sender.done() and time.monotonic() - max(changed, sender.result()) >= DRAFT_SETTLE:
+                        break
+            finally:
+                sender.cancel()
+                receiver.cancel()
+    except TranscriptionFailed:
+        raise
+    except Exception as e:
+        raise TranscriptionFailed(f"the transcription service failed: {type(e).__name__}: {e}"[:300]) from e
+    if draft:
+        sentences.append(draft)
+    if not sentences:
+        raise TranscriptionFailed(f"the transcription service returned no text for {seconds:.1f} s of audio")
     # the transcriber sometimes glues sentences together ("board.Second")
     return re.sub(r"([.!?])(?=[^\s\d.!?])", r"\1 ", " ".join(sentences))
 
