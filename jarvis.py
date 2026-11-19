@@ -636,7 +636,7 @@ thing he has to do). NO_REPLY is not allowed here."""
 
 
 async def relay(report: str, photos: list[Path] = (), label: str = "", must: bool = False, app_chat: str = "",
-                project_chat: str = ""):
+                project_chat: str = "", prompt: str = ""):
     """A worker/runner message goes to Jarvis's brain, never straight to Sanjar; he gets 1-2 plain lines
     only when it matters to him (and the screenshots with them). must=True: something he's waiting on
     failed or needs him: he is told, enforced here in code even if the brain says NO_REPLY (ticket 35ec396e).
@@ -647,7 +647,7 @@ async def relay(report: str, photos: list[Path] = (), label: str = "", must: boo
         app_chat = ""                          # that chat is gone: Telegram as before
     fallback = report.splitlines()[0][:200] + "\n" + "\n".join(report.splitlines()[1:3])[:300]
     try:
-        reply = (await chat.reply(REPORT_PROMPT.format(report=report[:4000]) + (MUST_TELL if must else ""))).strip()
+        reply = (await chat.reply(prompt or (REPORT_PROMPT.format(report=report[:4000]) + (MUST_TELL if must else "")))).strip()
     except Exception:
         log.exception("relaying a worker report failed")
         reply = fallback if must else ""
@@ -1043,15 +1043,22 @@ async def on_message(event):
 
 @tg.on(events.NewMessage(incoming=True, func=lambda e: e.is_private and e.sender_id != OWNER_ID))
 async def on_member_private(event):
-    """Someone else writing to Jarvis's account. Only a Flatmates member's reply to Jarvis's private question about
-    the flats gets handled (ticket 521b9e14); nobody else gets an answer, but every message is logged and its file kept,
-    so Sanjar can ask for "the file X sent" (core/received.py, ticket 8d867330)."""
+    """Someone other than Sanjar wrote to Jarvis's account. Nobody but Sanjar gets an answer, but every message is
+    logged and its file kept (core/received.py, ticket 8d867330). A Flatmates member's reply to Jarvis's question about
+    the flats goes to the group (ticket 521b9e14); any other message from a person goes to the chat brain, which must
+    tell Sanjar who wrote and what (ticket 3e945138: until then nobody knew Zilola had sent her timer code)."""
+    note = ""
     try:
-        await received.on_arrival(event)
+        note = await received.on_arrival(event)
     except Exception:
         log.exception("couldn't record a private message from %s", event.sender_id)
-    with contextlib.suppress(Exception):
-        await flatmates.on_private(event)
+    try:
+        if await flatmates.on_private(event):
+            return
+    except Exception:
+        log.exception("Flatmates check of a private message failed")
+    if note:
+        await relay(note, label=note.splitlines()[0][:60], must=True, prompt=received.TELL_PROMPT.format(note=note))
 
 
 @tg.on(events.NewMessage(incoming=True, func=lambda e: e.is_group and bool((e.raw_text or "").strip())))

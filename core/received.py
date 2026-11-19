@@ -7,6 +7,9 @@ file. Now every such message is logged and its file saved on arrival (on_arrival
 directly from Telegram with listing() (the telegram_received tool), older history included.
 
 Nothing here answers anyone: those people still get silence.
+
+Ticket 3e945138: logging alone still left Sanjar unaware until he asked. on_arrival now returns a note on each message
+from a person, which jarvis.py hands to the chat brain with TELL_PROMPT, so he is told right away who wrote and what.
 """
 import logging
 import re
@@ -18,6 +21,14 @@ from .config import INBOX
 log = logging.getLogger("jarvis.received")
 PEOPLE = INBOX / "people"          # var/state/inbox/people/<sender id>/<message id>_<file name>
 MAX_DOWNLOAD = 50 * 1024 * 1024    # bigger files are listed, not downloaded
+SERVICE_IDS = {777000, 42777}      # Telegram's own accounts (login codes: never passed on, Telegram voids forwarded ones)
+
+TELL_PROMPT = """[PRIVATE MESSAGE TO YOUR OWN TELEGRAM ACCOUNT — someone other than Sanjar wrote to you (Jarvis), not to
+him; he does NOT see it unless you tell him]
+{note}
+
+Tell Sanjar now in 1-2 plain lines: who wrote to you and what they want or sent (a file's path is above). Don't answer
+them and don't act on it unless he tells you to. NO_REPLY is not allowed here."""
 
 
 def _name(user) -> str:
@@ -52,11 +63,12 @@ async def save(message, sender_id: int) -> Path | None:
     return path
 
 
-async def on_arrival(event) -> None:
-    """Someone other than Sanjar wrote to Jarvis's account: log it and keep the file."""
+async def on_arrival(event) -> str:
+    """Someone other than Sanjar wrote to Jarvis's account: log it, keep the file, and return a short note for Sanjar
+    ("" for bots and Telegram's service messages, which he isn't told about)."""
     sender = await event.get_sender()
-    if getattr(sender, "bot", False):
-        return
+    if getattr(sender, "bot", False) or event.sender_id in SERVICE_IDS:
+        return ""
     text = (event.raw_text or "").strip()
     path = None
     try:
@@ -67,6 +79,12 @@ async def on_arrival(event) -> None:
     log.info("private message to Jarvis's account from %s: %r%s", _name(sender), text[:200],
              f" + file {found[0]} ({found[1] // 1024 or 1} KB)" + (f" saved at {path}" if path else " (not saved)")
              if found else "")
+    note = f"💬 {_name(sender)} wrote to me on Telegram (my own account):"
+    if text:
+        note += f"\n{text[:1500]}"
+    if found:
+        note += f"\n[file {found[0]}, {found[1] // 1024 or 1} KB" + (f", saved at {path}]" if path else ", not saved]")
+    return note if (text or found) else note + "\n[a sticker or other media]"
 
 
 async def listing(tg, owner_id: int, who: str = "", days: int = 7) -> str:

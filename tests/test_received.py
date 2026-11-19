@@ -100,3 +100,27 @@ def test_the_brain_tool_reads_through_the_hook(monkeypatch):
     server = tools.make_server("Telegram")
     out = str(asyncio.run(server.call_tool("telegram_received", {"who": "Zilola", "days": 3})))
     assert "Private chats" in out and seen == [("Zilola", 3)]
+
+
+def _arrive(uid, first, text="", file=None, bot=False):
+    async def sender():
+        return user(uid, first, bot=bot)
+    return asyncio.run(received.on_arrival(NS(message=Msg(7, text, file=file), raw_text=text, sender_id=uid,
+                                              get_sender=sender)))
+
+
+def test_sanjar_is_told_who_wrote_and_what(monkeypatch, tmp_path):
+    """Ticket 3e945138: a message from a person comes back as a note the brain must pass on to Sanjar."""
+    monkeypatch.setattr(received, "PEOPLE", tmp_path)
+    note = _arrive(42, "Zilola Sh", "timer kodim", file=("index.html", 10_752))
+    assert note.startswith("💬 Zilola Sh wrote to me") and "timer kodim" in note
+    assert f"saved at {tmp_path / '42' / '7_index.html'}" in note
+    prompt = received.TELL_PROMPT.format(note=note)
+    assert note in prompt and "NO_REPLY is not allowed" in prompt
+    assert "Zilola" in _arrive(43, "Zilola", "")                 # even a bare sticker is reported
+
+
+def test_bots_and_login_codes_are_not_passed_on(monkeypatch, tmp_path):
+    monkeypatch.setattr(received, "PEOPLE", tmp_path)
+    assert _arrive(5, "Some bot", "ad", bot=True) == ""
+    assert _arrive(777000, "Telegram", "Login code: 12345") == ""
