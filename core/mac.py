@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from .config import HERE, LOGS, MAC_NEVER_DO, SHOTS, STATE
+from .config import HERE, INBOX, LOGS, MAC_NEVER_DO, SHOTS, STATE
 from . import hookset, usagewatch
 from .runner import NEEDS_ME, progress_text
 
@@ -51,6 +51,11 @@ How to get things done, in this order of preference:
 - Never copy his Chrome profile's cookies, Login Data or Local State into another browser or folder: Google then
   signs him out of all his accounts (ticket c09280c2). Work in his real Chrome instead.
 - Save a screenshot of the end result as a PNG in {shots}/ when it's something visible.
+- Telegram on the Mac holds several accounts (Sanjar's main one, his second one, and Jarvis's own): switch with
+  the account button at the bottom. To find a chat, message or file someone sent, check EVERY account and EVERY
+  contact the search shows for that name (two contacts can share a name), and the chat's shared media (Files tab),
+  before saying it isn't there; then say exactly which accounts and chats you checked. For Jarvis's own account,
+  Jarvis already has it: files people sent there are saved under {INBOX}/people/<their id>/ (ticket 8d867330).
 - To send Sanjar a file, run: {PY} {HERE / "scripts/send_file.py"} <file> "<caption>"
 
 {MAC_NEVER_DO}

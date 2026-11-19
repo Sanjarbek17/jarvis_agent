@@ -45,7 +45,7 @@ from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.types import InputPeerChannel, MessageActionGroupCall
 
 from core.paths import VAR
-from core import answering, appserver, board, usagewatch, contacts, coremem, expenses, flatmates, google, guard, livestats, macremote, memory, origin, outbox, selfcheck, tgfmt, tools
+from core import answering, appserver, board, received, usagewatch, contacts, coremem, expenses, flatmates, google, guard, livestats, macremote, memory, origin, outbox, selfcheck, tgfmt, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, WATCHED_GROUP_IDS, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
@@ -1043,8 +1043,13 @@ async def on_message(event):
 
 @tg.on(events.NewMessage(incoming=True, func=lambda e: e.is_private and e.sender_id != OWNER_ID))
 async def on_member_private(event):
-    """Only a Flatmates member's reply to Jarvis's private question about the flats (ticket 521b9e14); every other
-    private message from someone else is ignored, as before."""
+    """Someone else writing to Jarvis's account. Only a Flatmates member's reply to Jarvis's private question about
+    the flats gets handled (ticket 521b9e14); nobody else gets an answer, but every message is logged and its file kept,
+    so Sanjar can ask for "the file X sent" (core/received.py, ticket 8d867330)."""
+    try:
+        await received.on_arrival(event)
+    except Exception:
+        log.exception("couldn't record a private message from %s", event.sender_id)
     with contextlib.suppress(Exception):
         await flatmates.on_private(event)
 
@@ -1206,6 +1211,7 @@ async def main():
     tools.hooks.runner = runner
     tools.hooks.mac_late = mac_late
     tools.hooks.expenses = lambda: expenses.text(tg)
+    tools.hooks.received = lambda who, days: received.listing(tg, OWNER_ID, who, days)
     tools.hooks.post_expenses = lambda: expenses.post(tg)
     tools.hooks.guard = guard.Guard(guard_alert, guard_photos, tools.take_screenshot,
                                     # the Mac worker's clicks, or Sanjar driving it from the app (ticket 70e8ad2f)
