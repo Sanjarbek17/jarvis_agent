@@ -45,7 +45,7 @@ from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.types import InputPeerChannel, MessageActionGroupCall
 
 from core.paths import VAR
-from core import answering, appserver, board, usagewatch, contacts, coremem, dms, expenses, flatmates, google, guard, livestats, macremote, memory, origin, outbox, selfcheck, tgfmt, tools
+from core import answering, appserver, board, received, usagewatch, contacts, coremem, expenses, flatmates, google, guard, livestats, macremote, memory, origin, outbox, selfcheck, tgfmt, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, WATCHED_GROUP_IDS, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
@@ -1043,21 +1043,22 @@ async def on_message(event):
 
 @tg.on(events.NewMessage(incoming=True, func=lambda e: e.is_private and e.sender_id != OWNER_ID))
 async def on_member_private(event):
-    """Someone other than Sanjar wrote to Jarvis's own account. A Flatmates member's reply to Jarvis's question about
-    the flats goes to the group (ticket 521b9e14); any other message from a person goes to the chat brain, which
-    must tell Sanjar (ticket 3e945138: these were dropped, so Jarvis never knew Zilola had sent her timer code)."""
+    """Someone other than Sanjar wrote to Jarvis's account. Nobody but Sanjar gets an answer, but every message is
+    logged and its file kept (core/received.py, ticket 8d867330). A Flatmates member's reply to Jarvis's question about
+    the flats goes to the group (ticket 521b9e14); any other message from a person goes to the chat brain, which must
+    tell Sanjar who wrote and what (ticket 3e945138: until then nobody knew Zilola had sent her timer code)."""
+    note = ""
+    try:
+        note = await received.on_arrival(event)
+    except Exception:
+        log.exception("couldn't record a private message from %s", event.sender_id)
     try:
         if await flatmates.on_private(event):
             return
     except Exception:
         log.exception("Flatmates check of a private message failed")
-    sender = await event.get_sender()
-    if not dms.from_person(sender):
-        return
-    text = await dms.body(event.message, INBOX, transcribe_audio)
-    log.info("private message to Jarvis from %s: %r", dms.who(sender), text[:120])
-    first = f"💬 {dms.who(sender)} wrote to me (Jarvis's account):\n{text[:300]}"
-    await relay(first, label=dms.who(sender), must=True, prompt=dms.prompt(sender, text))
+    if note:
+        await relay(note, label=note.splitlines()[0][:60], must=True, prompt=received.TELL_PROMPT.format(note=note))
 
 
 @tg.on(events.NewMessage(incoming=True, func=lambda e: e.is_group and bool((e.raw_text or "").strip())))
@@ -1210,7 +1211,6 @@ async def main():
     tools.hooks.send_photo = send_photo
     tools.hooks.send_photos = send_photos
     tools.hooks.hang_up = hang_up
-    tools.hooks.private_chats = lambda person="", limit=30: dms.private_chats(tg, OWNER_ID, person, limit, INBOX)
     tools.hooks.call_contact = call_contact
     tools.hooks.worker_progress = runner.progress
     runner.message = lambda text: relay(tgfmt.plain(text))   # e.g. the stuck list: Jarvis decides, not me
@@ -1218,6 +1218,7 @@ async def main():
     tools.hooks.runner = runner
     tools.hooks.mac_late = mac_late
     tools.hooks.expenses = lambda: expenses.text(tg)
+    tools.hooks.received = lambda who, days: received.listing(tg, OWNER_ID, who, days)
     tools.hooks.post_expenses = lambda: expenses.post(tg)
     tools.hooks.guard = guard.Guard(guard_alert, guard_photos, tools.take_screenshot,
                                     # the Mac worker's clicks, or Sanjar driving it from the app (ticket 70e8ad2f)

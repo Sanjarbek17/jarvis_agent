@@ -38,8 +38,8 @@ class Hooks:
     guard: object = None                       # core/guard.py's Guard
     expenses: Callable[[], Awaitable[str]] = None   # the Flatmates expense topic, read with Jarvis's own Telegram
     post_expenses: Callable[[], Awaitable[str]] = None   # ...and posted there
+    received: Callable[[str, int], Awaitable[str]] = None   # other people's chats with Jarvis's account
     runner: "Runner"                                                    # core.runner.Runner
-    private_chats: Callable[..., Awaitable[str]] = None   # Jarvis's own DMs with other people (core/dms.py)
 
 
 hooks = Hooks()
@@ -149,16 +149,6 @@ def make_server(source: str) -> MCPServer:
         k = coremem.put(fact, kind, key)
         await memory.add(fact, "fact", "brain")
         return f"Remembered in core memory as {k} ({kind})."
-
-    @server.tool()
-    async def jarvis_private_chats(person: str = "", limit: int = 30) -> str:
-        """Read YOUR OWN Telegram account's private chats (@Jarvis_Sanjar): what other people wrote to you,
-        Jarvis, not to Sanjar. Check here first when he asks whether someone wrote to you or sent you something,
-        before looking in his own account. person: part of their name or @username (empty: list who wrote
-        lately). Files they sent are saved on the Mac and their paths given."""
-        if not hooks.private_chats:
-            return "Jarvis's Telegram isn't connected right now."
-        return await hooks.private_chats(person, limit)
 
     @server.tool()
     async def forget_core(key: str) -> str:
@@ -416,10 +406,21 @@ def make_server(source: str) -> MCPServer:
         return await run_quick(script, language)
 
     @server.tool()
+    async def telegram_received(who: str = "", days: int = 7) -> str:
+        """What other people sent to YOUR OWN Telegram account (Jarvis's), read straight from Telegram: their
+        private chats with you, messages with times, and every file they sent, downloaded to the Mac with its path.
+        People do write to you directly (Zilola sent her timer index.html here, ticket 8d867330). When Sanjar asks
+        for a message or file someone sent "on Telegram", check here FIRST, before asking the Mac worker.
+        who: part of their name or @username ("" = everyone). days: how far back."""
+        return await hooks.received(who, days)
+
+    @server.tool()
     async def mac_task(task: str, sanjar_words: str, ctx: Context = None) -> str:
         """Have the Mac worker do something on the Mac itself: use any app, change settings, find or
         move files, fill something in, click and type on the screen. It remembers earlier Mac
         tasks ("now close it"). task: what to do, clearly. sanjar_words: what he actually said.
+        Something sent on Telegram: check telegram_received first (your own account, read directly); the Mac
+        worker sees the Telegram app only by screen, with Sanjar's accounts and yours in it.
         Waits a little for the result; a longer task finishes in the background and its
         result comes to Sanjar where he asked (the app chat or Telegram), and to you as an [UPDATE]."""
         busy = hooks.mac.current

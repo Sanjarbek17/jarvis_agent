@@ -50,9 +50,9 @@ Scripts that message Sanjar (`send_file.py`, `qr_login.py`) go through Jarvis's 
 while it runs: a second copy of its Telegram session would make Telegram stop delivering messages to Jarvis.
 Send a file (document, photo, …), with or without a caption, and Jarvis saves it to `var/state/inbox/`
 and reads it to answer; a file sent as a reply works too.
-Other people can write to Jarvis's own account too (ticket 3e945138, `core/dms.py`): each message from a person
-(not bots or Telegram's login codes) goes to the chat brain, which must tell Sanjar who wrote and what; files are
-saved to `var/state/inbox/`. The brain reads those chats any time with `jarvis_private_chats`. It never answers them on its own.
+Other people can write to Jarvis's own account too (`core/received.py`): every message is logged and its file
+saved (ticket 8d867330), and each one from a person (not bots or Telegram's login codes) goes to the chat brain,
+which must tell Sanjar who wrote and what (ticket 3e945138). It never answers them on its own.
 
 Mac control: "turn the volume down", "open Spotify and play my liked songs", "find the PDF I
 downloaded yesterday and send it to me". Quick one-step things Jarvis runs itself (`run_on_mac`);
