@@ -39,6 +39,7 @@ class Hooks:
     expenses: Callable[[], Awaitable[str]] = None   # the Flatmates expense topic, read with Jarvis's own Telegram
     post_expenses: Callable[[], Awaitable[str]] = None   # ...and posted there
     runner: "Runner"                                                    # core.runner.Runner
+    private_chats: Callable[..., Awaitable[str]] = None   # Jarvis's own DMs with other people (core/dms.py)
 
 
 hooks = Hooks()
@@ -148,6 +149,16 @@ def make_server(source: str) -> MCPServer:
         k = coremem.put(fact, kind, key)
         await memory.add(fact, "fact", "brain")
         return f"Remembered in core memory as {k} ({kind})."
+
+    @server.tool()
+    async def jarvis_private_chats(person: str = "", limit: int = 30) -> str:
+        """Read YOUR OWN Telegram account's private chats (@Jarvis_Sanjar): what other people wrote to you,
+        Jarvis, not to Sanjar. Check here first when he asks whether someone wrote to you or sent you something,
+        before looking in his own account. person: part of their name or @username (empty: list who wrote
+        lately). Files they sent are saved on the Mac and their paths given."""
+        if not hooks.private_chats:
+            return "Jarvis's Telegram isn't connected right now."
+        return await hooks.private_chats(person, limit)
 
     @server.tool()
     async def forget_core(key: str) -> str:

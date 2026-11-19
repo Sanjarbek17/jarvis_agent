@@ -45,7 +45,7 @@ from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.types import InputPeerChannel, MessageActionGroupCall
 
 from core.paths import VAR
-from core import answering, appserver, board, usagewatch, contacts, coremem, expenses, flatmates, google, guard, livestats, macremote, memory, origin, outbox, selfcheck, tgfmt, tools
+from core import answering, appserver, board, usagewatch, contacts, coremem, dms, expenses, flatmates, google, guard, livestats, macremote, memory, origin, outbox, selfcheck, tgfmt, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, WATCHED_GROUP_IDS, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
@@ -636,7 +636,7 @@ thing he has to do). NO_REPLY is not allowed here."""
 
 
 async def relay(report: str, photos: list[Path] = (), label: str = "", must: bool = False, app_chat: str = "",
-                project_chat: str = ""):
+                project_chat: str = "", prompt: str = ""):
     """A worker/runner message goes to Jarvis's brain, never straight to Sanjar; he gets 1-2 plain lines
     only when it matters to him (and the screenshots with them). must=True: something he's waiting on
     failed or needs him: he is told, enforced here in code even if the brain says NO_REPLY (ticket 35ec396e).
@@ -647,7 +647,7 @@ async def relay(report: str, photos: list[Path] = (), label: str = "", must: boo
         app_chat = ""                          # that chat is gone: Telegram as before
     fallback = report.splitlines()[0][:200] + "\n" + "\n".join(report.splitlines()[1:3])[:300]
     try:
-        reply = (await chat.reply(REPORT_PROMPT.format(report=report[:4000]) + (MUST_TELL if must else ""))).strip()
+        reply = (await chat.reply(prompt or (REPORT_PROMPT.format(report=report[:4000]) + (MUST_TELL if must else "")))).strip()
     except Exception:
         log.exception("relaying a worker report failed")
         reply = fallback if must else ""
@@ -1043,10 +1043,21 @@ async def on_message(event):
 
 @tg.on(events.NewMessage(incoming=True, func=lambda e: e.is_private and e.sender_id != OWNER_ID))
 async def on_member_private(event):
-    """Only a Flatmates member's reply to Jarvis's private question about the flats (ticket 521b9e14); every other
-    private message from someone else is ignored, as before."""
-    with contextlib.suppress(Exception):
-        await flatmates.on_private(event)
+    """Someone other than Sanjar wrote to Jarvis's own account. A Flatmates member's reply to Jarvis's question about
+    the flats goes to the group (ticket 521b9e14); any other message from a person goes to the chat brain, which
+    must tell Sanjar (ticket 3e945138: these were dropped, so Jarvis never knew Zilola had sent her timer code)."""
+    try:
+        if await flatmates.on_private(event):
+            return
+    except Exception:
+        log.exception("Flatmates check of a private message failed")
+    sender = await event.get_sender()
+    if not dms.from_person(sender):
+        return
+    text = await dms.body(event.message, INBOX, transcribe_audio)
+    log.info("private message to Jarvis from %s: %r", dms.who(sender), text[:120])
+    first = f"💬 {dms.who(sender)} wrote to me (Jarvis's account):\n{text[:300]}"
+    await relay(first, label=dms.who(sender), must=True, prompt=dms.prompt(sender, text))
 
 
 @tg.on(events.NewMessage(incoming=True, func=lambda e: e.is_group and bool((e.raw_text or "").strip())))
@@ -1199,6 +1210,7 @@ async def main():
     tools.hooks.send_photo = send_photo
     tools.hooks.send_photos = send_photos
     tools.hooks.hang_up = hang_up
+    tools.hooks.private_chats = lambda person="", limit=30: dms.private_chats(tg, OWNER_ID, person, limit, INBOX)
     tools.hooks.call_contact = call_contact
     tools.hooks.worker_progress = runner.progress
     runner.message = lambda text: relay(tgfmt.plain(text))   # e.g. the stuck list: Jarvis decides, not me
