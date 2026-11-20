@@ -1,6 +1,6 @@
 {
   "Haydovchi darslari": {
-    "about": "Uzbek driving-rules animated reels for Instagram @haydovchi.darslari (scene engine + TTS + render to vertical MP4); first reels built in code_explainer/animations/haydovchi-darslari (ticket 407d4a51), moving here after",
+    "about": "Uzbek driving-rules animated reels for Instagram @haydovchi.darslari (scene engine + TTS + render to vertical MP4); first reels built in code_explainer/animations/haydovchi-darslari (ticket 407d4a51), now in this project's studio/. Autopilot makes reels ahead, posts one daily and drafts Instagram comment replies; when Sanjar answers a reply draft (ok K1 / skip K1 / K1: his own text) or says to cancel a queued reel, read side_project/projects/haydovchi_darslari/autopilot/state/approvals.md and run the command it gives with run_on_mac",
     "folders": [
       "side_project/projects/haydovchi_darslari",
       "side_project/projects/code_explainer/animations/haydovchi-darslari"
@@ -197,6 +197,27 @@
     "about": "Call Relay: Android app on Sanjar's two phones: when any app on phone A (e.g. Yandex Pro) opens the dialer with a number, the call is placed from phone B. Same APK on both, paired by a code; numbers go encrypted through ntfy.sh.",
     "folders": [
       "side_project/projects/call_relay"
+    ],
+    "local": true
+  },
+  "Bekobod Shahar": {
+    "about": "Bekobod Shahar: a city app for Bekobod like the 'Bekobod Plus' app, built from scratch: places (directory with map, ratings, reviews) and listings (buy/sell with chat). Flutter app + FastAPI/SQLite backend on the Mac (LaunchAgent com.sanjar.bekobod-api, port 8810). Taxi part comes later.",
+    "folders": [
+      "side_project/projects/bekobod_plus"
+    ],
+    "local": true
+  },
+  "Yo'lda Pro": {
+    "about": "Yo'lda Pro: taxi driver app built like the Online Pro driver app (uz.taxi1313.driver): orders with offers, efir, taxometer, money/archive, chats, profile with priority; dispatcher web panel. Flutter app + FastAPI/SQLite backend on the Mac (LaunchAgent com.sanjar.yolda-api, port 8820), public at https://yolda.sanjarbek17.uz (tunnel yolda-api). Meter and pricing reused from Sanjar's taxi_app.",
+    "folders": [
+      "side_project/projects/yolda_pro"
+    ],
+    "local": true
+  },
+  "Sado EQ": {
+    "about": "Sado EQ: Android app that gives cheap Android car screens Carrozzeria-style sound (10-band EQ with presets, bass boost, loudness, sound retriever, balance) for every app, via global audio session 0 plus per-app sessions. Kotlin, no backend. From Instagram reel Df3Hq3MCAWE (Lacetti monitor 'flashed' to sound like Carrozzeria).",
+    "folders": [
+      "side_project/projects/sado_eq"
     ],
     "local": true
   }
