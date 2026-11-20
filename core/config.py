@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import shutil
 import socket
 from pathlib import Path
 
@@ -103,8 +104,14 @@ SOFT_SKILLS_REMINDER_AT = (16, 0) # daily Telegram nudge to continue soft skills
 QUIET_HOURS = (23, 8)             # no calls from 23:00 to 08:00, Telegram only
 CALL_COOLDOWN = 10 * 60           # at most one automatic call per 10 minutes
 
-# tools server for the Claude brain
+# tools server for the Claude/Antigravity brain
 TOOLS_PORT = 8775
+
+# engine selection: "antigravity" (agy / Gemini) or "claude"
+JARVIS_ENGINE = os.environ.get("JARVIS_ENGINE", "antigravity").lower()
+AGY_CLI = os.environ.get("AGY_CLI", shutil.which("agy") or str(Path.home() / ".local/bin/agy"))
+AGY_BRAIN_MODEL = os.environ.get("AGY_BRAIN_MODEL", "gemini-3.8-flash-high")
+AGY_WORKER_MODEL = os.environ.get("AGY_WORKER_MODEL", "gemini-3.8-flash-high")
 
 # runner
 POLL_SECONDS = 10

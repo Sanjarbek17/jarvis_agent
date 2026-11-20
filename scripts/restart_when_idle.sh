@@ -20,14 +20,14 @@ fi
 JPID=$(launchctl print "gui/$(id -u)/com.sanjar.jarvis" | awk '$1 == "pid" && $2 == "=" { print $3; exit }')
 [ -n "$JPID" ] || { echo "$(date) Jarvis isn't running under launchd, nothing to do" >> "$LOG"; exit 0; }
 end=$(( $(date +%s) + 3*3600 ))
-busy() {   # a worker (claude -p Ticket ... / Mac task ...), a call brain ("live phone call") or the brain of a
+busy() {   # a worker (claude/agy -p Ticket ... / Mac task ...), a call brain ("live phone call") or the brain of a
            # group voice chat Jarvis sits in ("You joined the group voice chat")
-  ps -axww -o ppid=,args= | awk -v p="$JPID" -v c="$CALLS" '$1 == p && (($2 == "claude" && $3 == "-p" && ($4 == "Ticket" || ($4 == "Mac" && $5 == "task"))) || (c == "yes" && (/live phone call/ || /You joined the group voice chat/))) { f = 1 } END { exit !f }' && return 0
+  ps -axww -o ppid=,args= | awk -v p="$JPID" -v c="$CALLS" '$1 == p && ((($2 ~ /(claude|agy)$/) && $3 == "-p" && ($4 == "Ticket" || ($4 == "Mac" && $5 == "task"))) || (c == "yes" && (/live phone call/ || /You joined the group voice chat/))) { f = 1 } END { exit !f }' && return 0
   # a chat answer in progress (app or Telegram): restarting killed his answers at 02:08 and 03:22 (ticket 11ff3b8a)
   find "$(dirname "$0")/../var/state/answering" -type f -mmin -20 2>/dev/null | grep -q . && return 0
   # workers adopted after an earlier restart aren't Jarvis's children any more (ticket 2475b845)
   for w in $(grep -o '"pid": [0-9]*' "$(dirname "$0")/../var/state/workers.json" 2>/dev/null | grep -o '[0-9]*$'); do
-    ps -p "$w" -o args= 2>/dev/null | grep -q '^claude -p Ticket' && return 0
+    ps -p "$w" -o args= 2>/dev/null | grep -E -q '^(claude|agy) -p Ticket' && return 0
   done
   return 1
 }

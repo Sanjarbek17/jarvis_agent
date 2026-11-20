@@ -13,7 +13,19 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from . import coremem, memory, usagewatch
-from .config import CALLS, DEV, HERE, PROJECTS, TOOLS_PORT, projects_text, projects_version, rules_text
+from .config import (
+    AGY_BRAIN_MODEL,
+    AGY_CLI,
+    CALLS,
+    DEV,
+    HERE,
+    JARVIS_ENGINE,
+    PROJECTS,
+    TOOLS_PORT,
+    projects_text,
+    projects_version,
+    rules_text,
+)
 
 log = logging.getLogger("jarvis.brain")
 
@@ -310,6 +322,23 @@ class Brain:
     async def start(self):
         self.version = projects_version()
         self.core_version = coremem.version()
+        if JARVIS_ENGINE == "antigravity":
+            resume = ["--conversation", self.session_id] if self.session_id else []
+            cmd = [
+                AGY_CLI,
+                "--input-format", "stream-json",
+                "--output-format", "stream-json",
+                "--dangerously-skip-permissions",
+                "--model", AGY_BRAIN_MODEL,
+                *resume,
+            ]
+            self.proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=HERE, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL, limit=20_000_000)
+            log.info("%s brain started on Antigravity (%s)%s", self.mode, AGY_BRAIN_MODEL, " (resumed)" if resume else "")
+            return
+
         resume = ["--resume", self.session_id] if self.session_id else []
         sandboxed = self.mode in ("guest", "group")
         mcp = {"mcpServers": {"jarvis": {"type": "http", "url": f"http://127.0.0.1:{PORTS[self.mode]}/mcp"}}}
@@ -364,11 +393,38 @@ class Brain:
                 self.proc = None
             if self.proc is None or self.proc.returncode is not None:
                 await self.start()
-            msg = {"type": "user", "message": {"role": "user", "content": text}}
+            if JARVIS_ENGINE == "antigravity":
+                payload_text = text if self.session_id else f"[SYSTEM INSTRUCTIONS]\n{self._system()}\n\n[USER MESSAGE]\n{text}"
+                msg = {"event": "user", "message": {"role": "user", "content": payload_text}}
+            else:
+                msg = {"type": "user", "message": {"role": "user", "content": text}}
             self.proc.stdin.write((json.dumps(msg) + "\n").encode())
             await self.proc.stdin.drain()
             while line := await self.proc.stdout.readline():
-                event = json.loads(line)
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if "event" in event:
+                    event_type = event.get("event")
+                    if event_type == "init":
+                        self.session_id = event.get("conversation_id") or self.session_id
+                    elif event_type == "step_update":
+                        step = event.get("step_update", {})
+                        self.session_id = step.get("conversation_id") or self.session_id
+                        delta = step.get("text_delta")
+                        if delta:
+                            yield delta
+                        elif step.get("step_type") == "tool_call":
+                            yield "\n"
+                    elif event_type == "result":
+                        res = event.get("result", {})
+                        self.session_id = res.get("conversation_id") or self.session_id
+                        if res.get("status") == "ERROR":
+                            log.error("brain error: %s", res.get("error") or res.get("response"))
+                        return
+                    continue
+
                 self.session_id = event.get("session_id") or self.session_id
                 kind = event.get("type")
                 if kind == "stream_event":

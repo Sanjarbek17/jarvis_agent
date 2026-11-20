@@ -24,7 +24,7 @@ from . import autoanswer, board, hookset, grants, localboard, origin, ramguard, 
 from .brain import BRAIN_MODEL   # workers run on the same model as the Jarvis brain (Opus)
 from .board import Ticket
 from .config import (rules_text, GIT_FLOW, HERE, LOGS, NEVER_DO, NEVER_DO_MAIN_OK, POLL_SECONDS,
-                     SHOTS, STATE, project_dirs)
+                     SHOTS, STATE, project_dirs, AGY_CLI, AGY_WORKER_MODEL, JARVIS_ENGINE)
 
 log = logging.getLogger("jarvis.runner")
 SESSIONS = STATE / "sessions.json"
@@ -204,11 +204,11 @@ def _pid_alive(pid: int, check_cmd: bool = True) -> bool:
         return True
     if not check_cmd:
         return True
-    try:              # a reused pid isn't our worker: it must still be a claude process
+    try:              # a reused pid isn't our worker: it must still be a claude or agy process
         cmd = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=5).stdout
     except Exception:
         return True
-    return "claude" in cmd
+    return "claude" in cmd or "agy" in cmd
 
 
 class WorkerProc:
@@ -426,17 +426,23 @@ Sanjar is away from the computer and won't approve anything, so work on your own
 
 def _step_text(block: dict) -> str:
     """A short human line for one worker tool call."""
-    name, args = block.get("name", ""), block.get("input", {})
-    if name in ("Edit", "Write", "MultiEdit"):
-        return f"editing {Path(args.get('file_path', '')).name}"
-    if name == "Read":
-        return f"reading {Path(args.get('file_path', '')).name}"
-    if name == "Bash":
-        return f"running: {(args.get('description') or args.get('command', ''))[:80]}"
-    if name in ("Grep", "Glob"):
+    name = block.get("name", "") or block.get("tool_name", "")
+    args = block.get("input", {}) or block.get("tool_args", {})
+    if name in ("Edit", "Write", "MultiEdit", "replace_file_content", "write_to_file", "edit_file", "write_file"):
+        path = args.get("file_path") or args.get("Path") or args.get("path") or ""
+        return f"editing {Path(path).name}" if path else "editing files"
+    if name in ("Read", "view_file", "read_file"):
+        path = args.get("file_path") or args.get("Path") or args.get("path") or ""
+        return f"reading {Path(path).name}" if path else "reading files"
+    if name in ("Bash", "run_command"):
+        cmd = args.get("description") or args.get("toolSummary") or args.get("CommandLine") or args.get("command") or ""
+        return f"running: {cmd[:80]}"
+    if name in ("Grep", "Glob", "grep_search", "find_by_name"):
         return "searching the code"
-    if name == "TodoWrite":
+    if name in ("TodoWrite", "schedule"):
         return "planning the steps"
+    if name == "call_mcp_tool":
+        return f"calling {args.get('ToolName', 'mcp tool')}"
     return name.removeprefix("mcp__").replace("__", " ")
 
 
@@ -886,6 +892,17 @@ class Runner:
         self.started[card.ref] = time.time()
 
         def make_cmd(prompt: str) -> list[str]:
+            if JARVIS_ENGINE == "antigravity":
+                cmd = [AGY_CLI, "-p", prompt, "--model", AGY_WORKER_MODEL,
+                       "--output-format", "stream-json",
+                       "--dangerously-skip-permissions"]
+                for extra in dirs[1:]:
+                    cmd += ["--add-dir", str(extra)]
+                session = _load_sessions().get(session_key)
+                if session:
+                    cmd += ["--conversation", session]
+                return cmd
+
             cmd = ["claude", "-p", prompt, "--model", BRAIN_MODEL, "--settings", WORKER_SETTINGS,
                    "--output-format", "stream-json",
                    "--verbose", "--permission-mode", "bypassPermissions",
@@ -941,6 +958,36 @@ class Runner:
                         event = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    if "event" in event:
+                        event_type = event.get("event")
+                        if event_type == "init":
+                            cid = event.get("conversation_id")
+                            if cid:
+                                _save_session(session_key, cid)
+                        elif event_type == "step_update":
+                            step = event.get("step_update", {})
+                            cid = step.get("conversation_id")
+                            if cid:
+                                _save_session(session_key, cid)
+                            stype = step.get("step_type")
+                            if stype == "tool_call":
+                                handle.end_by = 0.0
+                                pending.append(_step_text(step))
+                        elif event_type == "result":
+                            res = event.get("result", {})
+                            cid = res.get("conversation_id")
+                            if cid:
+                                _save_session(session_key, cid)
+                            result = res.get("response", "") or res.get("error", "")
+                            is_error = res.get("status") != "SUCCESS"
+                            handle.end_by = time.time() + BG_AFTER_RESULT if bg else 0.0
+                        if replayed:
+                            pending = []
+                        if pending and time.monotonic() - last_push > 5:
+                            await self._push_steps(card, pending)
+                            pending, last_push = [], time.monotonic()
+                        continue
+
                     if event.get("session_id"):
                         _save_session(session_key, event["session_id"])
                     kind = event.get("type")
