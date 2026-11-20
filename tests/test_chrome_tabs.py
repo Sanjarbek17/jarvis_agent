@@ -48,6 +48,7 @@ def test_workers_get_the_hook_and_their_owner_and_their_windows_are_closed(monke
     async def close(owner, older_than=-1):
         closed.append(owner)
 
+    monkeypatch.setattr(runner, "JARVIS_ENGINE", "claude")
     monkeypatch.setattr(runner.asyncio, "create_subprocess_exec", exec_)
     monkeypatch.setattr(runner.board, "update", nothing)
     monkeypatch.setattr(runner.board, "append_log", nothing)
@@ -97,6 +98,7 @@ def test_mac_tasks_run_with_the_same_hook(monkeypatch, tmp_path):
         seen["cmd"] = list(cmd)
         raise RuntimeError("stop here")
 
+    monkeypatch.setattr(mac, "JARVIS_ENGINE", "claude")
     monkeypatch.setattr(mac.asyncio, "create_subprocess_exec", exec_)
     monkeypatch.setattr(mac, "LOGS", tmp_path)
     monkeypatch.setattr(mac, "SHOTS", tmp_path)

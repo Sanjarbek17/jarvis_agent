@@ -272,7 +272,7 @@ function renderSide() {
       h("a", { class: `row ${count ? "busy" : ""} ${here === "#/workers" ? "on" : ""}`, href: "#/workers" },
         h("span", { class: "dot" }),
         h("span", { class: "grow" }, h("div", { class: "name", text: "Workers" }),
-          h("div", { class: "about", text: count ? `${count} running` : "Nobody is working" }))),
+          h("div", { class: "about", text: count ? `${count} running` : (workers?.limit_status || "Nobody is working") }))),
       h("a", { class: `row ${here === "#/mac" ? "on" : ""}`, href: "#/mac" },
         avatar("Mac"),
         h("span", { class: "grow" }, h("div", { class: "name", text: "Mac" }),
@@ -1359,17 +1359,62 @@ function drawWorkers() {
   const n = workers.count;
   document.getElementById("workers-sub").textContent = n ? `${n} running` : "Nobody is working";
   const note = workers.error || (workers.waiting ? `Next in line: ${workers.waiting}` : n ? "" : "No tickets are being worked on right now.");
-  box.replaceChildren(
-    ...(note ? [h("p", { class: "muted", text: note })] : []),
-    ...workers.workers.map(w => {
-      const name = `${w.project}: ${w.title}`;
-      return h("article", { class: "worker" },
+
+  const elements = [];
+
+  // Limit status card (Gemini or Claude)
+  const limits = workers.limits || {};
+  const gemini = limits.gemini;
+  const claude = limits.claude;
+  const activeLimit = (limits.engine === "antigravity" && gemini) ? gemini : (gemini || claude);
+
+  if (activeLimit && activeLimit.remaining !== undefined) {
+    const isGemini = activeLimit === gemini;
+    const modelName = isGemini ? "Gemini" : "Claude";
+    const remPct = Math.round(activeLimit.remaining * 100);
+    const usedPct = Math.min(100, Math.max(0, Math.round((activeLimit.util ?? (1 - activeLimit.remaining)) * 100)));
+    const isDanger = activeLimit.remaining <= 0;
+    const isWarn = usedPct >= 80;
+    const levelClass = isDanger ? "danger" : isWarn ? "warning" : "ok";
+
+    const resetStr = activeLimit.resets_at_str ? ` · resets at ${activeLimit.resets_at_str}` : "";
+    const weeklyStr = (isGemini && activeLimit.weekly_remaining !== undefined)
+      ? `Weekly: ${Math.round(activeLimit.weekly_remaining * 100)}% left`
+      : "";
+
+    elements.push(
+      h("div", { class: `limit-card ${levelClass}` },
+        h("div", { class: "limit-header" },
+          h("div", { class: "limit-title-wrap" },
+            h("span", { class: `limit-dot ${levelClass}` }),
+            h("span", { class: "limit-title", text: `${modelName} Limit Status` })
+          ),
+          h("span", { class: `limit-badge ${levelClass}`, text: `${remPct}% remaining` })
+        ),
+        h("div", { class: "limit-bar-bg" },
+          h("div", { class: `limit-bar-fill ${levelClass}`, style: `width: ${usedPct}%` })
+        ),
+        h("div", { class: "limit-details" },
+          h("span", { class: "muted small", text: `${usedPct}% used (5-hour window)${resetStr}` }),
+          weeklyStr ? h("span", { class: "muted small", text: weeklyStr }) : null
+        )
+      )
+    );
+  }
+
+  if (note) elements.push(h("p", { class: "muted", text: note }));
+  for (const w of workers.workers) {
+    const name = `${w.project}: ${w.title}`;
+    elements.push(
+      h("article", { class: "worker" },
         /^https:\/\//.test(w.url || "")
           ? h("a", { class: "name", href: w.url, target: "_blank", rel: "noopener noreferrer", text: name })
           : h("div", { class: "name", text: name }),
         h("div", { class: "muted small", text: `${w.ref}${w.started ? ` · started ${ago(w.started)}${ago(w.started) === "now" ? "" : " ago"}` : ""}` }),
-        h("div", { class: "step", text: w.step || "working" }));
-    }));
+        h("div", { class: "step", text: w.step || "working" }))
+    );
+  }
+  box.replaceChildren(...elements);
 }
 
 async function pollWorkers() {

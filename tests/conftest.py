@@ -25,6 +25,7 @@ def isolated_runner_state(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "USAGE_LIMIT", tmp_path / "usage_limit.json")
     monkeypatch.setattr(runner, "WORKERS", tmp_path / "workers.json")
     monkeypatch.setattr(usagewatch, "FILE", tmp_path / "usage_watch.json")   # never the real usage state
+    monkeypatch.setattr(usagewatch, "DAEMON_DIRS", [tmp_path / "daemon"])
 
     async def no_probe(*a, **kw):          # never a real Claude call from a test (ticket 59f4e775)
         return False

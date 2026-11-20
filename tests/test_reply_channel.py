@@ -42,6 +42,7 @@ def test_app_brain_sends_its_chat_in_the_tool_header(tmp_path, monkeypatch):
         started["mcp"] = json.loads(cmd[cmd.index("--mcp-config") + 1])
         return NS(pid=1)
 
+    monkeypatch.setattr(brain, "JARVIS_ENGINE", "claude")
     monkeypatch.setattr(brain.asyncio, "create_subprocess_exec", fake_exec)
     asyncio.run(b.start())
     assert started["mcp"]["mcpServers"]["jarvis"]["headers"] == {"X-Jarvis-Origin": f"app:{chat['id']}"}

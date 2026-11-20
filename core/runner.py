@@ -134,7 +134,12 @@ async def close_chrome_of(owner: str, older_than: float = -1) -> None:
 LIMIT_MARGIN = 120           # start again this long after the announced reset
 PROBE_EVERY = 10 * 60        # while held for the limit, read the live usage this often (an early reset ends the hold)
 LIMIT_FALLBACK = 30 * 60     # no reset time known: try again after this long
-_LIMIT_TEXT = re.compile(r"hit your (\S+ )?limit|usage limit reached|out of (extra )?usage", re.I)
+_LIMIT_TEXT = re.compile(
+    r"hit your (\S+ )?limit|usage limit reached|out of (extra )?usage|"
+    r"individual quota reached|MODEL_CAPACITY_EXHAUSTED|Allocation Quota Reached|"
+    r"RESOURCE_EXHAUSTED|quota (exceeded|reached|exhausted)",
+    re.I,
+)
 # a "done" result whose ending says it is waiting on Sanjar (a merge, approval, decision...)
 _BLOCKED = re.compile(
     r"(once|after|when|until)\b[^.\n]{0,80}\b(merged?|approved?|approve|push(ed)? to main|you (decide|confirm|choose|answer|reply))"
@@ -353,7 +358,12 @@ def hit_limit(result: str, is_error: bool, rejected_until: float) -> float:
     """Did this worker stop because of the usage limit? Returns when it resets (0 = no)."""
     tail = (result or "")[-400:]
     if _LIMIT_TEXT.search(tail) or (rejected_until and (is_error or not tail.strip())):
-        return rejected_until or time.time() + LIMIT_FALLBACK
+        if rejected_until:
+            return rejected_until
+        gem_reset = usagewatch.current_status().get("gemini", {}).get("resets_at")
+        if JARVIS_ENGINE == "antigravity" and gem_reset and float(gem_reset) > time.time():
+            return float(gem_reset)
+        return time.time() + LIMIT_FALLBACK
     return 0.0
 
 
@@ -711,8 +721,10 @@ class Runner:
                 self.held_logged = time.monotonic()
             return
         until = limited_until()
+        state = limit_state()
+        engine_name = state.get("engine") or ("Gemini" if JARVIS_ENGINE == "antigravity" else "Claude")
         if until > time.time() and usagewatch.allowed_since(self._hold_since()):
-            log.info("Claude usage was reset early: ending the hold now")
+            log.info("%s usage was reset early: ending the hold now", engine_name)
             until = 1.0                      # the "it has reset" branch below clears it
         if until > time.time():              # the usage limit: every worker would stop at once
             if time.monotonic() - self._probed > PROBE_EVERY:
@@ -720,7 +732,7 @@ class Runner:
                 asyncio.create_task(usagewatch.probe())     # its reading may end the hold on a later tick
             nxt = self.pick(await board.queued())
             if nxt:
-                self._waiting(nxt[0], "the Claude usage limit; it resets at "
+                self._waiting(nxt[0], f"the {engine_name} usage limit; it resets at "
                               + time.strftime("%H:%M", time.localtime(until - LIMIT_MARGIN)))
             return
         await usagewatch.report_reset()      # "the 5-hour limit has reset", once after a hit
@@ -805,7 +817,8 @@ class Runner:
             step, active = last_step(path) if path else ("starting", 0.0)
             workers.append({"project": card.project, "ref": ref, "title": card.title, "url": card.url,
                             "started": self.started.get(ref, 0.0), "step": step, "active": active})
-        return {"count": len(workers), "workers": workers, "waiting": self.wait_reason, "at": time.time()}
+        return {"count": len(workers), "workers": workers, "waiting": self.wait_reason, "at": time.time(),
+                "limits": usagewatch.current_status(), "limit_status": usagewatch.limit_summary()}
 
     def progress(self, project: str, ticket: str = "") -> str:
         """For the worker_progress tool: the live log of a project's worker (or a past ticket's)."""
@@ -921,7 +934,8 @@ class Runner:
             prompt += parallel_note(card.ref, worktrees)
         state = limit_state()
         if card.ref in state.get("refs", []) and not adopt:     # it was cut off by the usage limit: carry on
-            prompt += ("\n\nNote: you already started this ticket and were stopped mid-work by the Claude "
+            eng = state.get("engine", "Claude")
+            prompt += (f"\n\nNote: you already started this ticket and were stopped mid-work by the {eng} "
                        "usage limit, which has reset now. Continue where you left off: check git status, your "
                        "branch and what's already done first, and don't redo finished steps.")
             state["refs"] = [r for r in state["refs"] if r != card.ref]
@@ -1138,22 +1152,24 @@ class Runner:
         """The usage limit stopped this worker: back to Queued (not Failed), no new starts until the
         reset, then it continues in the same session (Sanjar, 2026-11-04: "when reset we should make
         them continue")."""
+        engine_name = "Gemini" if JARVIS_ENGINE == "antigravity" or "quota" in (result or "").lower() else "Claude"
         state = limit_state()
         state["until"] = max(float(state.get("until") or 0), until)
         state.setdefault("set_at", time.time())          # readings after this can end the hold early
         state["refs"] = sorted(set(state.get("refs", [])) | {card.ref})
+        state["engine"] = engine_name
         first = time.time() - float(state.get("told") or 0) > 3600
         if first:
             state["told"] = time.time()
         USAGE_LIMIT.write_text(json.dumps(state))
         at = time.strftime("%H:%M", time.localtime(state["until"]))
-        await self._write(card, jarvis="Queued", note=f"paused by the Claude usage limit; continues after {at}",
-                          log_lines=[f"Paused: the Claude usage limit stopped the worker ({result.strip()[-200:]}). "
+        await self._write(card, jarvis="Queued", note=f"paused by the {engine_name} usage limit; continues after {at}",
+                          log_lines=[f"Paused: the {engine_name} usage limit stopped the worker ({result.strip()[-200:]}). "
                                      f"It continues by itself after {at}."])
         self.finished[card.ref] = time.monotonic()
-        log.info("%s: paused by the usage limit until %s", card.ref, at)
+        log.info("%s: paused by the %s usage limit until %s", card.ref, engine_name, at)
         if first and not usagewatch.recently_hit():      # one note per limit; usagewatch may have told him already
-            await self.notify(card, "paused", f"The Claude usage limit stopped the workers. They're back in the "
+            await self.notify(card, "paused", f"The {engine_name} usage limit stopped the workers. They're back in the "
                                               f"queue and continue by themselves after {at}.", [])
 
     async def _auto_answer(self, card: Ticket, question: str, result: str) -> bool:

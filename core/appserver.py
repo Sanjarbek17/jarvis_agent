@@ -121,7 +121,7 @@ WEB_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
     "Permissions-Policy": "microphone=(self)",
-    "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; "
+    "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob:; "
                                "connect-src 'self'; media-src blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
 }
 
