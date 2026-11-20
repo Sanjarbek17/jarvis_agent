@@ -34,6 +34,7 @@ SAMPLE_QUOTA_RAW = {
 def state(tmp_path, monkeypatch):
     monkeypatch.setattr(usagewatch, "FILE", tmp_path / "usage.json")
     monkeypatch.setattr(usagewatch, "DAEMON_DIRS", [tmp_path / "daemon"])
+    monkeypatch.setattr(usagewatch, "_last_gemini_fail", 0.0)
 
 
 def test_parse_gemini_quota_summary():
@@ -187,3 +188,166 @@ def test_runner_snapshot_includes_limits(monkeypatch):
     snap = r.snapshot()
     assert "limits" in snap
     assert "limit_status" in snap
+
+
+def test_gemini_quota_live_refresh_when_stale(monkeypatch):
+    now = time.time()
+    reset = now + 7200
+    usagewatch.observe_gemini({
+        "gemini_5h": {
+            "utilization": 0.20,
+            "remaining": 0.80,
+            "resets_at": reset,
+            "status": "allowed",
+        }
+    })
+    # Make cached reading older than GEMINI_CACHE_TTL
+    s = usagewatch._load()
+    s["gemini"]["seen_at"] = now - (usagewatch.GEMINI_CACHE_TTL + 5)
+    usagewatch._save(s)
+
+    called = []
+
+    def mock_fetch():
+        called.append(True)
+        return {
+            "gemini_5h": {
+                "utilization": 0.65,
+                "remaining": 0.35,
+                "resets_at": reset,
+                "status": "allowed",
+            }
+        }
+
+    monkeypatch.setattr(usagewatch, "fetch_gemini_quota", mock_fetch)
+
+    curr = usagewatch.current_status()
+    assert len(called) == 1
+    assert curr["gemini"]["util"] == 0.65
+    assert curr["gemini"]["remaining"] == 0.35
+
+    line = usagewatch.status_line("gemini")
+    assert "65%" in line
+
+
+def test_gemini_quota_uses_cache_within_ttl(monkeypatch):
+    now = time.time()
+    reset = now + 7200
+    usagewatch.observe_gemini({
+        "gemini_5h": {
+            "utilization": 0.20,
+            "remaining": 0.80,
+            "resets_at": reset,
+            "status": "allowed",
+        }
+    })
+    # Cache is fresh (seen_at is 5s ago)
+    s = usagewatch._load()
+    s["gemini"]["seen_at"] = now - 5
+    usagewatch._save(s)
+
+    called = []
+    monkeypatch.setattr(usagewatch, "fetch_gemini_quota", lambda: called.append(True))
+
+    curr = usagewatch.current_status()
+    assert len(called) == 0
+    assert curr["gemini"]["util"] == 0.20
+
+
+def test_gemini_quota_refreshes_when_window_resets(monkeypatch):
+    now = time.time()
+    # Cache has expired window (past reset time)
+    expired_reset = now - 60
+    usagewatch.observe_gemini({
+        "gemini_5h": {
+            "utilization": 0.90,
+            "remaining": 0.10,
+            "resets_at": expired_reset,
+            "status": "allowed",
+        }
+    })
+    # Even if seen_at is recent, window is in the past
+    s = usagewatch._load()
+    s["gemini"]["seen_at"] = now - 2
+    usagewatch._save(s)
+
+    new_reset = now + 18000
+    called = []
+
+    def mock_fetch():
+        called.append(True)
+        return {
+            "gemini_5h": {
+                "utilization": 0.05,
+                "remaining": 0.95,
+                "resets_at": new_reset,
+                "status": "allowed",
+            }
+        }
+
+    monkeypatch.setattr(usagewatch, "fetch_gemini_quota", mock_fetch)
+
+    curr = usagewatch.current_status()
+    assert len(called) == 1
+    assert curr["gemini"]["status"] != "Reset"
+    assert curr["gemini"]["util"] == 0.05
+    assert curr["gemini"]["remaining"] == 0.95
+
+    line = usagewatch.status_line("gemini")
+    assert "Gemini 5-hour usage: 5%" in line
+
+
+def test_gemini_quota_force_refresh(monkeypatch):
+    now = time.time()
+    reset = now + 7200
+    usagewatch.observe_gemini({
+        "gemini_5h": {
+            "utilization": 0.10,
+            "remaining": 0.90,
+            "resets_at": reset,
+            "status": "allowed",
+        }
+    })
+    called = []
+
+    def mock_fetch():
+        called.append(True)
+        return {
+            "gemini_5h": {
+                "utilization": 0.30,
+                "remaining": 0.70,
+                "resets_at": reset,
+                "status": "allowed",
+            }
+        }
+
+    monkeypatch.setattr(usagewatch, "fetch_gemini_quota", mock_fetch)
+
+    # Cache is fresh, but force=True triggers fetch
+    curr = usagewatch.current_status(force=True)
+    assert len(called) == 1
+    assert curr["gemini"]["util"] == 0.30
+
+
+def test_gemini_quota_graceful_fallback_when_daemon_fails(monkeypatch):
+    now = time.time()
+    reset = now + 3600
+    usagewatch.observe_gemini({
+        "gemini_5h": {
+            "utilization": 0.40,
+            "remaining": 0.60,
+            "resets_at": reset,
+            "status": "allowed",
+        }
+    })
+    # Stale cache
+    s = usagewatch._load()
+    s["gemini"]["seen_at"] = now - 100
+    usagewatch._save(s)
+
+    monkeypatch.setattr(usagewatch, "fetch_gemini_quota", lambda: None)
+
+    # Should not raise exception, falls back to cached data
+    curr = usagewatch.current_status()
+    assert curr["gemini"]["util"] == 0.40
+    assert curr["gemini"]["remaining"] == 0.60
