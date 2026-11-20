@@ -17,7 +17,7 @@ import re
 
 from . import memory
 from .brain import BRAIN_MODEL
-from .config import DEV, PROJECTS, reload_projects, rules_text
+from .config import AGY_BRAIN_MODEL, AGY_CLI, DEV, JARVIS_ENGINE, PROJECTS, reload_projects, rules_text
 
 log = logging.getLogger("jarvis.autoanswer")
 TIMEOUT = 15 * 60
@@ -84,18 +84,24 @@ async def answer(card, question: str, result: str) -> dict | None:
     prompt = PROMPT.format(project=card.project, ref=card.ref, title=card.title, url=card.url,
                            question=question, result=result[-3000:], memories=memories or "(nothing found)",
                            rules=rules_text() or "(none)", folders=", ".join(folders) or "(none)")
-    cmd = ["claude", "-p", prompt, "--model", BRAIN_MODEL, "--output-format", "json",
-           "--tools", "Read,Glob,Grep", "--add-dir", str(DEV), "--setting-sources", "",
-           "--strict-mcp-config", "--no-session-persistence"]
-    for f in folders:
-        cmd += ["--add-dir", f]
+    if JARVIS_ENGINE == "antigravity":
+        cmd = [AGY_CLI, "-p", prompt, "--model", AGY_BRAIN_MODEL, "--output-format", "json",
+               "--dangerously-skip-permissions", "--add-dir", str(DEV)]
+        for f in folders:
+            cmd += ["--add-dir", f]
+    else:
+        cmd = ["claude", "-p", prompt, "--model", BRAIN_MODEL, "--output-format", "json",
+               "--tools", "Read,Glob,Grep", "--add-dir", str(DEV), "--setting-sources", "",
+               "--strict-mcp-config", "--no-session-persistence"]
+        for f in folders:
+            cmd += ["--add-dir", f]
     proc = await asyncio.create_subprocess_exec(*cmd, cwd=folders[0] if folders else None,
                                                 stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
                                                 stderr=asyncio.subprocess.DEVNULL)
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), TIMEOUT)
         envelope = json.loads(out)
-        text = envelope.get("result") or ""
+        text = envelope.get("response") or envelope.get("result") or ""
         m = re.search(r"\{.*\}", text, re.S)
         data = json.loads(m.group(0)) if m else {"answer": text.strip(), "basis": "your call"}
         out = {"answer": str(data.get("answer") or "").strip(), "basis": str(data.get("basis") or ""),

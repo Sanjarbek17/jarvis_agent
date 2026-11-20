@@ -15,7 +15,7 @@ import logging
 import time
 from typing import Awaitable, Callable
 
-from .config import STATE
+from .config import JARVIS_ENGINE, STATE
 
 log = logging.getLogger("jarvis.usagewatch")
 FILE = STATE / "usage_watch.json"     # {"window", "util", "warned", "hit", "reset_due"}
@@ -116,6 +116,8 @@ PROBE_CMD = ["claude", "-p", "Reply with the single word: ok", "--model", "haiku
 async def probe(timeout: float = 90) -> bool:
     """One tiny Claude call, only to read the live 5-hour window (its rate_limit_event). While the runner holds
     work for the limit nothing else may call Claude, so without this an early reset would go unnoticed."""
+    if JARVIS_ENGINE == "antigravity":
+        return True
     try:
         proc = await asyncio.create_subprocess_exec(*PROBE_CMD, stdin=asyncio.subprocess.DEVNULL,
                                                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)

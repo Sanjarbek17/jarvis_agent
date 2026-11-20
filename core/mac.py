@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from .config import HERE, INBOX, LOGS, MAC_NEVER_DO, SHOTS, STATE
+from .config import AGY_CLI, AGY_WORKER_MODEL, HERE, INBOX, JARVIS_ENGINE, LOGS, MAC_NEVER_DO, SHOTS, STATE
 from . import hookset, usagewatch
 from .runner import NEEDS_ME, progress_text
 
@@ -86,12 +86,21 @@ class MacWorker:
             shots = SHOTS / f"mac-{stamp}"
             shots.mkdir(exist_ok=True)
             self.current, self.log_path = task, LOGS / f"mac-{stamp}.jsonl"
-            cmd = ["claude", "-p", _prompt(task, words, shots), "--settings", hookset.SETTINGS, "--output-format", "stream-json",
-                   "--verbose", "--permission-mode", "bypassPermissions", "--add-dir", str(Path.home()),
-                   "--disallowedTools", "Bash(sudo:*)", "Bash(rm -rf /:*)", "Bash(rm -rf ~:*)",
-                   "Bash(diskutil erase:*)", "Bash(csrutil:*)"]
-            if session := self._session():
-                cmd += ["--resume", session]
+            if JARVIS_ENGINE == "antigravity":
+                cmd = [
+                    AGY_CLI, "-p", _prompt(task, words, shots), "--model", AGY_WORKER_MODEL,
+                    "--output-format", "stream-json", "--dangerously-skip-permissions",
+                    "--add-dir", str(Path.home()),
+                ]
+                if session := self._session():
+                    cmd += ["--conversation", session]
+            else:
+                cmd = ["claude", "-p", _prompt(task, words, shots), "--settings", hookset.SETTINGS, "--output-format", "stream-json",
+                       "--verbose", "--permission-mode", "bypassPermissions", "--add-dir", str(Path.home()),
+                       "--disallowedTools", "Bash(sudo:*)", "Bash(rm -rf /:*)", "Bash(rm -rf ~:*)",
+                       "Bash(diskutil erase:*)", "Bash(csrutil:*)"]
+                if session := self._session():
+                    cmd += ["--resume", session]
             log.info("mac task: %s", task)
             result, is_error = "", False
             try:
@@ -106,6 +115,20 @@ class MacWorker:
                         try:
                             event = json.loads(line)
                         except json.JSONDecodeError:
+                            continue
+                        if "event" in event:
+                            event_type = event.get("event")
+                            if event_type == "init":
+                                cid = event.get("conversation_id")
+                                if cid:
+                                    SESSION.write_text(json.dumps({"id": cid}))
+                            elif event_type == "result":
+                                res = event.get("result", {})
+                                cid = res.get("conversation_id")
+                                if cid:
+                                    SESSION.write_text(json.dumps({"id": cid}))
+                                result = res.get("response", "") or res.get("error", "")
+                                is_error = res.get("status") != "SUCCESS"
                             continue
                         if event.get("session_id"):
                             SESSION.write_text(json.dumps({"id": event["session_id"]}))

@@ -32,4 +32,4 @@ def test_a_mac_task_starts_its_worker_with_the_app_chat(tmp_path, monkeypatch):
     text, photos, question = asyncio.run(mac.MacWorker().run("open the deck", "open it", app_chat="c1"))
     assert "opened the deck" in text and not question
     assert seen["env"]["JARVIS_APP_CHAT"] == "c1" and seen["env"]["PATH"]           # his environment plus the chat
-    assert seen["cmd"][:2] == ("claude", "-p")
+    assert seen["cmd"][1] == "-p" and (seen["cmd"][0] == "claude" or seen["cmd"][0] == mac.AGY_CLI)

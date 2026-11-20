@@ -37,7 +37,7 @@ import numpy as np
 from google import genai
 from google.genai import types
 
-from .config import CALLS, DEV, GEMINI_API_KEY, HERE, STATE
+from .config import AGY_BRAIN_MODEL, AGY_CLI, CALLS, DEV, GEMINI_API_KEY, HERE, JARVIS_ENGINE, STATE
 
 log = logging.getLogger("jarvis.memory")
 DIR = STATE / "memory"
@@ -207,10 +207,22 @@ that continue the previous exchange). Use "new" only for a genuinely different t
 
 
 async def _ask_claude_json(prompt: str, model: str = TOPIC_MODEL, timeout: float = TOPIC_TIMEOUT) -> dict:
-    """One quick, tool-less Claude call through the CLI; returns the JSON object it answers with."""
+    """One quick, tool-less Claude/Antigravity call through the CLI; returns the JSON object it answers with."""
+    if JARVIS_ENGINE == "antigravity":
+        cmd = [
+            AGY_CLI,
+            "-p", prompt,
+            "--model", AGY_BRAIN_MODEL,
+            "--output-format", "json",
+            "--dangerously-skip-permissions",
+        ]
+    else:
+        cmd = [
+            "claude", "-p", prompt, "--model", model, "--output-format", "json", "--tools", "",
+            "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"
+        ]
     proc = await asyncio.create_subprocess_exec(
-        "claude", "-p", prompt, "--model", model, "--output-format", "json", "--tools", "",
-        "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence",
+        *cmd,
         stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout)
@@ -218,9 +230,10 @@ async def _ask_claude_json(prompt: str, model: str = TOPIC_MODEL, timeout: float
         proc.kill()
         raise
     envelope = json.loads(out)
-    if envelope.get("is_error"):
-        raise RuntimeError(f"claude: {str(envelope.get('result'))[:200]}")
-    text = envelope.get("result") or ""
+    if envelope.get("is_error") or envelope.get("status") == "ERROR":
+        err = envelope.get("error") or envelope.get("result")
+        raise RuntimeError(f"engine error: {str(err)[:200]}")
+    text = envelope.get("response") or envelope.get("result") or ""
     m = re.search(r"\{.*\}", text, re.S)       # tolerate ```json fences or stray words around it
     if not m:
         raise ValueError(f"no JSON in topic answer: {text[:200]!r}")

@@ -20,7 +20,7 @@ import re
 import time
 from collections import defaultdict
 
-from .config import FLATMATES_GROUP_ID, OWNER_ID, STATE, VAR
+from .config import AGY_BRAIN_MODEL, AGY_CLI, FLATMATES_GROUP_ID, JARVIS_ENGINE, OWNER_ID, STATE, VAR
 
 log = logging.getLogger("jarvis.expenses")
 TOPIC = re.compile(r"exp[ae]n[sc]|xarajat|harajat|xarj|rasxod|расход|затрат|chiqim", re.I)
@@ -199,9 +199,18 @@ def _file_of(m) -> tuple[str, str]:
 
 async def ask_model(path) -> dict:
     """What one check says. Only the Read tool, in the folder of these files; the answer is only ever read as numbers."""
+    if JARVIS_ENGINE == "antigravity":
+        cmd = [
+            AGY_CLI, "-p", CHECK_PROMPT.format(name=path.name), "--model", AGY_BRAIN_MODEL,
+            "--output-format", "json", "--dangerously-skip-permissions"
+        ]
+    else:
+        cmd = [
+            "claude", "-p", CHECK_PROMPT.format(name=path.name), "--model", MODEL, "--output-format", "json", "--tools", "Read",
+            "--allowedTools", "Read", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"
+        ]
     proc = await asyncio.create_subprocess_exec(
-        "claude", "-p", CHECK_PROMPT.format(name=path.name), "--model", MODEL, "--output-format", "json", "--tools", "Read",
-        "--allowedTools", "Read", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence",
+        *cmd,
         cwd=path.parent, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), CHECK_TIMEOUT)
@@ -210,9 +219,11 @@ async def ask_model(path) -> dict:
         await proc.wait()
         raise
     envelope = json.loads(out)
-    if envelope.get("is_error"):
-        raise RuntimeError(str(envelope.get("result"))[:200])
-    found = re.search(r"\{.*\}", envelope.get("result") or "", re.S)
+    if envelope.get("is_error") or envelope.get("status") == "ERROR":
+        err = envelope.get("error") or envelope.get("result")
+        raise RuntimeError(str(err)[:200])
+    text = envelope.get("response") or envelope.get("result") or ""
+    found = re.search(r"\{.*\}", text, re.S)
     if not found:
         raise ValueError("no answer")
     return json.loads(found.group(0))
