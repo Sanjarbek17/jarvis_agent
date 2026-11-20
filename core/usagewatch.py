@@ -27,10 +27,12 @@ from .config import JARVIS_ENGINE, STATE
 log = logging.getLogger("jarvis.usagewatch")
 FILE = STATE / "usage_watch.json"     # {"window", "util", "warned", "hit", "reset_due", "gemini": {...}}
 WARN_AT = 0.8
+GEMINI_CACHE_TTL = int(os.environ.get("GEMINI_CACHE_TTL", 30))  # seconds to cache live Gemini quota
 DAEMON_DIRS = [
     Path.home() / ".gemini" / "antigravity" / "daemon",
     Path.home() / ".gemini" / "antigravity-cli" / "daemon",
 ]
+_last_gemini_fail = 0.0
 
 
 def _load() -> dict:
@@ -333,21 +335,16 @@ def recently_hit(window_s: float = 6 * 3600) -> bool:
     return bool(s.get("hit")) and s["hit"] > time.time() - window_s
 
 
-def status_line(engine: str = "") -> str:
+def status_line(engine: str = "", force: bool = False) -> str:
     """For get_status: the last reading of the 5-hour window."""
     s = _load()
     target_engine = (engine or s.get("engine") or JARVIS_ENGINE).lower()
 
-    if target_engine in ("antigravity", "gemini") and (s.get("gemini") or not s.get("window")):
+    if target_engine in ("antigravity", "gemini"):
+        refresh_gemini_quota(force=force)
+        s = _load()
         gem = s.get("gemini") or {}
         win = gem.get("window") or s.get("window")
-        if not win:
-            quota = fetch_gemini_quota()
-            if quota:
-                observe_gemini(quota)
-                s = _load()
-                gem = s.get("gemini") or {}
-                win = gem.get("window")
         if not win:
             return ""
         if time.time() > win:
@@ -363,16 +360,57 @@ def status_line(engine: str = "") -> str:
     return f"Claude 5-hour usage: {float(s.get('util') or 0):.0%} (read {_at(s.get('seen_at', 0))}), resets at {_at(s['window'])}."
 
 
-def current_status() -> dict:
-    """Returns structured limit data for the app and API."""
+def gemini_is_stale(gem: dict, now: float | None = None) -> bool:
+    """Returns True if Gemini quota cache is missing, window has reset, or seen_at is older than TTL."""
+    if not gem or not gem.get("window"):
+        return True
+    now = time.time() if now is None else now
+    win = float(gem.get("window") or 0)
+    seen = float(gem.get("seen_at") or 0)
+    if now > win:
+        return True
+    if now - seen >= GEMINI_CACHE_TTL:
+        return True
+    return False
+
+
+def refresh_gemini_quota(force: bool = False) -> dict | None:
+    """Refreshes Gemini quota from the daemon if stale or forced, updating state and notifying if needed."""
+    global _last_gemini_fail
+    now = time.time()
     s = _load()
     gem = s.get("gemini") or {}
-    if not gem.get("window") and JARVIS_ENGINE == "antigravity":
-        quota = fetch_gemini_quota()
-        if quota:
-            observe_gemini(quota)
-            s = _load()
-            gem = s.get("gemini") or {}
+
+    if not force and not gemini_is_stale(gem, now=now):
+        return gem
+
+    if not force and _last_gemini_fail and (now - _last_gemini_fail < min(GEMINI_CACHE_TTL, 10)):
+        return gem or None
+
+    quota = fetch_gemini_quota()
+    if quota:
+        _last_gemini_fail = 0.0
+        notes = observe_gemini(quota)
+        if notes and sender:
+            try:
+                loop = asyncio.get_running_loop()
+                for n in notes:
+                    loop.create_task(sender(n))
+            except RuntimeError:
+                pass
+        s = _load()
+        return s.get("gemini") or {}
+    _last_gemini_fail = now
+    return gem or None
+
+
+def current_status(force: bool = False) -> dict:
+    """Returns structured limit data for the app and API."""
+    if JARVIS_ENGINE == "antigravity" or force:
+        refresh_gemini_quota(force=force)
+
+    s = _load()
+    gem = s.get("gemini") or {}
 
     res = {"engine": JARVIS_ENGINE}
     if gem.get("window"):
@@ -404,9 +442,9 @@ def current_status() -> dict:
     return res
 
 
-def limit_summary() -> str:
+def limit_summary(force: bool = False) -> str:
     """A short one-line string for app waiting text or headers."""
-    stat = current_status()
+    stat = current_status(force=force)
     if "gemini" in stat and JARVIS_ENGINE == "antigravity":
         g = stat["gemini"]
         return f"Gemini 5h: {g['remaining']:.0%} remaining · resets {g['resets_at_str']}"

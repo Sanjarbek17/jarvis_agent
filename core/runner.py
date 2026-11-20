@@ -360,7 +360,7 @@ def hit_limit(result: str, is_error: bool, rejected_until: float) -> float:
     if _LIMIT_TEXT.search(tail) or (rejected_until and (is_error or not tail.strip())):
         if rejected_until:
             return rejected_until
-        gem_reset = usagewatch.current_status().get("gemini", {}).get("resets_at")
+        gem_reset = usagewatch.current_status(force=True).get("gemini", {}).get("resets_at")
         if JARVIS_ENGINE == "antigravity" and gem_reset and float(gem_reset) > time.time():
             return float(gem_reset)
         return time.time() + LIMIT_FALLBACK
