@@ -793,7 +793,11 @@ async def messages(req: Request):
         return JSONResponse(await ask(chat, text, images=images, reply_to=body.get("reply_to"),
                                       signed_in=_session_of(req) is not None))
     recent = mark_stale(_for_reader(chat["messages"][-200:], _session_of(req) is not None))
-    return JSONResponse(_with_project(recent) if chat["id"] == UPDATES else recent)
+    body = _with_project(recent) if chat["id"] == UPDATES else recent
+    resp = JSONResponse(body)
+    if answering.is_answering(chat["id"]):
+        resp.headers["X-Jarvis-Answering"] = "true"
+    return resp
 
 
 async def upload(req: Request):

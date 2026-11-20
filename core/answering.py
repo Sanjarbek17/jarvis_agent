@@ -26,6 +26,13 @@ def busy() -> bool:
     return any(time.time() - p.stat().st_mtime < STALE for p in DIR.glob("*")) if DIR.exists() else False
 
 
+def is_answering(key: str) -> bool:
+    if not DIR.exists():
+        return False
+    prefix = f"{''.join(c for c in key if c.isalnum() or c in '-_')[:60] or 'x'}-"
+    return any(p.name.startswith(prefix) and time.time() - p.stat().st_mtime < STALE for p in DIR.glob("*"))
+
+
 def clear() -> None:
     """At start: the old process's answers are gone with it."""
     for p in DIR.glob("*") if DIR.exists() else []:

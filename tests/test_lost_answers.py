@@ -12,7 +12,10 @@ def test_an_answer_in_progress_holds_a_restart_and_is_cleared_at_start(tmp_path,
     assert not answering.busy()
     with answering.mark("chat-1"):
         assert answering.busy()
+        assert answering.is_answering("chat-1")
+        assert not answering.is_answering("chat-2")
     assert not answering.busy()
+    assert not answering.is_answering("chat-1")
     with answering.mark("x"):
         answering.clear()                       # a new process: the old one's answers are gone
         assert not answering.busy()
