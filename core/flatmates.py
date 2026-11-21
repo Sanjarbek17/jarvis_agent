@@ -263,13 +263,17 @@ async def carry_out(event, text: str, replied: str) -> None:
             await event.client.send_message(OWNER_ID, f"🏠 Flatmates: \"{text[:200]}\"\n\n{private[:3500]}")
 
 
-def drop_dm(flats: list[str]) -> None:
-    """For the apartment search: the group ignored the flat posts and the tagged reminders: write to each member
-    privately with these flats (their one-line descriptions) and ask which are worth seeing."""
+def drop_dm(flats: list[str], photos: list[str] = ()) -> None:
+    """For the apartment search: write to each member privately with these flats (their one-line descriptions)
+    and photos (ticket 1f5a835e), asking which are worth seeing."""
     QUEUE.mkdir(parents=True, exist_ok=True)
     name = f"{time.time():.6f}-{uuid.uuid4().hex[:6]}"
     tmp = QUEUE / f"{name}.tmp"
-    tmp.write_text(json.dumps({"dm": [str(x)[:200] for x in flats][:8]}, ensure_ascii=False))
+    valid_photos = [str(p) for p in photos if Path(p).is_file()][:10]
+    tmp.write_text(json.dumps({
+        "dm": [str(x)[:200] for x in flats][:8],
+        "photos": valid_photos,
+    }, ensure_ascii=False))
     tmp.rename(QUEUE / f"{name}.json")
 
 
@@ -355,14 +359,20 @@ def _dms() -> dict:
         return {}
 
 
-async def dm_members(tg, flats: list[str]) -> int:
-    """Each member (not Sanjar, not Jarvis, not bots) gets the flats privately. Returns how many were written to."""
+async def dm_members(tg, flats: list[str], photos: list[str] = ()) -> int:
+    """Each member (not Sanjar, not Jarvis, not bots) gets the flats privately, with photos if available (ticket 1f5a835e).
+    Returns how many were written to."""
     me, sent, dms = await tg.get_me(), 0, _dms()
+    valid_photos = [p for p in photos if Path(p).is_file()]
     for u in await tg.get_participants(FLATMATES_GROUP_ID):
         if getattr(u, "bot", False) or getattr(u, "deleted", False) or u.id in (me.id, OWNER_ID):
             continue
+        text = dm_text(u.first_name or "there", flats)
         try:
-            await tg.send_message(u.id, dm_text(u.first_name or "there", flats))
+            if valid_photos:
+                await tg.send_file(u.id, valid_photos, caption=text[:1024])
+            else:
+                await tg.send_message(u.id, text)
         except Exception as e:
             log.warning("Flatmates: couldn't write to %s privately: %r", u.id, e)
             continue
@@ -596,7 +606,8 @@ async def _send(tg, text: str, photos: list, where: int):
 async def post(tg, note: dict) -> None:
     global _topic
     if note.get("dm"):                               # not a group post: write to each member privately
-        await dm_members(tg, note["dm"])
+        photos = [p for p in note.get("photos", []) if Path(p).is_file()]
+        await dm_members(tg, note["dm"], photos=photos)
         return
     photos = [p for p in note.get("photos", []) if Path(p).is_file()]
     key = note.get("key", "")
