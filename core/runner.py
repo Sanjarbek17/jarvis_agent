@@ -436,16 +436,24 @@ Sanjar is away from the computer and won't approve anything, so work on your own
 
 def _step_text(block: dict) -> str:
     """A short human line for one worker tool call."""
-    name = block.get("name", "") or block.get("tool_name", "")
-    args = block.get("input", {}) or block.get("tool_args", {})
-    if name in ("Edit", "Write", "MultiEdit", "replace_file_content", "write_to_file", "edit_file", "write_file"):
+    info = block.get("tool_info") or {}
+    name = block.get("name", "") or block.get("tool_name", "") or info.get("name", "")
+    args = (
+        block.get("input")
+        or block.get("tool_args")
+        or info.get("parameters")
+        or info.get("args")
+        or {}
+    )
+    if name in ("Edit", "Write", "MultiEdit", "replace_file_content", "multi_replace_file_content",
+                "write_to_file", "edit_file", "write_file", "sed_file"):
         path = args.get("file_path") or args.get("Path") or args.get("path") or ""
         return f"editing {Path(path).name}" if path else "editing files"
     if name in ("Read", "view_file", "read_file"):
         path = args.get("file_path") or args.get("Path") or args.get("path") or ""
         return f"reading {Path(path).name}" if path else "reading files"
     if name in ("Bash", "run_command"):
-        cmd = args.get("description") or args.get("toolSummary") or args.get("CommandLine") or args.get("command") or ""
+        cmd = args.get("toolSummary") or args.get("description") or args.get("CommandLine") or args.get("command") or ""
         return f"running: {cmd[:80]}"
     if name in ("Grep", "Glob", "grep_search", "find_by_name"):
         return "searching the code"
@@ -453,6 +461,12 @@ def _step_text(block: dict) -> str:
         return "planning the steps"
     if name == "call_mcp_tool":
         return f"calling {args.get('ToolName', 'mcp tool')}"
+    if name in ("search_web", "WebSearch"):
+        return "searching the web"
+    if name.startswith("browser_"):
+        return "browsing web"
+    if name in ("invoke_subagent", "define_subagent"):
+        return f"calling subagent {args.get('Role') or args.get('TypeName') or ''}".strip()
     return name.removeprefix("mcp__").replace("__", " ")
 
 
@@ -471,7 +485,10 @@ def worker_log(project: str, ref: str = "") -> Path | None:
     """The worker log for a ticket of this project, or its newest one."""
     if ref:
         path = LOGS / f"{project}-{ref.strip().lower()}.jsonl"
-        return path if path.exists() else None
+        if path.exists():
+            return path
+        path2 = LOGS / f"{project}-{ref.strip()}.jsonl"
+        return path2 if path2.exists() else None
     logs = sorted(LOGS.glob(f"{project}-*.jsonl"), key=lambda p: p.stat().st_mtime)
     return logs[-1] if logs else None
 
@@ -493,6 +510,21 @@ def last_step(path: Path, tail: int = 200_000) -> tuple[str, float]:
             continue
         if not isinstance(e, dict):
             continue
+        # Antigravity format
+        if e.get("event") == "result":
+            return "finishing up", mtime
+        if e.get("event") == "step_update":
+            step = e.get("step_update", {})
+            stype = step.get("step_type")
+            if stype in ("tool", "tool_call"):
+                txt = _step_text(step)
+                if txt:
+                    return " ".join(txt.split()), mtime
+            if stype in ("agent_response", "text"):
+                delta = (step.get("text") or step.get("text_delta") or "").strip()
+                if delta:
+                    return "writing: " + " ".join(delta.split())[:80], mtime
+        # Claude format
         if e.get("type") == "result":
             return "finishing up", mtime
         if e.get("type") == "assistant":
@@ -515,6 +547,42 @@ def progress_text(path: Path, running: bool, steps: int = 12) -> str:
             continue
         if not started and e.get("timestamp"):
             started = e["timestamp"]
+
+        # Antigravity format
+        if "event" in e:
+            event_type = e.get("event")
+            if event_type == "step_update":
+                step = e.get("step_update", {})
+                stype = step.get("step_type")
+                if stype in ("tool", "tool_call"):
+                    call_id = str(step.get("step_index", len(done_steps)))
+                    step_str = _step_text(step)
+                    state = step.get("state")
+                    if state == "ACTIVE":
+                        open_calls[call_id] = step_str
+                        done_steps.append(step_str)
+                    elif state == "DONE":
+                        open_calls.pop(call_id, None)
+                        if not done_steps or done_steps[-1] != step_str:
+                            done_steps.append(step_str)
+                        out = (step.get("tool_info") or {}).get("output")
+                        if out:
+                            last_out = _tool_output(out)
+                elif stype in ("agent_response", "text"):
+                    txt = step.get("text") or step.get("text_delta")
+                    if txt and txt.strip():
+                        said = (said + " " + txt.strip()).strip() if said else txt.strip()
+            elif event_type == "result":
+                res = e.get("result", {})
+                dur_ms = int(float(res.get("duration_seconds") or 0) * 1000)
+                result = {
+                    "result": res.get("response") or res.get("error") or "",
+                    "is_error": res.get("status") != "SUCCESS",
+                    "duration_ms": dur_ms,
+                }
+            continue
+
+        # Claude format
         kind = e.get("type")
         if kind == "assistant":
             for b in e["message"].get("content", []):
@@ -984,9 +1052,14 @@ class Runner:
                             if cid:
                                 _save_session(session_key, cid)
                             stype = step.get("step_type")
-                            if stype == "tool_call":
+                            if stype in ("tool", "tool_call"):
                                 handle.end_by = 0.0
-                                pending.append(_step_text(step))
+                                txt = _step_text(step)
+                                state = step.get("state")
+                                if state == "ACTIVE" or (state is None and (not pending or pending[-1] != txt)):
+                                    pending.append(txt)
+                                elif state == "DONE" and (not pending or pending[-1] != txt):
+                                    pending.append(txt)
                         elif event_type == "result":
                             res = event.get("result", {})
                             cid = res.get("conversation_id")
