@@ -807,6 +807,7 @@ def test_a_nudge_tags_every_member_but_jarvis(monkeypatch):
 class Private:
     def __init__(self, fail=()):
         self.fail, self.sent = fail, []
+        self.files = []
 
     async def get_me(self):
         return NS(id=1)
@@ -821,6 +822,13 @@ class Private:
             raise ValueError("privacy")
         self.sent.append((to, text))
 
+    async def send_file(self, to, files, caption="", **kw):
+        if to in self.fail:
+            raise ValueError("privacy")
+        self.files.append((to, files, caption))
+        self.sent.append((to, caption))
+        return NS(id=2)
+
 
 def test_ignored_flats_go_to_each_member_privately():
     f.drop_dm(["Chilonzor, 2 rooms, $300", "Yunusobod, 3 rooms, $320"])
@@ -829,6 +837,23 @@ def test_ignored_flats_go_to_each_member_privately():
     asyncio.run(f.post(tg, note))
     assert [to for to, _ in tg.sent] == [2]                              # not Jarvis, Sanjar, the bot; Ikrom's privacy failed
     assert "1. Chilonzor, 2 rooms, $300\n2. Yunusobod" in tg.sent[0][1] and "Javohir" in tg.sent[0][1]
+    assert set(json.loads(f.DMS.read_text())) == {"2"}
+
+
+def test_dm_members_sends_photos_when_available(tmp_path):
+    p1 = tmp_path / "1.jpg"
+    p1.write_bytes(b"image1")
+    p2 = tmp_path / "2.jpg"
+    p2.write_bytes(b"image2")
+    f.drop_dm(["Chilonzor, 2 rooms, $300"], photos=[str(p1), str(p2)])
+    note = json.loads(next(f.QUEUE.glob("*.json")).read_text())
+    assert note["photos"] == [str(p1), str(p2)]
+    tg = Private(fail={3})
+    asyncio.run(f.post(tg, note))
+    assert len(tg.files) == 1
+    to, files, caption = tg.files[0]
+    assert to == 2 and files == [str(p1), str(p2)]
+    assert "Chilonzor" in caption and "Javohir" in caption
     assert set(json.loads(f.DMS.read_text())) == {"2"}
 
 
