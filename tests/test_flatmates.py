@@ -857,6 +857,23 @@ def test_dm_members_sends_photos_when_available(tmp_path):
     assert set(json.loads(f.DMS.read_text())) == {"2"}
 
 
+def test_dm_members_all_open_flats_not_truncated(tmp_path):
+    flats = [f"Flat #{i}, 2 rooms, ${200 + i * 10} a month" for i in range(15)]
+    p1 = tmp_path / "1.jpg"
+    p1.write_bytes(b"image1")
+    f.drop_dm(flats, photos=[str(p1)])
+    note = json.loads(next(f.QUEUE.glob("*.json")).read_text())
+    assert len(note["dm"]) == 15
+    tg = Private(fail={3})
+    asyncio.run(f.post(tg, note))
+    assert len(tg.files) == 1
+    # Check that Javohir received the message and all 15 flats are included
+    full_text = next(text for to, text in tg.sent if "Flat #14" in text)
+    assert "Flat #0" in full_text and "Flat #14" in full_text
+    dms = json.loads(f.DMS.read_text())
+    assert len(dms["2"]["flats"]) == 15
+
+
 class Reply(NS):
     async def reply(self, text):
         self.replied = text

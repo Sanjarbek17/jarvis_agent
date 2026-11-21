@@ -265,13 +265,13 @@ async def carry_out(event, text: str, replied: str) -> None:
 
 def drop_dm(flats: list[str], photos: list[str] = ()) -> None:
     """For the apartment search: write to each member privately with these flats (their one-line descriptions)
-    and photos (ticket 1f5a835e), asking which are worth seeing."""
+    and photos (tickets 1f5a835e, 2e7cdd52), asking which are worth seeing."""
     QUEUE.mkdir(parents=True, exist_ok=True)
     name = f"{time.time():.6f}-{uuid.uuid4().hex[:6]}"
     tmp = QUEUE / f"{name}.tmp"
     valid_photos = [str(p) for p in photos if Path(p).is_file()][:10]
     tmp.write_text(json.dumps({
-        "dm": [str(x)[:200] for x in flats][:8],
+        "dm": [str(x)[:200] for x in flats],
         "photos": valid_photos,
     }, ensure_ascii=False))
     tmp.rename(QUEUE / f"{name}.json")
@@ -370,7 +370,11 @@ async def dm_members(tg, flats: list[str], photos: list[str] = ()) -> int:
         text = dm_text(u.first_name or "there", flats)
         try:
             if valid_photos:
-                await tg.send_file(u.id, valid_photos, caption=text[:1024])
+                if len(text) <= 1024:
+                    await tg.send_file(u.id, valid_photos, caption=text)
+                else:
+                    await tg.send_file(u.id, valid_photos)
+                    await tg.send_message(u.id, text)
             else:
                 await tg.send_message(u.id, text)
         except Exception as e:
