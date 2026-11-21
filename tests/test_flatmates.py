@@ -895,3 +895,87 @@ def test_the_tool_sends_only_to_an_owner_we_talk_to(monkeypatch):
     assert "isn't talking to that owner" in call(flat="Phone only", message="Salom")
     assert "No flat" in call(flat="Qorasuv", message="Salom")
     assert len(f.owner_asks()) == 1
+
+
+# --- Ticket c0adb911: Message flatmates directly, announce approvals, and take orders on talking to owners ---
+
+def test_dm_text_asks_if_they_like_it_or_not():
+    single = f.dm_text("Rustam", ["Chilonzor, 2 rooms, $300"])
+    assert "Rustam" in single and "Chilonzor" in single
+    assert "Do you like this flat or not?" in single
+    assert "yoqdimi yo'qmi" in single
+
+    multi = f.dm_text("Rustam", ["Chilonzor, 2 rooms, $300", "Yunusobod, 3 rooms, $320"])
+    assert "Rustam" in multi and "1. Chilonzor" in multi and "2. Yunusobod" in multi
+    assert "Do you like any of these flats or not?" in multi
+    assert "qaysi biri yoqdi yoki yoqmadi" in multi
+
+
+def test_parse_private_answer_approvals_and_rejections():
+    flats = ["Chilonzor, 2 rooms, $300", "Yunusobod, 3 rooms, $320"]
+    # Uzbek approval
+    res = f.parse_private_answer("1 yoqdi, zo'r ekan", flats)
+    assert res["approved"] == [1] and res["order"] == ""
+    # Cyrillic Uzbek
+    res = f.parse_private_answer("1 маъқул, кўрайлик", flats)
+    assert res["approved"] == [1]
+    # Russian approval
+    res = f.parse_private_answer("первая нравится, давай посмотрим", flats)
+    assert res["approved"] == [1]
+    # English approval
+    res = f.parse_private_answer("1 is good, let's see it", flats)
+    assert res["approved"] == [1]
+    # Rejection
+    res = f.parse_private_answer("hech qaysisi yoqmadi", flats)
+    assert res["approved"] == []
+    res = f.parse_private_answer("none", flats)
+    assert res["approved"] == []
+
+
+def test_parse_private_answer_orders_to_owner():
+    flats = ["Chilonzor, 2 rooms, $300"]
+    res = f.parse_private_answer("1 yoqdi, egasiga aytgin ertaga 5 da ko'rgani boramiz", flats)
+    assert res["approved"] == [1]
+    assert "ertaga 5 da ko'rgani boramiz" in res["order"]
+
+    res = f.parse_private_answer("tell the owner we want to visit tomorrow at 6", flats)
+    assert "we want to visit tomorrow at 6" in res["order"]
+
+
+def test_private_approval_announces_person_says_ok_in_group():
+    asyncio.run(f.dm_members(Private(), ["Chilonzor, 2 rooms, $300"]))
+    ev = Reply(sender_id=2, raw_text="1 yoqdi, yaxshi ekan")
+    assert asyncio.run(f.on_private(ev)) is True
+    note = json.loads(next(f.QUEUE.glob("*.json")).read_text())
+    assert "says ok to" in note["text"]
+    assert "Javohir" in note["text"]
+    assert "1. Chilonzor" in note["text"]
+    assert "«1 yoqdi, yaxshi ekan»" in note["text"]
+
+
+def test_private_order_to_owner_is_queued(monkeypatch):
+    monkeypatch.setattr(f, "OWNER_ASKS", f.QUEUE.parent / "asks")
+    flats_view({"key": "tel1", "place": "🏠 1. Chilonzor, 2 rooms, $300", "link": "L1", "chat": True})
+    asyncio.run(f.dm_members(Private(), ["Chilonzor, 2 rooms, $300"]))
+    ev = Reply(sender_id=2, raw_text="1 ma'qul, egasiga aytgin narxini 250 ga tushirsin")
+    assert asyncio.run(f.on_private(ev)) is True
+    note = json.loads(next(f.QUEUE.glob("*.json")).read_text())
+    assert "says ok to" in note["text"]
+    assert len(f.owner_asks()) == 1
+    req = f.owner_asks()[0][1]
+    assert req["key"] == "tel1"
+    assert "narxini 250 ga tushirsin" in req["say"]
+    assert req["asker"] == "Javohir"
+
+
+def test_group_instruction_to_owner_queues_order(monkeypatch):
+    monkeypatch.setattr(f, "OWNER_ASKS", f.QUEUE.parent / "asks")
+    flats_view({"key": "tel1", "place": "🏠 Lux uy", "link": "L1", "chat": True})
+    answered(monkeypatch, {"reply": "Egasiga aytaman.", "flat": 1, "tell_owner": "Biz tinch yigitlarmiz, ertaga boramiz."})
+    replies = []
+    asyncio.run(f.on_message(_from(2, "Jarvis egasiga aytgin biz tinch yigitlarmiz", client=Group(), replies=replies), "Rustam"))
+    assert len(f.owner_asks()) == 1
+    req = f.owner_asks()[0][1]
+    assert req["key"] == "tel1"
+    assert req["say"] == "Biz tinch yigitlarmiz, ertaga boramiz."
+    assert req["asker"] == "Rustam"
