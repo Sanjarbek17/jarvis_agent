@@ -290,6 +290,33 @@ def save_chat(chat: dict) -> None:
     os.replace(tmp, _path(chat["id"]))
 
 
+READS = STATE / "app_reads.json"       # latest read timestamp per chat across all devices (ticket 9a3d81f1)
+
+
+def load_reads() -> dict[str, float]:
+    try:
+        return json.loads(READS.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_read(chat_id: str, ts: float) -> dict[str, float]:
+    """Records that chat_id was read up to ts. Prevents notification spam across all of Sanjar's devices."""
+    reads = load_reads()
+    cur = float(reads.get(chat_id, 0.0))
+    if ts > cur:
+        reads[chat_id] = ts
+        READS.parent.mkdir(parents=True, exist_ok=True)
+        tmp = READS.with_suffix(".tmp")
+        tmp.write_text(json.dumps(reads, ensure_ascii=False))
+        os.replace(tmp, READS)
+        chat = load_chat(chat_id)
+        if chat and ts > float(chat.get("last_read", 0.0)):
+            chat["last_read"] = ts
+            save_chat(chat)
+    return reads
+
+
 def new_chat(project: str, title: str = "") -> dict:
     chat = {"id": uuid.uuid4().hex[:12], "project": project, "title": title or "New chat",
             "created": time.time(), "updated": time.time(), "session": "", "messages": []}
@@ -299,7 +326,9 @@ def new_chat(project: str, title: str = "") -> dict:
 
 def _summary(chat: dict) -> dict:
     last = chat["messages"][-1]["text"][:120] if chat["messages"] else ""
-    return {k: chat[k] for k in ("id", "project", "title", "updated")} | {"last": last}
+    reads = load_reads()
+    read_ts = max(float(reads.get(chat["id"], 0.0)), float(chat.get("last_read", 0.0)))
+    return {k: chat[k] for k in ("id", "project", "title", "updated")} | {"last": last, "last_read": read_ts}
 
 
 def chats_of(project: str) -> list[dict]:
@@ -707,7 +736,8 @@ def replies_since(after: float, limit: int = 20) -> list[dict]:
         notes = json.loads(REPLIES.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return []
-    return [n for n in notes if n.get("ts", 0) > after][-limit:]
+    reads = load_reads()
+    return [n for n in notes if n.get("ts", 0) > after and n.get("ts", 0) > float(reads.get(n.get("chat"), 0.0))][-limit:]
 
 
 _SECRETISH = re.compile(r"pass(word)?|parol|пароль|login\s*:|логин|token|secret|api[ _-]?key|2fa|kod:|code:", re.I)
@@ -722,7 +752,9 @@ def preview(text: str) -> str:
 
 def updates_since(after: float, limit: int = 20) -> list[dict]:
     chat = load_chat(UPDATES)
-    items = [m for m in chat["messages"] if m.get("pushed") and m["ts"] > after] if chat else []
+    reads = load_reads()
+    read_ts = max(float(reads.get(UPDATES, 0.0)), float(chat.get("last_read", 0.0)) if chat else 0.0)
+    items = [m for m in chat["messages"] if m.get("pushed") and m["ts"] > after and m["ts"] > read_ts] if chat else []
     return _with_project(items[-limit:])
 
 
@@ -793,6 +825,8 @@ async def messages(req: Request):
         return JSONResponse(await ask(chat, text, images=images, reply_to=body.get("reply_to"),
                                       signed_in=_session_of(req) is not None))
     recent = mark_stale(_for_reader(chat["messages"][-200:], _session_of(req) is not None))
+    if chat["messages"]:
+        save_read(chat["id"], chat["messages"][-1]["ts"])
     body = _with_project(recent) if chat["id"] == UPDATES else recent
     resp = JSONResponse(body)
     if answering.is_answering(chat["id"]):
@@ -822,6 +856,19 @@ async def move(req: Request):
     if not moved:
         return JSONResponse({"error": "That chat can't move there."}, status_code=400)
     return JSONResponse(_summary(moved))
+
+
+async def chat_read(req: Request):
+    """POST /api/chats/{chat}/read: marks a chat read up to ts across all of Sanjar's devices (ticket 9a3d81f1)."""
+    if not _authorized(req):
+        return _deny()
+    chat = load_chat(req.path_params["chat"])
+    if not chat:
+        return JSONResponse({"error": "no such chat"}, status_code=404)
+    body = await _json(req)
+    ts = float(body.get("ts") or (chat["messages"][-1]["ts"] if chat["messages"] else time.time()))
+    reads = save_read(chat["id"], ts)
+    return JSONResponse({"ok": True, "chat": chat["id"], "last_read": reads.get(chat["id"], ts)})
 
 
 async def voice(req: Request):
@@ -939,7 +986,8 @@ async def notifications(req: Request):
     # for notifications only (the chats show the full text): previews, never credentials
     items = [{**m, "text": preview(m.get("text", ""))} for m in updates_since(after)]
     replies = [{**n, "text": preview(n.get("text", ""))} for n in replies_since(after)]
-    return JSONResponse({"chat": UPDATES, "title": "Updates from Jarvis", "items": items, "replies": replies})
+    reads = load_reads()
+    return JSONResponse({"chat": UPDATES, "title": "Updates from Jarvis", "items": items, "replies": replies, "reads": reads})
 
 
 async def _mac_session(req: Request) -> dict | None:
@@ -1126,6 +1174,7 @@ app = Starlette(routes=[
     Route("/api/chats", chats, methods=["GET", "POST"]),
     Route("/api/chats/{chat}/messages", messages, methods=["GET", "POST"]),
     Route("/api/chats/{chat}/move", move, methods=["POST"]),
+    Route("/api/chats/{chat}/read", chat_read, methods=["POST"]),
     Route("/api/chats/{chat}/voice", voice, methods=["POST"]),
     Route("/api/images/{name}", image),
     Route("/api/uploads", upload, methods=["POST"]),
