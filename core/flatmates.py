@@ -188,7 +188,7 @@ def _corrected(message_id: int, text: str) -> None:
     tmp.replace(CHAT)
 
 
-MAX_DM_BATCH = 5                     # ticket 2b5af991: cap direct messages per round to prevent mass messages
+MAX_DM_BATCH = 1                     # ticket ee355229: ask about only one apartment at a time in direct messages to flatmates instead of lists or batches
 
 
 def drop_delete(message_id: int) -> None:
@@ -304,8 +304,8 @@ def sanitize_photo(path: str) -> str:
 
 
 def drop_dm(flats: list[str], photos: list[str] = ()) -> None:
-    """For the apartment search: write to each member privately with these flats (their one-line descriptions)
-    and photos (tickets 1f5a835e, 2e7cdd52, 2b5af991, 13fbc3cf), asking which are worth seeing."""
+    """For the apartment search: write to each member privately with an apartment description
+    and photos (tickets 1f5a835e, 2e7cdd52, 2b5af991, 13fbc3cf, ee355229), asking if they like it."""
     unique_flats = list(dict.fromkeys(flats))[:MAX_DM_BATCH]
     if not unique_flats:
         return

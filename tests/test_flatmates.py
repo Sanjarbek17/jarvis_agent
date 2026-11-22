@@ -840,12 +840,13 @@ class Private:
 
 
 def test_ignored_flats_go_to_each_member_privately():
-    f.drop_dm(["Chilonzor, 2 rooms, $300", "Yunusobod, 3 rooms, $320"])
+    f.drop_dm(["Chilonzor, 2 rooms, $300"])
     note = json.loads(next(f.QUEUE.glob("*.json")).read_text())
     tg = Private(fail={3})
     asyncio.run(f.post(tg, note))
     assert [to for to, _ in tg.sent] == [2]                              # not Jarvis, Sanjar, the bot; Ikrom's privacy failed
-    assert "1. Chilonzor, 2 rooms, $300\n2. Yunusobod" in tg.sent[0][1] and "Javohir" in tg.sent[0][1]
+    assert "Chilonzor, 2 rooms, $300" in tg.sent[0][1] and "Javohir" in tg.sent[0][1]
+    assert "Do you like this flat or not?" in tg.sent[0][1]
     assert set(json.loads(f.DMS.read_text())) == {"2"}
 
 
@@ -894,18 +895,18 @@ def test_dm_members_falls_back_when_album_fails(tmp_path):
 
 
 def test_dm_members_capped_and_batched_to_prevent_mass_messages(tmp_path):
-    """Ticket 2b5af991: drop_dm caps at MAX_DM_BATCH (5) and removes duplicate flat descriptions."""
+    """Tickets 2b5af991 & ee355229: drop_dm caps at MAX_DM_BATCH (1) and asks about only one apartment at a time."""
     flats = [f"Flat #{i % 5}, 2 rooms, ${200 + (i % 5) * 10} a month" for i in range(15)]
     p1 = tmp_path / "1.jpg"
     p1.write_bytes(b"image1")
     f.drop_dm(flats, photos=[str(p1)])
     note = json.loads(next(f.QUEUE.glob("*.json")).read_text())
-    assert len(note["dm"]) == 5
+    assert len(note["dm"]) == 1
     tg = Private(fail={3})
     asyncio.run(f.post(tg, note))
     assert len(tg.files) == 1
     dms = json.loads(f.DMS.read_text())
-    assert len(dms["2"]["flats"]) == 5
+    assert len(dms["2"]["flats"]) == 1
     assert len(dms["2"]["message_ids"]) >= 1
 
 
@@ -1102,7 +1103,8 @@ def test_private_raw_instructions_not_sent_to_group_and_queues_owners(monkeypatc
         {"key": "tel2", "place": "🏠 Flat 2", "link": "L2", "chat": True},
         {"key": "tel3", "place": "🏠 Flat 3", "link": "L3", "chat": True},
     )
-    asyncio.run(f.dm_members(Private(), flats[:3]))
+    f.DMS.parent.mkdir(parents=True, exist_ok=True)
+    f.DMS.write_text(json.dumps({"2": {"at": f.time.time(), "name": "Javohir", "flats": flats[:3]}}))
     for qf in f.QUEUE.glob("*.json"):
         qf.unlink()
     ev = Reply(sender_id=2, raw_text="1, 2 hammasidan rasmini so’ra va qachon borib ko’rishimiz mumkinligini so’ra")
@@ -1117,7 +1119,9 @@ def test_private_raw_instructions_not_sent_to_group_and_queues_owners(monkeypatc
 
 
 def test_batch_approval_only_lists_approved_flats():
-    asyncio.run(f.dm_members(Private(), ["Chilonzor, $300", "Yunusobod, $350", "Mirzo Ulugbek, $400"]))
+    f.DMS.parent.mkdir(parents=True, exist_ok=True)
+    f.DMS.write_text(json.dumps({"2": {"at": f.time.time(), "name": "Javohir",
+                                       "flats": ["Chilonzor, $300", "Yunusobod, $350", "Mirzo Ulugbek, $400"]}}))
     for qf in f.QUEUE.glob("*.json"):
         qf.unlink()
     ev = Reply(sender_id=2, raw_text="2 yoqdi")
