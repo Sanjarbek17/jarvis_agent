@@ -866,6 +866,33 @@ def test_dm_members_sends_photos_when_available(tmp_path):
     assert set(json.loads(f.DMS.read_text())) == {"2"}
 
 
+def test_dm_members_falls_back_when_album_fails(tmp_path):
+    """Ticket 13fbc3cf: if sending an album fails (e.g. ImageProcessFailedError), individual files and text are still delivered."""
+    p1 = tmp_path / "1.jpg"
+    p1.write_bytes(b"image1")
+    p2 = tmp_path / "2.jpg"
+    p2.write_bytes(b"image2")
+
+    class AlbumFailPrivate(Private):
+        async def send_file(self, to, files, caption="", force_document=False, **kw):
+            if to in self.fail:
+                raise ValueError("privacy")
+            if isinstance(files, list):
+                raise ValueError("ImageProcessFailedError: Failure while processing image")
+            self.files.append((to, files, caption))
+            return NS(id=len(self.files) + 10)
+
+    f.drop_dm(["Chilonzor, 2 rooms, $300"], photos=[str(p1), str(p2)])
+    note = json.loads(next(f.QUEUE.glob("*.json")).read_text())
+    tg = AlbumFailPrivate(fail={3})
+    asyncio.run(f.post(tg, note))
+    # Both photos sent individually, and message text sent
+    assert len(tg.files) == 2
+    assert len(tg.sent) >= 1
+    assert any("Chilonzor" in text for _, text in tg.sent)
+    assert set(json.loads(f.DMS.read_text())) == {"2"}
+
+
 def test_dm_members_capped_and_batched_to_prevent_mass_messages(tmp_path):
     """Ticket 2b5af991: drop_dm caps at MAX_DM_BATCH (5) and removes duplicate flat descriptions."""
     flats = [f"Flat #{i % 5}, 2 rooms, ${200 + (i % 5) * 10} a month" for i in range(15)]
