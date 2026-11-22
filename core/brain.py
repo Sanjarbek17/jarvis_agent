@@ -10,7 +10,7 @@ import contextlib
 import json
 import logging
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 from . import coremem, memory, usagewatch
 from .config import (
@@ -293,6 +293,42 @@ def _file_access() -> list[str]:
     return ["--tools", "Read,Glob,Grep", "--add-dir", str(DEV), *extra]
 
 
+def _step_text(block: dict) -> str:
+    """A short human line for one brain tool call."""
+    info = block.get("tool_info") or {}
+    name = block.get("name", "") or block.get("tool_name", "") or info.get("name", "")
+    args = (
+        block.get("input")
+        or block.get("tool_args")
+        or info.get("parameters")
+        or info.get("args")
+        or {}
+    )
+    if name in ("Edit", "Write", "MultiEdit", "replace_file_content", "multi_replace_file_content",
+                "write_to_file", "edit_file", "write_file", "sed_file"):
+        path = args.get("file_path") or args.get("Path") or args.get("path") or ""
+        return f"editing {Path(path).name}" if path else "editing files"
+    if name in ("Read", "view_file", "read_file"):
+        path = args.get("file_path") or args.get("Path") or args.get("path") or ""
+        return f"reading {Path(path).name}" if path else "reading files"
+    if name in ("Bash", "run_command"):
+        cmd = args.get("toolSummary") or args.get("description") or args.get("CommandLine") or args.get("command") or ""
+        return f"running: {cmd[:80]}"
+    if name in ("Grep", "Glob", "grep_search", "find_by_name"):
+        return "searching the code"
+    if name in ("TodoWrite", "schedule"):
+        return "planning the steps"
+    if name == "call_mcp_tool":
+        return f"calling {args.get('ToolName', 'mcp tool')}"
+    if name in ("search_web", "WebSearch"):
+        return "searching the web"
+    if name.startswith("browser_"):
+        return "browsing web"
+    if name in ("invoke_subagent", "define_subagent"):
+        return f"calling subagent {args.get('Role') or args.get('TypeName') or ''}".strip()
+    return name.removeprefix("mcp__jarvis__").removeprefix("mcp__").replace("__", " ")
+
+
 class Brain:
     def __init__(self, mode: str, prompt: str = ""):
         """mode: "call" / "chat" with Sanjar, "guest" (a call to someone else, with `prompt`),
@@ -307,6 +343,7 @@ class Brain:
         self.core_version = 0     # coremem.version() it was started with
         self.notes: list[str] = []  # things that happened elsewhere, sent along with the next message
         self.origin = ""          # "app:<chat id>" for app chats: tool calls say where he asked (core/origin.py)
+        self.was_stopped = False
 
     def _system(self) -> str:
         if self.guest_prompt:
@@ -357,7 +394,7 @@ class Brain:
             stderr=asyncio.subprocess.DEVNULL, limit=20_000_000)
         log.info("%s brain started%s", self.mode, " (resumed)" if resume else "")
 
-    async def ask(self, text: str) -> AsyncIterator[str]:
+    async def ask(self, text: str, on_step: Callable[[str], None] | None = None) -> AsyncIterator[str]:
         """Send one message; yield the reply text as it streams (only text meant for Sanjar).
         Chat and call brains get relevant long-term memory in front of the message, and every
         exchange is saved to memory afterwards, so nothing depends on this one session."""
@@ -366,14 +403,15 @@ class Brain:
         if remembers:
             with contextlib.suppress(Exception):
                 text = await memory.context_for(said) + text
-        async for chunk in self._ask(text):
+        async for chunk in self._ask(text, on_step=on_step):
             out.append(chunk)
             yield chunk
         if remembers and not said.startswith(("[DAILY SUMMARY]", "[WORKER REPORT", "[SELF-CHECK]")):
             asyncio.create_task(memory.log_exchange(self.mode, said, "".join(out)))
 
-    async def _ask(self, text: str) -> AsyncIterator[str]:
+    async def _ask(self, text: str, on_step: Callable[[str], None] | None = None) -> AsyncIterator[str]:
         async with self.lock:
+            self.was_stopped = False
             if self.notes:
                 text = "\n\n".join([*self.notes, text])
                 self.notes.clear()
@@ -415,8 +453,12 @@ class Brain:
                         delta = step.get("text_delta")
                         if delta:
                             yield delta
-                        elif step.get("step_type") == "tool_call":
+                        elif step.get("step_type") in ("tool", "tool_call"):
                             yield "\n"
+                            if on_step:
+                                txt = _step_text(step)
+                                if txt:
+                                    on_step(txt)
                     elif event_type == "result":
                         res = event.get("result", {})
                         self.session_id = res.get("conversation_id") or self.session_id
@@ -433,19 +475,28 @@ class Brain:
                         yield delta["text"]
                 elif kind == "assistant":
                     # a tool call ends a text block; make sure sentences get cut there
-                    if any(b.get("type") == "tool_use" for b in event["message"].get("content", [])):
+                    tools = [b for b in event["message"].get("content", []) if b.get("type") == "tool_use"]
+                    if tools:
                         yield "\n"
+                        if on_step:
+                            for b in tools:
+                                txt = _step_text(b)
+                                if txt:
+                                    on_step(txt)
                 elif kind == "rate_limit_event":
                     asyncio.create_task(usagewatch.report(event.get("rate_limit_info") or {}))
                 elif kind == "result":
                     if event.get("is_error"):
                         log.error("brain error: %s", event.get("result"))
                     return
+            if self.was_stopped:
+                self.proc = None
+                return
             self.proc = None
             yield "Sorry, I lost my train of thought. Say that again?"
 
-    async def reply(self, text: str) -> str:
-        return "".join([chunk async for chunk in self.ask(text)]).strip()
+    async def reply(self, text: str, on_step: Callable[[str], None] | None = None) -> str:
+        return "".join([chunk async for chunk in self.ask(text, on_step=on_step)]).strip()
 
     async def clear(self):
         """Forget the conversation so far: stop the process and drop the resume session, so the
@@ -460,6 +511,9 @@ class Brain:
             self.notes.clear()
 
     async def stop(self):
+        self.was_stopped = True
         if self.proc and self.proc.returncode is None:
-            self.proc.stdin.close()
-            self.proc.terminate()
+            with contextlib.suppress(Exception):
+                self.proc.stdin.close()
+            with contextlib.suppress(Exception):
+                self.proc.terminate()

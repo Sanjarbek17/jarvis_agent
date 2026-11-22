@@ -37,3 +37,14 @@ def clear() -> None:
     """At start: the old process's answers are gone with it."""
     for p in DIR.glob("*") if DIR.exists() else []:
         p.unlink(missing_ok=True)
+
+
+def clear_chat(key: str) -> None:
+    """Clear answering marker for a specific chat (e.g. stopped by user)."""
+    if not DIR.exists():
+        return
+    prefix = f"{''.join(c for c in key if c.isalnum() or c in '-_')[:60] or 'x'}-"
+    for p in DIR.glob("*"):
+        if p.name.startswith(prefix):
+            p.unlink(missing_ok=True)
+

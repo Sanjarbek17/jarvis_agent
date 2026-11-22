@@ -126,6 +126,7 @@ WEB_HEADERS = {
 }
 
 _brains: dict[str, tuple[Brain, float]] = {}   # chat id -> (brain, last used)
+_thinking: dict[str, dict] = {}                # chat id -> {"started": float, "step": str, "steps": list[str]}
 start_call: Callable[[WebSocket, dict], Awaitable[None]] | None = None   # set by jarvis.py
 worker_status: Callable[[], dict] | None = None                          # set by jarvis.py (runner.snapshot)
 send_code: Callable[[str], Awaitable] | None = None                      # set by jarvis.py: text to Sanjar's Telegram
@@ -537,15 +538,30 @@ async def ask(chat: dict, text: str, voice: bool = False, images: list[str] = ()
                     f"{paths}. Look at {'them' if len(images) > 1 else 'it'} with Read before answering.]\n")
     brain = _brain(chat)
     report = None
+    _thinking[chat["id"]] = {"started": time.time(), "step": "Jarvis is thinking...", "steps": []}
+    def _on_step(st: str):
+        info = _thinking.get(chat["id"])
+        if info:
+            info["step"] = st
+            if not info["steps"] or info["steps"][-1] != st:
+                info["steps"].append(st)
     try:
         replying = reply_context(answered) if answered else ""
         who = SIGNED_IN if signed_in else NOT_SIGNED_IN
         live, report = await livestats.live_for(chat["project"], text)    # status: live numbers first, in code (0960b065)
+        prompt = f"{context_line(chat['project'])} {who}\n{earlier}{live}{replying}{attached}{text}"
         with answering.mark(chat["id"]):                      # a restart waits for this answer (11ff3b8a)
-            reply = await brain.reply(f"{context_line(chat['project'])} {who}\n{earlier}{live}{replying}{attached}{text}")
+            try:
+                reply = await brain.reply(prompt, on_step=_on_step)
+            except TypeError:
+                reply = await brain.reply(prompt)
     except Exception:
         log.exception("app chat %s: brain failed", chat["id"])
-        reply = "Sorry, something went wrong on my side. Try again?"
+        reply = "(stopped)" if getattr(brain, "was_stopped", False) else "Sorry, something went wrong on my side. Try again?"
+    finally:
+        _thinking.pop(chat["id"], None)
+    if getattr(brain, "was_stopped", False) and (not reply.strip() or reply == "(no reply)"):
+        reply = "(stopped)"
     if is_silent(reply) or not reply.strip():
         reply = "(no reply)"
     chat = load_chat(chat["id"]) or chat               # another request may have added messages meanwhile
@@ -829,9 +845,53 @@ async def messages(req: Request):
         save_read(chat["id"], chat["messages"][-1]["ts"])
     body = _with_project(recent) if chat["id"] == UPDATES else recent
     resp = JSONResponse(body)
-    if answering.is_answering(chat["id"]):
+    if answering.is_answering(chat["id"]) or chat["id"] in _thinking:
         resp.headers["X-Jarvis-Answering"] = "true"
+        info = _thinking.get(chat["id"])
+        if info and info.get("step"):
+            resp.headers["X-Jarvis-Step"] = info["step"]
     return resp
+
+
+async def chat_thinking(req: Request):
+    if not _authorized(req):
+        return _deny()
+    cid = req.path_params["chat"]
+    info = _thinking.get(cid)
+    is_ans = answering.is_answering(cid) or (info is not None)
+    if not is_ans and not info:
+        return JSONResponse({"answering": False, "step": "", "steps": [], "elapsed": 0.0})
+    step = info.get("step", "Jarvis is thinking...") if info else "Jarvis is thinking..."
+    steps = info.get("steps", []) if info else []
+    started = info.get("started", time.time()) if info else time.time()
+    elapsed = round(max(0.0, time.time() - started), 1)
+    return JSONResponse({
+        "answering": True,
+        "step": step,
+        "steps": steps,
+        "started": started,
+        "elapsed": elapsed,
+    })
+
+
+async def chat_stop(req: Request):
+    if not _authorized(req):
+        return _deny()
+    cid = req.path_params["chat"]
+    chat = load_chat(cid)
+    brain = None
+    if (_shared(chat) if chat else False) or (cid == UPDATES):
+        brain = main_brain
+    elif cid in _brains:
+        brain = _brains[cid][0]
+
+    stopped = False
+    if brain:
+        await brain.stop()
+        stopped = True
+    answering.clear_chat(cid)
+    _thinking.pop(cid, None)
+    return JSONResponse({"ok": True, "stopped": stopped})
 
 
 async def upload(req: Request):
@@ -1173,6 +1233,8 @@ app = Starlette(routes=[
     Route("/api/projects", projects),
     Route("/api/chats", chats, methods=["GET", "POST"]),
     Route("/api/chats/{chat}/messages", messages, methods=["GET", "POST"]),
+    Route("/api/chats/{chat}/thinking", chat_thinking),
+    Route("/api/chats/{chat}/stop", chat_stop, methods=["POST"]),
     Route("/api/chats/{chat}/move", move, methods=["POST"]),
     Route("/api/chats/{chat}/read", chat_read, methods=["POST"]),
     Route("/api/chats/{chat}/voice", voice, methods=["POST"]),
