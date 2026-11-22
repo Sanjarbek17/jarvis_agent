@@ -283,16 +283,36 @@ async def carry_out(event, text: str, replied: str) -> None:
             await event.client.send_message(OWNER_ID, f"🏠 Flatmates: \"{text[:200]}\"\n\n{private[:3500]}")
 
 
+def sanitize_photo(path: str) -> str:
+    """Ensure photo is compatible with Telegram image processing (baseline JPEG)."""
+    p = Path(path)
+    if not p.is_file() or p.suffix.lower() not in (".jpg", ".jpeg"):
+        return str(path)
+    clean = p.with_suffix(".clean.jpg")
+    if clean.is_file() and clean.stat().st_size > 0 and clean.stat().st_mtime >= p.stat().st_mtime:
+        return str(clean)
+    try:
+        import subprocess
+        res = subprocess.run(["file", str(p)], capture_output=True, text=True, timeout=2)
+        if "progressive" in res.stdout.lower():
+            subprocess.run(["ffmpeg", "-y", "-i", str(p), str(clean)], capture_output=True, timeout=5)
+            if clean.is_file() and clean.stat().st_size > 0:
+                return str(clean)
+    except Exception:
+        pass
+    return str(path)
+
+
 def drop_dm(flats: list[str], photos: list[str] = ()) -> None:
     """For the apartment search: write to each member privately with these flats (their one-line descriptions)
-    and photos (tickets 1f5a835e, 2e7cdd52, 2b5af991), asking which are worth seeing."""
+    and photos (tickets 1f5a835e, 2e7cdd52, 2b5af991, 13fbc3cf), asking which are worth seeing."""
     unique_flats = list(dict.fromkeys(flats))[:MAX_DM_BATCH]
     if not unique_flats:
         return
     QUEUE.mkdir(parents=True, exist_ok=True)
     name = f"{time.time():.6f}-{uuid.uuid4().hex[:6]}"
     tmp = QUEUE / f"{name}.tmp"
-    valid_photos = [str(p) for p in photos if Path(p).is_file()][:10]
+    valid_photos = [sanitize_photo(str(p)) for p in photos if Path(p).is_file()][:10]
     tmp.write_text(json.dumps({
         "dm": [str(x)[:200] for x in unique_flats],
         "photos": valid_photos,
@@ -438,12 +458,30 @@ async def dm_members(tg, flats: list[str], photos: list[str] = ()) -> int:
         sent_ids = []
         try:
             if valid_photos:
-                if len(text) <= 1024:
-                    res = await tg.send_file(u.id, valid_photos, caption=text)
-                    sent_ids.extend([m.id for m in res] if isinstance(res, list) else [getattr(res, "id", 0)])
-                else:
-                    res = await tg.send_file(u.id, valid_photos)
-                    sent_ids.extend([m.id for m in res] if isinstance(res, list) else [getattr(res, "id", 0)])
+                album_ok = False
+                try:
+                    if len(text) <= 1024:
+                        res = await tg.send_file(u.id, valid_photos, caption=text)
+                        sent_ids.extend([m.id for m in res] if isinstance(res, list) else [getattr(res, "id", 0)])
+                    else:
+                        res = await tg.send_file(u.id, valid_photos)
+                        sent_ids.extend([m.id for m in res] if isinstance(res, list) else [getattr(res, "id", 0)])
+                        msg = await tg.send_message(u.id, text)
+                        if getattr(msg, "id", 0):
+                            sent_ids.append(msg.id)
+                    album_ok = True
+                except Exception as img_err:
+                    log.warning("Flatmates: album send failed to %s (%r), sending individual photos/documents and text", u.id, img_err)
+                    for photo in valid_photos:
+                        try:
+                            res = await tg.send_file(u.id, photo)
+                            if getattr(res, "id", 0):
+                                sent_ids.append(res.id)
+                        except Exception:
+                            with contextlib.suppress(Exception):
+                                res = await tg.send_file(u.id, photo, force_document=True)
+                                if getattr(res, "id", 0):
+                                    sent_ids.append(res.id)
                     msg = await tg.send_message(u.id, text)
                     if getattr(msg, "id", 0):
                         sent_ids.append(msg.id)
@@ -601,7 +639,7 @@ def tell_owner(key: str, message: str, asker: str = "Sanjar") -> None:
     """A message for the owner of flat `key` (tickets eae5445d, c0adb911): the search sends it in our chat with them."""
     OWNER_ASKS.mkdir(parents=True, exist_ok=True)
     slug = re.sub(r"[^a-zA-Z0-9]", "", asker).lower() or "sanjar"
-    name = f"{int(time.time() * 1000)}-{slug}"
+    name = f"{time.time():.6f}-{uuid.uuid4().hex[:6]}-{slug}"
     tmp = OWNER_ASKS / f"{name}.tmp"
     tmp.write_text(json.dumps({"key": key, "say": message, "asker": asker, "reply_to": 0, "at": time.time()}, ensure_ascii=False))
     tmp.rename(OWNER_ASKS / f"{name}.json")
@@ -755,7 +793,7 @@ async def post(tg, note: dict) -> None:
         await delete_dms(tg, user_id=note.get("user_id", 0))
         return
     if note.get("dm"):                               # not a group post: write to each member privately
-        photos = [p for p in note.get("photos", []) if Path(p).is_file()]
+        photos = [sanitize_photo(str(p)) for p in note.get("photos", []) if Path(p).is_file()]
         await dm_members(tg, note["dm"], photos=photos)
         return
     photos = [p for p in note.get("photos", []) if Path(p).is_file()]
