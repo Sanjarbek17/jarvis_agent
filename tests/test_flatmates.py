@@ -1046,11 +1046,60 @@ def test_private_order_to_owner_is_queued(monkeypatch):
     assert asyncio.run(f.on_private(ev)) is True
     note = json.loads(next(f.QUEUE.glob("*.json")).read_text())
     assert "says ok to" in note["text"]
+    assert "narxini 250 ga tushirsin" not in note["text"]  # raw instructions not sent to group
     assert len(f.owner_asks()) == 1
     req = f.owner_asks()[0][1]
     assert req["key"] == "tel1"
     assert "narxini 250 ga tushirsin" in req["say"]
     assert req["asker"] == "Javohir"
+
+
+def test_private_dislike_or_chatter_not_sent_to_group_but_lifts_hold():
+    asyncio.run(f.dm_members(Private(), ["Chilonzor, 2 rooms, $300"]))
+    for text in ["yoqmadi", "Unday qima", "Hi uzoqlik qiladi sal", "It's so far"]:
+        for qf in f.QUEUE.glob("*.json"):
+            qf.unlink()
+        ev = Reply(sender_id=2, raw_text=text)
+        assert asyncio.run(f.on_private(ev)) is True
+        assert not list(f.QUEUE.glob("*.json"))  # NEVER posted to group!
+        assert "letting me know" in ev.replied
+    # Member speaking still recorded in CHAT so hold lifts
+    assert any(m["name"] == "Javohir" for m in f.recent(0))
+
+
+def test_private_raw_instructions_not_sent_to_group_and_queues_owners(monkeypatch):
+    monkeypatch.setattr(f, "OWNER_ASKS", f.QUEUE.parent / "asks")
+    flats = [f"Flat {i}" for i in range(1, 10)]
+    flats_view(
+        {"key": "tel1", "place": "🏠 Flat 1", "link": "L1", "chat": True},
+        {"key": "tel2", "place": "🏠 Flat 2", "link": "L2", "chat": True},
+        {"key": "tel3", "place": "🏠 Flat 3", "link": "L3", "chat": True},
+    )
+    asyncio.run(f.dm_members(Private(), flats[:3]))
+    for qf in f.QUEUE.glob("*.json"):
+        qf.unlink()
+    ev = Reply(sender_id=2, raw_text="1, 2 hammasidan rasmini so’ra va qachon borib ko’rishimiz mumkinligini so’ra")
+    assert asyncio.run(f.on_private(ev)) is True
+    assert not list(f.QUEUE.glob("*.json"))  # NEVER sent to group!
+    assert "queued your message" in ev.replied
+    asks = f.owner_asks()
+    assert len(asks) == 2  # Queued for both flat 1 and flat 2
+    keys = {a[1]["key"] for a in asks}
+    assert keys == {"tel1", "tel2"}
+    assert "rasmini" in asks[0][1]["say"]
+
+
+def test_batch_approval_only_lists_approved_flats():
+    asyncio.run(f.dm_members(Private(), ["Chilonzor, $300", "Yunusobod, $350", "Mirzo Ulugbek, $400"]))
+    for qf in f.QUEUE.glob("*.json"):
+        qf.unlink()
+    ev = Reply(sender_id=2, raw_text="2 yoqdi")
+    assert asyncio.run(f.on_private(ev)) is True
+    note = json.loads(next(f.QUEUE.glob("*.json")).read_text())
+    assert "says ok to" in note["text"]
+    assert "2. Yunusobod" in note["text"]
+    assert "1. Chilonzor" not in note["text"]
+    assert "3. Mirzo Ulugbek" not in note["text"]
 
 
 def test_group_instruction_to_owner_queues_order(monkeypatch):
