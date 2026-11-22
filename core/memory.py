@@ -206,6 +206,13 @@ Pick an existing thread when the exchange continues that topic (also short follo
 that continue the previous exchange). Use "new" only for a genuinely different topic."""
 
 
+RETRYABLE_ENGINE_ERRORS = (
+    "empty conversation id",
+    "failed to start conversation",
+    "initialized by another opener",
+)
+
+
 async def _ask_claude_json(prompt: str, model: str = TOPIC_MODEL, timeout: float = TOPIC_TIMEOUT) -> dict:
     """One quick, tool-less Claude/Antigravity call through the CLI; returns the JSON object it answers with."""
     if JARVIS_ENGINE == "antigravity":
@@ -221,23 +228,40 @@ async def _ask_claude_json(prompt: str, model: str = TOPIC_MODEL, timeout: float
             "claude", "-p", prompt, "--model", model, "--output-format", "json", "--tools", "",
             "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"
         ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-    try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        raise
-    envelope = json.loads(out)
-    if envelope.get("is_error") or envelope.get("status") == "ERROR":
-        err = envelope.get("error") or envelope.get("result")
-        raise RuntimeError(f"engine error: {str(err)[:200]}")
-    text = envelope.get("response") or envelope.get("result") or ""
-    m = re.search(r"\{.*\}", text, re.S)       # tolerate ```json fences or stray words around it
-    if not m:
-        raise ValueError(f"no JSON in topic answer: {text[:200]!r}")
-    return json.loads(m.group(0))
+    max_tries = 3
+    for attempt in range(max_tries):
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise
+        try:
+            envelope = json.loads(out)
+        except (json.JSONDecodeError, ValueError) as je:
+            if attempt < max_tries - 1:
+                log.warning("engine returned invalid JSON (%r), retrying (%d/%d)...", je, attempt + 1, max_tries)
+                await asyncio.sleep(0.5 * (attempt + 1))
+                continue
+            raise
+        if envelope.get("is_error") or envelope.get("status") == "ERROR":
+            err = str(envelope.get("error") or envelope.get("result") or "")
+            if attempt < max_tries - 1 and any(sub in err.lower() for sub in RETRYABLE_ENGINE_ERRORS):
+                log.warning("engine startup error (%s), retrying (%d/%d)...", err[:120], attempt + 1, max_tries)
+                await asyncio.sleep(0.5 * (attempt + 1))
+                continue
+            raise RuntimeError(f"engine error: {err[:200]}")
+        text = envelope.get("response") or envelope.get("result") or ""
+        m = re.search(r"\{.*\}", text, re.S)       # tolerate ```json fences or stray words around it
+        if not m:
+            if attempt < max_tries - 1:
+                log.warning("no JSON in answer, retrying (%d/%d)...", attempt + 1, max_tries)
+                await asyncio.sleep(0.5 * (attempt + 1))
+                continue
+            raise ValueError(f"no JSON in topic answer: {text[:200]!r}")
+        return json.loads(m.group(0))
 
 
 async def _pick_thread(text: str, channel: str, said: str, now: float) -> tuple[str, list[str]]:
