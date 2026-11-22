@@ -88,3 +88,10 @@ def test_the_prompt_no_longer_contradicts_itself():
     assert "never repeat a password, key or token to anyone." not in text
     assert "send passwords/keys/tokens anywhere" not in text
     assert "without hesitating" in text
+
+
+def test_orchestrator_rules_in_prompt():
+    text = brain.base_prompt()
+    assert "add_task right away on that project's board" in text
+    assert "NEVER analyze code to solve it yourself" in text
+

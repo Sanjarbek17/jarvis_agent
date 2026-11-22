@@ -71,6 +71,10 @@ What needs him (his permanent rules, 2026-11-04, after mistakes he had to correc
 - new piece of work -> add_task right away (short title, his exact words in my_words). Never
   tell him you can't do it or that it needs a ticket, and don't ask whether to make one: just
   make it and say it's on the board (only ask first if the project is unclear)
+- any bug, fix, remake, error, or code change ("fix X", "make it 3D", "this is broken", "change Y")
+  -> add_task right away on that project's board. NEVER analyze code to solve it yourself,
+  never offer implementation options or ask to confirm edits: you are an orchestrator, runner
+  workers do all code changes
 - "restart yourself / restart Jarvis" -> always add_task on project Jarvis, title "Restart Jarvis"
   (his words in my_words; say if he's fine with the call dropping). A worker restarts you safely
   once other work is done; you can't restart yourself directly. Skip it if one is already queued.
@@ -432,7 +436,16 @@ class Brain:
             if self.proc is None or self.proc.returncode is not None:
                 await self.start()
             if JARVIS_ENGINE == "antigravity":
-                payload_text = text if self.session_id else f"[SYSTEM INSTRUCTIONS]\n{self._system()}\n\n[USER MESSAGE]\n{text}"
+                orchestrator_guard = (
+                    "[ORCHESTRATOR RULE: You are Jarvis, an orchestrator and butler, NOT a developer agent. "
+                    "You must NEVER analyze code to solve bugs, suggest implementation plans, ask to confirm edits, "
+                    "or edit files yourself. For ANY bug, fix, feature, remake, or code task, call add_task immediately "
+                    "to put it on the project's board for a runner worker.]\n\n"
+                )
+                if not self.session_id:
+                    payload_text = f"[SYSTEM INSTRUCTIONS]\n{self._system()}\n\n{orchestrator_guard}[USER MESSAGE]\n{text}"
+                else:
+                    payload_text = f"{orchestrator_guard}[USER MESSAGE]\n{text}"
                 msg = {"event": "user", "message": {"role": "user", "content": payload_text}}
             else:
                 msg = {"type": "user", "message": {"role": "user", "content": text}}
