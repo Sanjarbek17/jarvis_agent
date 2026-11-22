@@ -808,6 +808,7 @@ class Private:
     def __init__(self, fail=()):
         self.fail, self.sent = fail, []
         self.files = []
+        self.deleted = []
 
     async def get_me(self):
         return NS(id=1)
@@ -821,13 +822,21 @@ class Private:
         if to in self.fail:
             raise ValueError("privacy")
         self.sent.append((to, text))
+        return NS(id=100 + len(self.sent))
 
     async def send_file(self, to, files, caption="", **kw):
         if to in self.fail:
             raise ValueError("privacy")
         self.files.append((to, files, caption))
         self.sent.append((to, caption))
-        return NS(id=2)
+        return NS(id=200 + len(self.files))
+
+    async def delete_messages(self, chat, ids, **kw):
+        self.deleted.append((chat, list(ids)))
+
+    async def iter_messages(self, chat, limit=60):
+        for mid in [201, 101]:
+            yield NS(id=mid, out=True, raw_text="Jarvis from the Flatmates group here 🙂 Do you like this flat", grouped_id=None)
 
 
 def test_ignored_flats_go_to_each_member_privately():
@@ -857,21 +866,55 @@ def test_dm_members_sends_photos_when_available(tmp_path):
     assert set(json.loads(f.DMS.read_text())) == {"2"}
 
 
-def test_dm_members_all_open_flats_not_truncated(tmp_path):
-    flats = [f"Flat #{i}, 2 rooms, ${200 + i * 10} a month" for i in range(15)]
+def test_dm_members_capped_and_batched_to_prevent_mass_messages(tmp_path):
+    """Ticket 2b5af991: drop_dm caps at MAX_DM_BATCH (5) and removes duplicate flat descriptions."""
+    flats = [f"Flat #{i % 5}, 2 rooms, ${200 + (i % 5) * 10} a month" for i in range(15)]
     p1 = tmp_path / "1.jpg"
     p1.write_bytes(b"image1")
     f.drop_dm(flats, photos=[str(p1)])
     note = json.loads(next(f.QUEUE.glob("*.json")).read_text())
-    assert len(note["dm"]) == 15
+    assert len(note["dm"]) == 5
     tg = Private(fail={3})
     asyncio.run(f.post(tg, note))
     assert len(tg.files) == 1
-    # Check that Javohir received the message and all 15 flats are included
-    full_text = next(text for to, text in tg.sent if "Flat #14" in text)
-    assert "Flat #0" in full_text and "Flat #14" in full_text
     dms = json.loads(f.DMS.read_text())
-    assert len(dms["2"]["flats"]) == 15
+    assert len(dms["2"]["flats"]) == 5
+    assert len(dms["2"]["message_ids"]) >= 1
+
+
+def test_dm_members_skips_duplicates_within_24h():
+    """Ticket 2b5af991: sending the same flats again within 24h is skipped."""
+    flats = ["Chilonzor, 2 rooms, $300"]
+    tg = Private(fail={3})
+    sent1 = asyncio.run(f.dm_members(tg, flats))
+    assert sent1 == 1
+    # Second send with same flats is skipped
+    sent2 = asyncio.run(f.dm_members(tg, flats))
+    assert sent2 == 0
+
+
+def test_delete_dms_deletes_messages_and_cleans_state():
+    """Ticket 2b5af991: delete_dms removes messages from private chats and clears state."""
+    f.DMS.parent.mkdir(parents=True, exist_ok=True)
+    f.DMS.write_text(json.dumps({"2": {"at": f.time.time(), "name": "Javohir", "flats": ["F1"], "message_ids": [201, 101]}}))
+    tg = Private()
+    deleted = asyncio.run(f.delete_dms(tg, user_id=2))
+    assert deleted > 0
+    assert (2, [101, 201]) in tg.deleted or any(to == 2 and set(ids) >= {101, 201} for to, ids in tg.deleted)
+    dms = json.loads(f.DMS.read_text())
+    assert dms["2"]["flats"] == []
+    assert dms["2"]["message_ids"] == []
+
+
+def test_drop_delete_dms_queues_and_post_executes():
+    """Ticket 2b5af991: drop_delete_dms queues a note and post(tg, note) executes delete_dms."""
+    f.drop_delete_dms(user_id=2)
+    note_file = next(f.QUEUE.glob("*.json"))
+    note = json.loads(note_file.read_text())
+    assert note.get("delete_dms") is True
+    tg = Private()
+    asyncio.run(f.post(tg, note))
+    note_file.unlink(missing_ok=True)
 
 
 class Reply(NS):
