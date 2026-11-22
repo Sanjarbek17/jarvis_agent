@@ -328,8 +328,14 @@ DISLIKE_PAT = re.compile(
     re.I,
 )
 ORDER_PAT = re.compile(
-    r"(?:egasiga\s*(?:ayt\w*|yoz\w*|gaplash\w*)|egasidan\s*so.?r\w*|so.?rab\s*ko.?r\w*|aytgin|so.?ragin|gaplashib\s*ko.?r\w*|"
-    r"эгасига\s*(?:айт\w*|ёз\w*|гаплаш\w*)|эгасидан\s*сўр\w*|скажи\s*хозяину|спроси\s*(?:у\s*хозяина)?|напиши\s*хозяину|поговори\s*с\s*хозяином|"
+    r"(?:egasiga\s*(?:ayt\w*|yoz\w*|gaplash\w*)|egasidan\s*so.?r\w*|"
+    r"so.?rab\s*ko.?r\w*|so.?ragin|so.?rang|so.?ra\b|"
+    r"aytgin|aytib\s*ko.?r\w*|ayting|ayt\b|"
+    r"gaplashib\s*ko.?r\w*|surishtir\w*|"
+    r"rasm\w*\s*(?:bormi|so.?r\w*|tashlasin|yuborsin)|"
+    r"qachon\s*(?:bor\w*|ko.?r\w*)|"
+    r"эгасига\s*(?:айт\w*|ёз\w*|гаплаш\w*)|эгасидан\s*сўр\w*|"
+    r"скажи\s*хозяину|спроси\s*(?:у\s*хозяина)?|напиши\s*хозяину|поговори\s*с\s*хозяином|"
     r"tell\s*the\s*owner|ask\s*the\s*owner|write\s*to\s*the\s*owner|talk\s*to\s*the\s*owner)",
     re.I,
 )
@@ -338,41 +344,72 @@ ORDER_PAT = re.compile(
 def parse_private_answer(text: str, flats: list[str]) -> dict:
     t = (text or "").strip()
     if not t:
-        return {"approved": [], "order": "", "order_flat": 1}
+        return {"approved": [], "order": "", "order_flat": 1, "order_flats": []}
 
-    is_all_negative = bool(re.search(r"^(none|yo.?q|yoqmadi|hech\s*(qaysi|biri)|kerak\s*emas|kerakmas|не\s*надо|нет|ничего)\b", t, re.I))
+    t_norm = re.sub(r"[’‘ʻʼ`]", "'", t)
+    is_all_negative = bool(re.search(r"^(none|yo.?q|yoqmadi|hech\s*(qaysi|biri)|kerak\s*emas|kerakmas|не\s*надо|нет|ничего)\b", t_norm, re.I))
 
-    approved = []
-    if not is_all_negative:
-        numbers = [int(n) for n in re.findall(r"\b(\d+)\b", t) if 1 <= int(n) <= len(flats)]
-        if numbers:
-            for n in numbers:
-                neg = re.search(rf"\b{n}\b[^.,;\n]*(?:yoqmadi|don.?t\s*like|не\s*нравится|yomon)", t, re.I) or \
-                      re.search(rf"(?:yoqmadi|don.?t\s*like|не\s*нравится|yomon)[^.,;\n]*\b{n}\b", t, re.I)
-                if not neg:
-                    approved.append(n)
-        elif len(flats) == 1 and LIKE_PAT.search(t) and not DISLIKE_PAT.search(t):
-            approved.append(1)
-        elif LIKE_PAT.search(t) and not DISLIKE_PAT.search(t):
-            if re.search(r"\b(birinchi|first|перв)\w*", t, re.I) and len(flats) >= 1:
-                approved.append(1)
-            elif re.search(r"\b(ikkinchi|second|втор)\w*", t, re.I) and len(flats) >= 2:
-                approved.append(2)
-            elif re.search(r"\b(uchinchi|third|трет)\w*", t, re.I) and len(flats) >= 3:
-                approved.append(3)
-            elif len(flats) == 1:
-                approved.append(1)
+    m_order = ORDER_PAT.search(t_norm)
+    has_discount = bool(re.search(r"\b(narxini\s*tushir|arzonroq|chegirma|скидк|торг|discount)\b", t_norm, re.I))
+    is_order = bool(m_order or has_discount)
 
     order = ""
-    order_flat = approved[0] if approved else 1
-    m_order = ORDER_PAT.search(t)
     if m_order:
-        raw_order = t[m_order.end():].strip(" :,-")
-        order = raw_order if len(raw_order) >= 3 else t
-    elif re.search(r"\b(narxini\s*tushir|arzonroq|chegirma|скидк|торг|discount)\b", t, re.I):
+        if re.search(r"^(?:egasiga\s*(?:ayt\w*|yoz\w*|gaplash\w*)|эгасига\s*(?:айт\w*|ёз\w*|гаплаш\w*)|tell\s*the\s*owner|write\s*to\s*the\s*owner|скажи\s*хозяину|напиши\s*хозяину)", m_order.group(0), re.I):
+            raw_order = t[m_order.end():].strip(" :,-")
+            order = raw_order if len(raw_order) >= 3 else t
+        else:
+            order = re.sub(r"^[\d\s,.\-+#]+(?:\s*(?:hammasi[a-z]*|barchasi[a-z]*|dan|ga|ni|ning|va))*\s*", "", t, flags=re.I).strip() or t
+    elif has_discount:
         order = t
 
-    return {"approved": approved, "order": order, "order_flat": order_flat}
+    def _flat_numbers(s: str) -> list[int]:
+        nums = []
+        for m in re.finditer(r"\b(\d+)\b", s):
+            val = int(m.group(1))
+            if not (1 <= val <= len(flats)):
+                continue
+            start, end = m.span()
+            before = s[:start].strip().lower()
+            after = s[end:].strip().lower()
+            if re.search(r"(?:soat|at|o'?clock|\$)\s*$", before):
+                continue
+            if re.search(r"(?:ertaga|indin|bugun|vaqt|soat)\s*$", before) or re.search(r"(?:narx|baho|dollar|\$)\w*\s*$", before):
+                continue
+            if re.match(r"^(?:da|dagi|am|pm|o'?clock|soat|минут|часов|ming|som|so'?m|usd|doll|\$|m2|m²)\b", after):
+                continue
+            nums.append(val)
+        return nums
+
+    numbers = _flat_numbers(t_norm)
+    has_like = bool(LIKE_PAT.search(t_norm) and not DISLIKE_PAT.search(t_norm))
+    approved = []
+    order_flats = []
+
+    if not is_all_negative:
+        if is_order and not has_like:
+            order_flats = numbers
+        else:
+            if numbers:
+                for n in numbers:
+                    neg = re.search(rf"\b{n}\b[^.,;\n]*(?:yoqmadi|don.?t\s*like|не\s*нравится|yomon)", t_norm, re.I) or \
+                          re.search(rf"(?:yoqmadi|don.?t\s*like|не\s*нравится|yomon)[^.,;\n]*\b{n}\b", t_norm, re.I)
+                    if not neg:
+                        approved.append(n)
+            elif len(flats) == 1 and has_like:
+                approved.append(1)
+            elif has_like:
+                if re.search(r"\b(birinchi|first|перв)\w*", t_norm, re.I) and len(flats) >= 1:
+                    approved.append(1)
+                elif re.search(r"\b(ikkinchi|second|втор)\w*", t_norm, re.I) and len(flats) >= 2:
+                    approved.append(2)
+                elif re.search(r"\b(uchinchi|third|трет)\w*", t_norm, re.I) and len(flats) >= 3:
+                    approved.append(3)
+                elif len(flats) == 1:
+                    approved.append(1)
+
+    order_flat = approved[0] if approved else (order_flats[0] if order_flats else 1)
+    return {"approved": approved, "order": order, "order_flat": order_flat, "order_flats": order_flats}
 
 
 def _dms() -> dict:
@@ -501,28 +538,34 @@ async def on_private(event) -> bool:
     approved = parsed.get("approved", [])
     order = parsed.get("order", "")
 
-    listed = "\n".join(f"{i}. {f}" for i, f in enumerate(flats_list, 1))
-    if approved:
-        drop(f"💬 {name} answered privately — says ok to:\n{listed}\n\n«{text[:800]}»")
-    else:
-        drop(f"💬 {name} answered privately about:\n{listed}\n\n«{text[:800]}»")
+    # Only announce approved flats in the group; never dump the whole batch, chatter, or raw instructions
+    approved_flats = [f"{i}. {flats_list[i - 1]}" for i in approved if 1 <= i <= len(flats_list)]
+    if approved_flats:
+        listed = "\n".join(approved_flats)
+        quote = "" if order else f"\n\n«{text[:800]}»"
+        drop(f"💬 {name} answered privately — says ok to:\n{listed}{quote}")
     remember(name, text[:800], 0, ts=time.time())
 
     order_taken = False
     if order and flats_list:
-        target_idx = parsed.get("order_flat", 1)
-        target_flat_str = flats_list[target_idx - 1] if 0 < target_idx <= len(flats_list) else flats_list[0]
-        row, _ = find_flat(target_flat_str)
-        if row and row.get("key"):
-            tell_owner(row["key"], order, asker=name)
-            order_taken = True
-            log.info("Flatmates: %s's order for owner of %s queued: %r", name, row["key"], order[:120])
+        targets = parsed.get("order_flats") or ([parsed.get("order_flat", 1)] if parsed.get("order_flat") else [1])
+        for target_idx in targets:
+            if 0 < target_idx <= len(flats_list):
+                target_flat_str = flats_list[target_idx - 1]
+                row, _ = find_flat(target_flat_str)
+                if row and row.get("key"):
+                    tell_owner(row["key"], order, asker=name)
+                    order_taken = True
+                    log.info("Flatmates: %s's order for owner of %s queued: %r", name, row["key"], order[:120])
 
-    reply_msg = "Thanks! I've passed your answer to the group 👍"
     if approved and order_taken:
         reply_msg = "Thanks! I've passed your approval to the group and queued your message for the owner 👍"
+    elif approved:
+        reply_msg = "Thanks! I've passed your approval to the group 👍"
     elif order_taken:
-        reply_msg = "Thanks! I've passed your answer to the group and queued your message for the owner 👍"
+        reply_msg = "Thanks! I've queued your message for the owner 👍"
+    else:
+        reply_msg = "Thanks for letting me know 👍"
 
     with contextlib.suppress(Exception):
         await event.reply(reply_msg)
