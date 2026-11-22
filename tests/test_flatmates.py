@@ -1090,7 +1090,7 @@ def test_private_dislike_or_chatter_not_sent_to_group_but_lifts_hold():
         ev = Reply(sender_id=2, raw_text=text)
         assert asyncio.run(f.on_private(ev)) is True
         assert not list(f.QUEUE.glob("*.json"))  # NEVER posted to group!
-        assert "letting me know" in ev.replied
+        assert getattr(ev, "replied", None) is None  # Ticket 25c8a79f: no generic "thanks for letting me know" responses
     # Member speaking still recorded in CHAT so hold lifts
     assert any(m["name"] == "Javohir" for m in f.recent(0))
 

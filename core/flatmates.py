@@ -596,17 +596,17 @@ async def on_private(event) -> bool:
                     order_taken = True
                     log.info("Flatmates: %s's order for owner of %s queued: %r", name, row["key"], order[:120])
 
+    reply_msg = ""
     if approved and order_taken:
         reply_msg = "Thanks! I've passed your approval to the group and queued your message for the owner 👍"
     elif approved:
         reply_msg = "Thanks! I've passed your approval to the group 👍"
     elif order_taken:
         reply_msg = "Thanks! I've queued your message for the owner 👍"
-    else:
-        reply_msg = "Thanks for letting me know 👍"
 
-    with contextlib.suppress(Exception):
-        await event.reply(reply_msg)
+    if reply_msg:
+        with contextlib.suppress(Exception):
+            await event.reply(reply_msg)
     log.info("Flatmates: %s answered privately (approved=%s, order=%s): %r", name, approved, bool(order), text[:120])
     return True
 
