@@ -61,10 +61,11 @@ TELL_EVERY = 6 * 3600
 HISTORY = 20
 SEED = 60                # messages read from the group at every start
 
-TO_ANYONE = """Nobody asked you, so stay out of it unless you're really needed. Reply only if the latest message is a real question
-about one of the flats above, nobody in the chat has answered it, and the data has the answer. A member talking to an owner or
-agent, a forward, a new flat someone found, flatmates planning among themselves, anything you'd have to say "I don't know" to:
-empty reply. When in doubt, empty reply."""
+TO_ANYONE = """Nobody named you directly, so stay out of casual talk. Reply if the latest message is a question about one of the flats above,
+an instruction or order about one of the flats (such as what to tell or ask the owner, or negotiating price), nobody in the chat has answered it,
+or if it asks for proof. If they ask a question or give an order for the owner, put it in "ask_owner" or "tell_owner".
+A member talking to an owner or agent, a forward, a new flat someone found, or talk unrelated to our flats: empty reply.
+When in doubt, empty reply."""
 TO_YOU = """The latest message is meant for you. If it's about the flats, the search or something you said, you must answer it. If
 it has nothing to do with those, empty reply."""
 
@@ -348,17 +349,156 @@ DISLIKE_PAT = re.compile(
     re.I,
 )
 ORDER_PAT = re.compile(
-    r"(?:egasiga\s*(?:ayt\w*|yoz\w*|gaplash\w*)|egasidan\s*so.?r\w*|"
+    r"(?:egasiga\s*(?:ayt\w*|yoz\w*|gaplash\w*|yetkaz\w*|xabar\w*)|egasidan\s*so.?r\w*|"
     r"so.?rab\s*ko.?r\w*|so.?ragin|so.?rang|so.?ra\b|"
-    r"aytgin|aytib\s*ko.?r\w*|ayting|ayt\b|"
-    r"gaplashib\s*ko.?r\w*|surishtir\w*|"
+    r"aytgin|aytib\s*ko.?r\w*|ayting|aytinglar|ayt\b|"
+    r"gaplashib\s*ko.?r\w*|gaplashing|gaplashinglar|surishtir\w*|"
     r"rasm\w*\s*(?:bormi|so.?r\w*|tashlasin|yuborsin)|"
     r"qachon\s*(?:bor\w*|ko.?r\w*)|"
-    r"эгасига\s*(?:айт\w*|ёз\w*|гаплаш\w*)|эгасидан\s*сўр\w*|"
-    r"скажи\s*хозяину|спроси\s*(?:у\s*хозяина)?|напиши\s*хозяину|поговори\s*с\s*хозяином|"
-    r"tell\s*the\s*owner|ask\s*the\s*owner|write\s*to\s*the\s*owner|talk\s*to\s*the\s*owner)",
+    r"эгасига\s*(?:айт\w*|ёз\w*|гаплаш\w*|етказ\w*)|эгасидан\s*сўр\w*|"
+    r"скажи\s*хозяину|спроси\s*(?:у\s*хозяина)?|напиши\s*хозяину|поговори\s*с\s*хозяином|передай\s*хозяину|"
+    r"tell\s*the\s*owner|ask\s*the\s*owner|write\s*to\s*the\s*owner|talk\s*to\s*the\s*owner|message\s*the\s*owner)",
     re.I,
 )
+QUESTION_WORDS = re.compile(
+    r"\b(qayerda\w*|qayeri\w*|qanaqa\w*|qanday\w*|qancha\w*|qanchadan|nechta\w*|necha\w*|nechanchi|"
+    r"bormi\w*|bormikin|emasmi|beradimi|kerakmi|yaqinmi|joylashgan\w*|qimmatmi|arzonmi|ichidami|chiqadimi|"
+    r"nomer\w*|raqam\w*|kontakt\w*|telefon\w*|egasi\w*|yozishm\w*|chat\w*|"
+    r"nima\w*|nimaga|nega|qachon|kim|qaysi|"
+    r"где|сколько|какой|какая|какие|когда|почему|зачем|есть\s*ли|можно\s*ли|сдает\s*ли|номер\w*|телефон\w*|"
+    r"where|how\s*much|how\s*many|what|when|why|who|is\s*there|are\s*there|does\s*it|can\s*we|phone|number|contact)\b",
+    re.I,
+)
+PROOF_PAT = re.compile(
+    r"\b(proof|skrinshot|screenshot|chat(ini)?|yozishm(ani)?|скриншот|переписк)\b",
+    re.I,
+)
+
+
+def is_question_text(text: str) -> bool:
+    t = (text or "").strip()
+    return "?" in t or bool(QUESTION_WORDS.search(t))
+
+
+def answer_flat_question(text: str, row: dict) -> tuple[str, bool]:
+    """Answer factual questions about a flat directly from its row data. Returns (answer, asks_proof)."""
+    t = (text or "").strip()
+    if not t or not row:
+        return "", False
+
+    place = row.get("place", "") or ""
+    owner_said = row.get("owner_said", "") or ""
+    owner_words = row.get("owner_words", "") or ""
+    all_info = f"{place}\n{owner_said}\n{owner_words}"
+
+    is_en = bool(re.search(r"\b(where|how|what|is\s*there|are\s*there|when|who|ac|price|rooms)\b", t, re.I))
+    is_ru = bool(re.search(r"[а-яё]", t, re.I))
+
+    # 1. Proof request
+    if PROOF_PAT.search(t):
+        if row.get("chat"):
+            caption = "Here is our chat with the owner (preparing screenshot)..." if is_en else (
+                "Вот переписка с хозяином (скриншот готовится):" if is_ru else "Mana egasi bilan yozishmamiz (surat tayyorlanmoqda):")
+            return caption, True
+        else:
+            msg = "We haven't written to this owner on Telegram yet." if is_en else (
+                "С этим хозяином мы еще не переписывались в Telegram." if is_ru else "Bu uy egasi bilan hali Telegramda yozishmadik.")
+            return msg, False
+
+    # 2. AC / Konditsioner
+    if re.search(r"(?:konditsioner\w*|condit\w*|кондиционер\w*|\bac\b)", t, re.I):
+        if re.search(r"(?:konditsioner\w*|кондиционер\w*|\bac\b|condit\w*)", all_info, re.I):
+            msg = "Yes, the apartment has an air conditioner." if is_en else (
+                "Да, в квартире есть кондиционер." if is_ru else "Ha, kvartirada konditsioner bor.")
+            return msg, False
+        msg = "The post doesn't mention an air conditioner, but I can ask the owner." if is_en else (
+            "В объявлении кондиционер не указан, могу спросить у хозяина." if is_ru else "E'londa konditsioner haqida ma'lumot yo'q, egasidan so'rab berishim mumkin.")
+        return msg, False
+
+    # 3. Location / Address / Qayerda
+    if re.search(r"\b(qayerda|manzil|lokatsiya|joylash|address|location|где\s*находится|район|улиц)\b", t, re.I):
+        lines = [line.strip() for line in place.splitlines() if line.strip()]
+        addr = lines[1] if len(lines) > 1 else (lines[0] if lines else "")
+        for line in lines[1:]:
+            if re.search(r"samar|ko.?cha|tuman|rayon|etaj|кварт|улиц", line, re.I):
+                addr = line
+                break
+        msg = f"Address: {addr}." if is_en else (
+            f"Адрес квартиры: {addr}." if is_ru else f"Kvartira manzili: {addr}.")
+        return msg, False
+
+    # 4. Price / Narxi
+    if re.search(r"\b(narxi?|qancha|qanchadan|necha\s*pul|baho|цена|сколько\s*стоит|стоимость|price|how\s*much)\b", t, re.I):
+        m_price = re.search(r"(\$\s*\d+|\d+\s*\$|\d+\s*usd|\d+\s*(?:ming|so'?m)(?:\s*(?:oyiga|a\s*month))?)", place, re.I)
+        price_val = m_price.group(1) if m_price else place.splitlines()[0]
+        msg = f"Price: {price_val}." if is_en else (
+            f"Цена квартиры: {price_val}." if is_ru else f"Kvartira narxi: {price_val}.")
+        return msg, False
+
+    # 5. Rooms / Xona
+    if re.search(r"\b(necha\s*xona|nechta\s*xona|комнат|rooms)\b", t, re.I):
+        m_rooms = re.search(r"(\d+\s*(?:rooms|xona|комнат\w*))", place, re.I)
+        rooms_val = m_rooms.group(1) if m_rooms else place.splitlines()[0]
+        msg = f"Apartment rooms: {rooms_val}." if is_en else (
+            f"В квартире: {rooms_val}." if is_ru else f"Kvartira {rooms_val}.")
+        return msg, False
+
+    # 6. Phone number / Kontakt
+    if re.search(r"(?:nomer\w*|raqam\w*|kontakt\w*|telefon\w*|phone|номер\w*|телефон\w*)", t, re.I):
+        if str(row.get("key", "")).startswith("tel"):
+            phone = "+" + str(row["key"])[3:]
+            msg = f"Owner's phone number: {phone}." if is_en else (
+                f"Телефон хозяина: {phone}." if is_ru else f"Uy egasining telefon raqami: {phone}.")
+            return msg, False
+        elif row.get("link"):
+            msg = f"Post link: {row['link']}." if is_en else (
+                f"Ссылка на объявление: {row['link']}." if is_ru else f"E'lon havolasi: {row['link']}.")
+            return msg, False
+
+    # 7. What owner said / Egasi nima dedi
+    if re.search(r"\b(egasi\s*nima\s*de|nima\s*dedi|что\s*сказал\s*хозяин|what\s*did\s*the\s*owner\s*say)\b", t, re.I):
+        words = owner_words or owner_said
+        if words:
+            msg = f"The owner said: {words}." if is_en else (
+                f"Хозяин ответил: {words}." if is_ru else f"Egasi shunday degan: {words}.")
+            return msg, False
+        msg = "We haven't talked to the owner yet or no new messages." if is_en else (
+            "С хозяином еще не говорили или новых сообщений нет." if is_ru else "Egasi bilan hali gaplashmadik yoki yangi xabar yo'q.")
+        return msg, False
+
+    # 8. Boys / Students
+    if re.search(r"\b(bollar|yigitlar|talaba|student|парн|студент|boys|students)\b", t, re.I):
+        msg = "Yes, this flat accepts young men / students." if is_en else (
+            "Да, этот вариант подходит для парней / студентов." if is_ru else "Ha, bu joy yigitlar / talabalar uchun to'g'ri keladi.")
+        return msg, False
+
+    # 9. Viewing / Ko'rish vaqti
+    if re.search(r"\b(qachon\s*ko.?r|ko.?rish\s*vaqti|когда\s*посмотреть|when\s*can\s*we\s*see)\b", t, re.I):
+        if row.get("viewing"):
+            msg = f"Viewing booked: {row['viewing']}." if is_en else (
+                f"Время просмотра: {row['viewing']}." if is_ru else f"Ko'rish vaqti belgilangan: {row['viewing']}.")
+            return msg, False
+        msg = "Viewing time is not booked yet, we can ask the owner when suits them." if is_en else (
+            "Время просмотра еще не назначено, можем спросить у хозяина." if is_ru else "Hali ko'rish vaqti belgilanmagan, egasidan qachon qulayligini so'raymiz.")
+        return msg, False
+
+    # 10. Deposit / Kommunalka
+    if re.search(r"\b(depozit|zalog|депозит|залог|deposit)\b", t, re.I):
+        if re.search(r"depozit|депозит|deposit", place, re.I):
+            msg = "Deposit is mentioned in the listing." if is_en else (
+                "В объявлении указан депозит." if is_ru else "Kvartirada depozit so'ralgan.")
+            return msg, False
+        msg = "No deposit mentioned in the listing, I can ask the owner." if is_en else (
+            "В объявлении про депозит не сказано, могу уточнить у хозяина." if is_ru else "E'londa depozit haqida aytilmagan, egasidan so'rab berishim mumkin.")
+        return msg, False
+
+    if is_question_text(t):
+        first_line = place.splitlines()[0] if place else ""
+        msg = f"Details from listing: «{first_line}». I can ask the owner for more information." if is_en else (
+            f"Информация из объявления: «{first_line}». Могу уточнить у хозяина." if is_ru else f"E'londagi ma'lumot: «{first_line}». Egasidan qo'shimcha so'rab berishim mumkin.")
+        return msg, False
+
+    return "", False
 
 
 def parse_private_answer(text: str, flats: list[str]) -> dict:
@@ -370,7 +510,7 @@ def parse_private_answer(text: str, flats: list[str]) -> dict:
     is_all_negative = bool(re.search(r"^(none|yo.?q|yoqmadi|hech\s*(qaysi|biri)|kerak\s*emas|kerakmas|не\s*надо|нет|ничего)\b", t_norm, re.I))
 
     m_order = ORDER_PAT.search(t_norm)
-    has_discount = bool(re.search(r"\b(narxini\s*tushir|arzonroq|chegirma|скидк|торг|discount)\b", t_norm, re.I))
+    has_discount = bool(re.search(r"\b(narxini\s*tushir|arzonroq|chegirma|savdolash\w*|скидк|торг|discount|lower\s*the\s*price)\b", t_norm, re.I))
     is_order = bool(m_order or has_discount)
 
     order = ""
@@ -565,7 +705,7 @@ async def delete_dms(tg, user_id: int = 0) -> int:
 async def on_private(event) -> bool:
     """A member's private reply to Jarvis's question about the flats: it goes to the group as their answer (so it also
     counts as a member speaking: the hold lifts), announces approvals if they like any, takes orders on talking to the
-    owner, and gives them a thank-you. False: not someone we asked, or too late."""
+    owner, answers questions about flats, and replies to them in chat. False: not someone we asked, or too late."""
     asked = _dms().get(str(getattr(event, "sender_id", "")))
     text = (getattr(event, "raw_text", "") or "").strip()
     if not asked or not text or time.time() - asked.get("at", 0) > DM_ANSWER_DAYS * 86400:
@@ -585,24 +725,65 @@ async def on_private(event) -> bool:
     remember(name, text[:800], 0, ts=time.time())
 
     order_taken = False
+    target_idx = parsed.get("order_flat", 1) or 1
+    target_flat_str = flats_list[target_idx - 1] if 0 < target_idx <= len(flats_list) else (flats_list[0] if flats_list else "")
+    target_row, _ = find_flat(target_flat_str)
+
     if order and flats_list:
         targets = parsed.get("order_flats") or ([parsed.get("order_flat", 1)] if parsed.get("order_flat") else [1])
-        for target_idx in targets:
-            if 0 < target_idx <= len(flats_list):
-                target_flat_str = flats_list[target_idx - 1]
-                row, _ = find_flat(target_flat_str)
+        for t_idx in targets:
+            if 0 < t_idx <= len(flats_list):
+                flat_str = flats_list[t_idx - 1]
+                row, _ = find_flat(flat_str)
                 if row and row.get("key"):
                     tell_owner(row["key"], order, asker=name)
                     order_taken = True
                     log.info("Flatmates: %s's order for owner of %s queued: %r", name, row["key"], order[:120])
 
+    is_q = is_question_text(text)
+    is_proof = bool(PROOF_PAT.search(text))
+
+    q_ans, q_proof = ("", False)
+    if (is_q or is_proof) and target_row:
+        q_ans, q_proof = answer_flat_question(text, target_row)
+        if q_proof and target_row.get("key") and target_row.get("chat"):
+            ask_proof(target_row["key"], 0, q_ans)
+
+    # Try Claude answer_full only if it's an unanswered question or proof request
+    if (is_q or is_proof) and not q_ans:
+        try:
+            ai_reply, flat_num, ai_proof = await answer_full(name, text, replied="\n".join(flats_list), to_me=True)
+            if ai_reply:
+                if 0 < flat_num <= len(flats_list):
+                    target_flat_str = flats_list[flat_num - 1]
+                    target_row, _ = find_flat(target_flat_str)
+                if _asked.get("tell") and target_row and target_row.get("key") and not order_taken:
+                    tell_owner(target_row["key"], _asked["tell"], asker=name)
+                    order_taken = True
+                if _asked.get("owner") and target_row and target_row.get("key") and not order_taken:
+                    ask_owner(target_row["key"], _asked["owner"], asker=name, reply_to=0)
+                    order_taken = True
+                if ai_proof and target_row and target_row.get("key") and target_row.get("chat"):
+                    ask_proof(target_row["key"], 0, ai_reply)
+                q_ans = ai_reply
+        except Exception as e:
+            log.warning("Flatmates: private AI answer error: %r", e)
+
     reply_msg = ""
     if approved and order_taken:
         reply_msg = "Thanks! I've passed your approval to the group and queued your message for the owner 👍"
+        if q_ans:
+            reply_msg += f"\n\n{q_ans}"
     elif approved:
         reply_msg = "Thanks! I've passed your approval to the group 👍"
+        if q_ans:
+            reply_msg += f"\n\n{q_ans}"
     elif order_taken:
         reply_msg = "Thanks! I've queued your message for the owner 👍"
+        if q_ans:
+            reply_msg += f"\n\n{q_ans}"
+    elif q_ans:
+        reply_msg = q_ans
 
     if reply_msg:
         with contextlib.suppress(Exception):
@@ -913,7 +1094,7 @@ async def answer_full(name: str, text: str, replied: str = "", to_me: bool = Fal
     lines, line = history(), f"{name}: {text[:500]}"
     chat = "\n".join(lines if lines and lines[-1] == line else [*lines, line])
     about = f"The latest message replies to {'YOUR OWN earlier message, this claim of yours' if to_me else 'this message'}:\n{replied[:600]}\n" if replied else ""
-    meant_for_me = to_me or bool(NAMED.search(text))
+    meant_for_me = to_me or bool(NAMED.search(text)) or bool(ORDER_PAT.search(text))
     async with _answering:                           # one at a time, and each sees the chat so far
         try:
             ans = await memory._ask_claude_json(PROMPT.replace("@@FLATS@@", flats()).replace("@@CHAT@@", chat).replace("@@REPLY@@", about)

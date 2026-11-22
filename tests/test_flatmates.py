@@ -1144,3 +1144,76 @@ def test_group_instruction_to_owner_queues_order(monkeypatch):
     assert req["key"] == "tel1"
     assert req["say"] == "Biz tinch yigitlarmiz, ertaga boramiz."
     assert req["asker"] == "Rustam"
+
+
+def test_private_flat_questions_answered_directly(monkeypatch):
+    monkeypatch.setattr(f, "PROOFS", f.QUEUE.parent / "proofs")
+    flat_desc = "🏠 2 rooms, Lux uy, $300 a month\nSamarqand, Gagarin ko'chasi, 4-etaj. Konditsioner bor."
+    flats_view({"key": "tel998901234567", "place": flat_desc, "link": "https://t.me/c/123", "chat": True, "owner_words": "«Ha, beramiz»"})
+    f.DMS.parent.mkdir(parents=True, exist_ok=True)
+    f.DMS.write_text(json.dumps({"2": {"at": f.time.time(), "name": "Javohir", "flats": [flat_desc]}}))
+
+    # 1. Ask about AC
+    ev1 = Reply(sender_id=2, raw_text="Konditsioner bormi?")
+    assert asyncio.run(f.on_private(ev1)) is True
+    assert "konditsioner bor" in ev1.replied.lower()
+    assert not list(f.QUEUE.glob("*.json"))  # Not posted to group
+
+    # 2. Ask about address/location
+    ev2 = Reply(sender_id=2, raw_text="Uy qayerda joylashgan?")
+    assert asyncio.run(f.on_private(ev2)) is True
+    assert "Gagarin" in ev2.replied
+
+    # 3. Ask about price
+    ev3 = Reply(sender_id=2, raw_text="Narxi qancha?")
+    assert asyncio.run(f.on_private(ev3)) is True
+    assert "$300" in ev3.replied
+
+    # 4. Ask for proof / chat
+    ev4 = Reply(sender_id=2, raw_text="Egasining chatini ko'rsat")
+    assert asyncio.run(f.on_private(ev4)) is True
+    assert "yozishmamiz" in ev4.replied.lower()
+    proofs = list(f.PROOFS.glob("*.json"))
+    assert len(proofs) == 1
+
+    # 5. Ask what owner said
+    ev5 = Reply(sender_id=2, raw_text="Egasi nima dedi?")
+    assert asyncio.run(f.on_private(ev5)) is True
+    assert "Ha, beramiz" in ev5.replied
+
+    # 6. Ask for owner phone
+    ev6 = Reply(sender_id=2, raw_text="Egasining nomerini ber")
+    assert asyncio.run(f.on_private(ev6)) is True
+    assert "+998901234567" in ev6.replied
+
+
+def test_private_approval_with_question_announces_and_answers():
+    flat_desc = "🏠 2 rooms, Lux uy, $300 a month\nSamarqand, Gagarin ko'chasi, 4-etaj. Konditsioner bor."
+    flats_view({"key": "tel998901234567", "place": flat_desc, "link": "https://t.me/c/123", "chat": True})
+    f.DMS.parent.mkdir(parents=True, exist_ok=True)
+    f.DMS.write_text(json.dumps({"2": {"at": f.time.time(), "name": "Rustam", "flats": [flat_desc]}}))
+
+    ev = Reply(sender_id=2, raw_text="1 yoqdi, lekin konditsioneri bormi?")
+    assert asyncio.run(f.on_private(ev)) is True
+    # Group gets approval announcement
+    note = json.loads(next(f.QUEUE.glob("*.json")).read_text())
+    assert "says ok to" in note["text"]
+    assert "Rustam" in note["text"]
+    # Private reply contains both approval acknowledgment and answer to question
+    assert "passed your approval" in ev.replied
+    assert "konditsioner bor" in ev.replied.lower()
+
+
+def test_group_instruction_without_naming_jarvis(monkeypatch):
+    """Ticket 87439439: flatmates can give instructions/orders in group chat even without saying 'Jarvis'."""
+    monkeypatch.setattr(f, "OWNER_ASKS", f.QUEUE.parent / "asks")
+    flats_view({"key": "tel1", "place": "🏠 Lux uy", "link": "L1", "chat": True})
+    answered(monkeypatch, {"reply": "Egasiga aytdim.", "flat": 1, "tell_owner": "Narxini 250 ga tushirib bering."})
+    replies = []
+    # No "Jarvis" in message!
+    asyncio.run(f.on_message(_from(2, "Egasiga aytinglar narxini 250 ga tushirib bersin", client=Group(), replies=replies), "Rustam"))
+    assert len(f.owner_asks()) == 1
+    req = f.owner_asks()[0][1]
+    assert req["key"] == "tel1"
+    assert req["say"] == "Narxini 250 ga tushirib bering."
+    assert req["asker"] == "Rustam"
