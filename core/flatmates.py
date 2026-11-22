@@ -188,14 +188,34 @@ def _corrected(message_id: int, text: str) -> None:
     tmp.replace(CHAT)
 
 
+MAX_DM_BATCH = 5                     # ticket 2b5af991: cap direct messages per round to prevent mass messages
+
+
 def drop_delete(message_id: int) -> None:
     """Queue taking back one of Jarvis's own messages in the group."""
     DELETES.mkdir(parents=True, exist_ok=True)
     (DELETES / f"{message_id}.delete").touch()
 
 
+def drop_delete_dms(user_id: int = 0) -> None:
+    """Queue taking back duplicate or mass direct messages sent to flatmates (ticket 2b5af991)."""
+    QUEUE.mkdir(parents=True, exist_ok=True)
+    name = f"delete-dms-{time.time():.6f}-{uuid.uuid4().hex[:6]}"
+    tmp = QUEUE / f"{name}.tmp"
+    tmp.write_text(json.dumps({"delete_dms": True, "user_id": user_id}, ensure_ascii=False))
+    tmp.rename(QUEUE / f"{name}.json")
+
+
 async def apply_deletes(tg, owner_id: int) -> None:
     for f in sorted(DELETES.glob("*.delete")) if DELETES.exists() else ():
+        if f.stem.startswith("dm_") or f.name == "dms.delete":
+            uid = int(f.stem.replace("dm_", "")) if f.stem.startswith("dm_") else 0
+            try:
+                await delete_dms(tg, user_id=uid)
+            except Exception as e:
+                log.warning("Flatmates: couldn't delete DMs from .delete queue: %r", e)
+            f.unlink(missing_ok=True)
+            continue
         message_id = int(f.stem)
         try:
             await tg.delete_messages(FLATMATES_GROUP_ID, [message_id])
@@ -265,13 +285,16 @@ async def carry_out(event, text: str, replied: str) -> None:
 
 def drop_dm(flats: list[str], photos: list[str] = ()) -> None:
     """For the apartment search: write to each member privately with these flats (their one-line descriptions)
-    and photos (tickets 1f5a835e, 2e7cdd52), asking which are worth seeing."""
+    and photos (tickets 1f5a835e, 2e7cdd52, 2b5af991), asking which are worth seeing."""
+    unique_flats = list(dict.fromkeys(flats))[:MAX_DM_BATCH]
+    if not unique_flats:
+        return
     QUEUE.mkdir(parents=True, exist_ok=True)
     name = f"{time.time():.6f}-{uuid.uuid4().hex[:6]}"
     tmp = QUEUE / f"{name}.tmp"
     valid_photos = [str(p) for p in photos if Path(p).is_file()][:10]
     tmp.write_text(json.dumps({
-        "dm": [str(x)[:200] for x in flats],
+        "dm": [str(x)[:200] for x in unique_flats],
         "photos": valid_photos,
     }, ensure_ascii=False))
     tmp.rename(QUEUE / f"{name}.json")
@@ -364,28 +387,104 @@ async def dm_members(tg, flats: list[str], photos: list[str] = ()) -> int:
     Returns how many were written to."""
     me, sent, dms = await tg.get_me(), 0, _dms()
     valid_photos = [p for p in photos if Path(p).is_file()]
+    unique_flats = list(dict.fromkeys(flats))[:MAX_DM_BATCH]
+    if not unique_flats:
+        return 0
     for u in await tg.get_participants(FLATMATES_GROUP_ID):
         if getattr(u, "bot", False) or getattr(u, "deleted", False) or u.id in (me.id, OWNER_ID):
             continue
-        text = dm_text(u.first_name or "there", flats)
+        prev = dms.get(str(u.id), {})
+        if prev and set(unique_flats).issubset(set(prev.get("flats", []))) and time.time() - prev.get("at", 0) < 86400:
+            log.info("Flatmates: skipping duplicate DM to %s for %d flat(s) already sent", getattr(u, "first_name", "member"), len(unique_flats))
+            continue
+        text = dm_text(u.first_name or "there", unique_flats)
+        sent_ids = []
         try:
             if valid_photos:
                 if len(text) <= 1024:
-                    await tg.send_file(u.id, valid_photos, caption=text)
+                    res = await tg.send_file(u.id, valid_photos, caption=text)
+                    sent_ids.extend([m.id for m in res] if isinstance(res, list) else [getattr(res, "id", 0)])
                 else:
-                    await tg.send_file(u.id, valid_photos)
-                    await tg.send_message(u.id, text)
+                    res = await tg.send_file(u.id, valid_photos)
+                    sent_ids.extend([m.id for m in res] if isinstance(res, list) else [getattr(res, "id", 0)])
+                    msg = await tg.send_message(u.id, text)
+                    if getattr(msg, "id", 0):
+                        sent_ids.append(msg.id)
             else:
-                await tg.send_message(u.id, text)
+                msg = await tg.send_message(u.id, text)
+                if getattr(msg, "id", 0):
+                    sent_ids.append(msg.id)
         except Exception as e:
             log.warning("Flatmates: couldn't write to %s privately: %r", u.id, e)
             continue
-        dms[str(u.id)] = {"at": time.time(), "name": u.first_name or "someone", "flats": flats}
+        prev_ids = dms.get(str(u.id), {}).get("message_ids", [])
+        dms[str(u.id)] = {"at": time.time(), "name": u.first_name or "someone", "flats": unique_flats,
+                          "message_ids": [mid for mid in prev_ids + sent_ids if mid]}
         sent += 1
     DMS.parent.mkdir(parents=True, exist_ok=True)
     DMS.write_text(json.dumps(dms, ensure_ascii=False))
-    log.info("Flatmates: asked %d member(s) privately about %d flat(s)", sent, len(flats))
+    log.info("Flatmates: asked %d member(s) privately about %d flat(s)", sent, len(unique_flats))
     return sent
+
+
+async def delete_dms(tg, user_id: int = 0) -> int:
+    """Delete direct messages sent to flatmates (ticket 2b5af991).
+    If user_id is 0, deletes for all members recorded in DMS or participants of the Flatmates group."""
+    me, dms = await tg.get_me(), _dms()
+    target_users = [user_id] if user_id else []
+    if not target_users:
+        target_users = [int(uid) for uid in dms.keys() if uid.isdigit()]
+        try:
+            for u in await tg.get_participants(FLATMATES_GROUP_ID):
+                if not getattr(u, "bot", False) and not getattr(u, "deleted", False) and u.id not in (me.id, OWNER_ID):
+                    if u.id not in target_users:
+                        target_users.append(u.id)
+        except Exception as e:
+            log.warning("Flatmates: couldn't fetch participants for DM deletion: %r", e)
+
+    deleted_total = 0
+    for uid in target_users:
+        to_delete = set()
+        user_info = dms.get(str(uid), {})
+        for mid in user_info.get("message_ids", []):
+            if mid:
+                to_delete.add(mid)
+
+        # Also search recent messages in private dialog with this user for any outgoing flatmate DM
+        try:
+            async for m in tg.iter_messages(uid, limit=60):
+                if not getattr(m, "out", False):
+                    continue
+                text = getattr(m, "raw_text", "") or ""
+                is_dm_msg = (
+                    "Jarvis from the Flatmates group" in text
+                    or "Do you like" in text
+                    or "Nobody has answered about these flats" in text
+                    or "O'zbekcha javob bersangiz ham bo'ladi" in text
+                    or "passed your approval to the group" in text
+                    or "passed your answer to the group" in text
+                    or getattr(m, "id", 0) in to_delete
+                )
+                if is_dm_msg or (getattr(m, "grouped_id", None) and any(mid in to_delete for mid in [m.id])):
+                    to_delete.add(m.id)
+        except Exception as e:
+            log.warning("Flatmates: error scanning dialog for user %s: %r", uid, e)
+
+        if to_delete:
+            try:
+                await tg.delete_messages(uid, list(to_delete), revoke=True)
+                deleted_total += len(to_delete)
+                log.info("Flatmates: deleted %d direct message(s) for user %s", len(to_delete), uid)
+            except Exception as e:
+                log.warning("Flatmates: couldn't delete messages for user %s: %r", uid, e)
+
+        if str(uid) in dms:
+            dms[str(uid)]["flats"] = []
+            dms[str(uid)]["message_ids"] = []
+
+    DMS.parent.mkdir(parents=True, exist_ok=True)
+    DMS.write_text(json.dumps(dms, ensure_ascii=False))
+    return deleted_total
 
 
 async def on_private(event) -> bool:
@@ -609,6 +708,9 @@ async def _send(tg, text: str, photos: list, where: int):
 
 async def post(tg, note: dict) -> None:
     global _topic
+    if note.get("delete_dms"):                       # ticket 2b5af991: take back / delete DMs sent to flatmates
+        await delete_dms(tg, user_id=note.get("user_id", 0))
+        return
     if note.get("dm"):                               # not a group post: write to each member privately
         photos = [p for p in note.get("photos", []) if Path(p).is_file()]
         await dm_members(tg, note["dm"], photos=photos)
