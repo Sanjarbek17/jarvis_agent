@@ -415,7 +415,7 @@ Sanjar is away from the computer and won't approve anything, so work on your own
   still running: wait for each to finish (or stop it on purpose) before your final summary. Your
   ticket is over once you give it: anything still running 10 minutes later is stopped.
 - Never keep a watcher or wait loop running for something that happens later (an evening post, a
-  reply expected tomorrow): it holds a worker slot and blocks Jarvis's restarts. Finish now, and for
+  reply expected tomorrow): it holds a worker slot. Finish now, and for
   a later check on a board on the Mac add a queued follow-up that waits until then:
   `{HERE / '.venv/bin/python'} {HERE / 'scripts/board.py'} add "<project>" "Check <what>" --text "<what to check and why>" --queue --start-after HH:MM`
   (or "YYYY-MM-DD HH:MM"). Otherwise say in your summary what's still to check and when.

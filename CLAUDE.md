@@ -10,12 +10,12 @@ running worker mid-ticket, and `pkill -f jarvis.py` also hits the caffeinate hel
 
 Instead start the waiting restart and finish your ticket:
 
-    nohup scripts/restart_when_idle.sh >/dev/null 2>&1 &            # waits for workers and calls
-    nohup scripts/restart_when_idle.sh --now-ish >/dev/null 2>&1 &  # only if Sanjar said dropping the call is fine
+    nohup scripts/restart_when_idle.sh >/dev/null 2>&1 &            # waits for active calls or chat answers
+    nohup scripts/restart_when_idle.sh --now-ish >/dev/null 2>&1 &  # drops active calls too
 
-It restarts Jarvis ~30 s after the last worker (you included) is done; launchd brings it back.
-Only one can wait at a time (a second one exits). Check `var/logs/restart.log`; in your summary
-say what it's waiting for (list running workers: `ps -axww -o ppid=,args= | grep "claude -p Ticket"`).
+It restarts Jarvis safely without waiting for running ticket workers (they run detached and
+are adopted by the new instance); launchd brings it back within seconds.
+Only one can wait at a time (a second one exits). Check `var/logs/restart.log`.
 
 Not needed after editing config/projects.json: Jarvis reloads that by itself.
 
