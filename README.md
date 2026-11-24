@@ -1,275 +1,328 @@
-# Jarvis
+# 🤖 Jarvis
 
-My assistant on the MacBook. I call or message it on Telegram (account @Jarvis_Sanjar),
-it puts tasks on each project's own Notion board (as tickets marked Queued in the "Jarvis"
-column), and Claude Code workers do them.
-Plan and design: [docs/JARVIS_PLAN.md](docs/JARVIS_PLAN.md).
+> An autonomous personal assistant and developer companion for macOS. Jarvis coordinates Claude Code worker agents across software repositories, automates system tasks, and provides multi-modal interaction via Telegram, a native companion app, and a real-time web portal.
+
+[![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-black?logo=apple)](https://apple.com)
+[![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://python.org)
+[![FastMCP](https://img.shields.io/badge/FastMCP-Tools-green)](https://github.com/jlowin/fastmcp)
+[![Telegram](https://img.shields.io/badge/Telegram-Client-2CA5E0?logo=telegram&logoColor=white)](https://telegram.org)
+[![Tailscale](https://img.shields.io/badge/Tailscale-Mesh%20Network-000000?logo=tailscale&logoColor=white)](https://tailscale.com)
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [System Architecture](#system-architecture)
+- [Repository Layout](#repository-layout)
+- [Key Features](#key-features)
+  - [1. Communication & Interfaces](#1-communication--interfaces)
+  - [2. Autonomous Worker Pipeline](#2-autonomous-worker-pipeline)
+  - [3. Memory & Context Engine](#3-memory--context-engine)
+  - [4. macOS Control & Physical Security](#4-macos-control--physical-security)
+  - [5. External & Workspace Integrations](#5-external--workspace-integrations)
+- [Project Boards](#project-boards)
+- [Resource Management & Concurrency](#resource-management--concurrency)
+- [Operations & Maintenance](#operations--maintenance)
+  - [Service Lifecycle](#service-lifecycle)
+  - [CLI Tools Cheatsheet](#cli-tools-cheatsheet)
+  - [Telegram Command Reference](#telegram-command-reference)
+- [Configuration](#configuration)
+
+---
+
+## Overview
+
+Jarvis runs 24/7 on macOS as a login daemon. It serves as the central orchestration node for all development projects and personal workflows:
+
+- **Multi-Modal Communication**: Call or message Jarvis on Telegram (`@Jarvis_Sanjar`), chat through the Android companion app, or use the web dashboard.
+- **Autonomous Software Engineering**: Converts natural language requests into structured tickets on project boards, then dispatches Claude Code (`claude -p`) workers to implement, test, and merge code on isolated branches.
+- **System Control & Automation**: Executes shell commands, AppleScript automations, keyboard/mouse actions, and monitors physical Mac security.
+- **Persistent Tiered Memory**: Maintains long-term semantic conversation search and a curated core memory list of permanent user preferences and rules.
+
+See the high-level design specification in [docs/JARVIS_PLAN.md](docs/JARVIS_PLAN.md).
+
+---
+
+## System Architecture
+
+```mermaid
+flowchart TD
+    subgraph Interfaces["User Interfaces"]
+        TG["Telegram (@Jarvis_Sanjar)<br/>Text / Voice Notes / Live Calls"]
+        APP["Jarvis Mobile App<br/>(Android APK via WebSockets)"]
+        WEB["Web Portal<br/>(Tailscale / Cloudflare Tunnel)"]
+    end
+
+    subgraph Core["Jarvis Daemon (MacBook)"]
+        ENTRY["jarvis.py (Entry & Orchestrator)"]
+        VOICE["core/voice.py<br/>(Gemini Transcribe & Live TTS)"]
+        BRAIN["core/brain.py<br/>(Claude Brain Sessions)"]
+        TOOLS["core/tools.py<br/>(FastMCP Server 127.0.0.1:8775-8777)"]
+        SERVER["core/appserver.py<br/>(REST & WebSocket Server :8790)"]
+        MEM["core/memory.py & core/coremem.py<br/>(Embeddings RAG + CORE.md)"]
+        RAM["core/ramguard.py<br/>(Dynamic Memory & Concurrency Guard)"]
+    end
+
+    subgraph Boards["Project Boards"]
+        LOCAL[("Local SQLite<br/>boards.db")]
+        NOTION[("Notion API<br/>Sprint Databases")]
+        GH[("GitHub Issues<br/>jarvis:* Labels")]
+    end
+
+    subgraph Workers["Autonomous Execution"]
+        RUNNER["core/runner.py<br/>(Task Dispatcher)"]
+        MAC_WORKER["core/mac.py<br/>(macOS Agent)"]
+        CLAUDE_WORKERS["Claude Code Sub-Agents<br/>(git worktree / branch)"]
+    end
+
+    Interfaces --> ENTRY
+    ENTRY --> SERVER
+    ENTRY --> VOICE
+    VOICE --> BRAIN
+    BRAIN --> TOOLS
+    TOOLS --> MEM
+    TOOLS --> Boards
+    Boards --> RUNNER
+    RUNNER --> RAM
+    RAM --> CLAUDE_WORKERS
+    RAM --> MAC_WORKER
+    CLAUDE_WORKERS -- "Test, Merge to dev & Report" --> RUNNER
+    RUNNER -- "Status Updates & Notifications" --> ENTRY
+    ENTRY -- "Outbox Dispatch" --> Interfaces
+```
+
+---
+
+## Repository Layout
 
 ```
-jarvis.py            entry point: Telegram calls + messages, notifications, starts everything
-core/
-  config.py          settings and paths
-  voice.py           ears (Gemini transcribe) + mouth (Gemini Live reading text aloud)
-  brain.py           Claude brain sessions (call + Telegram chat)
-  tools.py           tools the brain can use (MCP on 127.0.0.1:8775-8777)
-  board.py           Notion API: each project's board + its Jarvis column
-  runner.py          picks Queued tickets and runs Claude Code workers
-  mac.py             Mac worker: does things on the Mac itself (apps, settings, screen)
-web/                 the website, served by core/appserver.py
-config/projects.json project -> folders in ~/dev + its sprint board
-scripts/login.py     one-time Telegram login for the Jarvis account
-scripts/relogin.py   fresh Telegram login, no scan/code: the current login approves it, 2FA from
-                     .env; saved as var/jarvis_new.session, swapped in at Jarvis's next start
-scripts/mac.py       mouse, keyboard and screenshots for the Mac worker
-docs/                plan
-var/                 made while running, not in git: Telegram session, logs, state, shots
-.env                 keys (not in git)
+├── jarvis.py                 # Main entry point: Telegram listeners, notifications, daemon loop
+├── core/                     # Core system modules
+│   ├── appserver.py          # REST & WebSocket server for Web & Mobile app (port 8790)
+│   ├── autoanswer.py         # Automatic resolution for worker "Needs me" blockers
+│   ├── board.py              # Notion board API connector & caching
+│   ├── brain.py              # Claude conversational sessions (calls, chat, context)
+│   ├── config.py             # Global configurations, file paths, safety policies
+│   ├── coremem.py            # Curated persistent memory (CORE.md) & consolidation
+│   ├── drive.py & google.py  # Google Workspace integration (Docs, Sheets, Drive)
+│   ├── expenses.py           # Automated flatmates receipt & expense calculation
+│   ├── ghboard.py            # GitHub Issues & Projects connector
+│   ├── guard.py              # Physical macOS activity watchdog (screen & camera alerts)
+│   ├── livestats.py          # Real-time social metrics scraper
+│   ├── localboard.py         # Local SQLite project board implementation (boards.db)
+│   ├── mac.py                # macOS automation worker (AppleScript, GUI interaction)
+│   ├── memory.py             # Semantic RAG memory (Gemini embeddings + Haiku threads)
+│   ├── origin.py             # Request routing: returns results to the originating chat
+│   ├── outbox.py             # Unified Telegram message delivery queue
+│   ├── ramguard.py           # Adaptive concurrency controller for 8 GB Mac
+│   ├── runner.py             # Autonomous worker queue runner & monitor
+│   ├── selfcheck.py          # Periodic self-diagnostic watchdog (every 15 min)
+│   ├── slides.py             # Programmatic presentation generator (Google Slides / ODP)
+│   ├── tools.py              # FastMCP tool registrations for Claude Brain
+│   └── voice.py              # Audio streaming, Gemini speech-to-text, and Live TTS
+├── web/                      # Zero-build vanilla HTML/JS frontend dashboard
+├── config/                   # System configurations
+│   ├── projects.json.example # Template for registered projects and board mappings
+│   └── rules.md.example      # Template for standing instructions given to workers
+├── scripts/                  # Operational tools and automation scripts
+│   ├── board.py              # CLI for viewing and managing project boards
+│   ├── heavy.py              # Mutex lock wrapper for memory-intensive operations
+│   ├── login.py / relogin.py # Telegram authentication handlers
+│   ├── mac.py                # Mouse, keyboard, and screenshot automation helper
+│   ├── real_chrome.py        # Authenticated Chrome session automation
+│   ├── restart_when_idle.sh  # Safe restart script waiting for active workers
+│   └── send_file.py          # Outbox utility to send media/files to Telegram
+├── tests/                    # Comprehensive automated test suite
+├── docs/                     # Architecture, specifications, and design plans
+└── var/                      # Runtime state, databases, logs, screenshots (gitignored)
 ```
 
-## Running
+---
 
-Jarvis runs as a login agent (`~/Library/LaunchAgents/com.sanjar.jarvis.plist`): it starts
-at login, restarts if it crashes, and keeps the Mac awake with `caffeinate`.
+## Key Features
 
-- restart: say "restart yourself" (Jarvis files a restart ticket), or by hand
-  `scripts/restart_when_idle.sh` (waits for workers and calls; see CLAUDE.md). Avoid `pkill -f jarvis.py`:
-  it kills running workers and the caffeinate helper
-- stop for good: `launchctl bootout gui/$(id -u)/com.sanjar.jarvis`
-- start again: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.sanjar.jarvis.plist`
-- by hand (agent stopped): `uv run jarvis.py` or `uv run jarvis.py --call`
-- logs: `var/logs/jarvis.log`; each worker run: `var/logs/<project>-<ticket ref>.jsonl` (Jarvis
-  reads these itself when you ask how a ticket is going)
+### 1. Communication & Interfaces
 
-Saying "stop it" about a running ticket is enough: Jarvis stops that worker itself (`stop_worker`, same as
-`/stop`); a stopped ticket goes off the queue (⏹), not Failed. Dropping a running ticket stops it first.
-Telegram: plain text or a voice message = talk to Jarvis, `/status [project]`, `/stop <project|mac>`, `/call`, `/transcript`, `/clear`, `/logoutall` (ends every app and website login, so also Mac control), `/guard [off|status|test]`, `/2fa <password>` (only while `scripts/qr_login.py` waits for it; the message is deleted at once).
-`/joblogin` logs in the Upwork job worker's own Telegram account (+7 906, `~/dev/upwork_job`): a QR in the
-hunter bot chat to scan with the phone; `/joblogin code` + `/jobcode 1-2-3-4-5` for the code route. It runs as
-the worker's own process on its own session, so Jarvis keeps answering.
-Scripts that message Sanjar (`send_file.py`, `qr_login.py`) go through Jarvis's outbox (`core/outbox.py`)
-while it runs: a second copy of its Telegram session would make Telegram stop delivering messages to Jarvis.
-Send a file (document, photo, …), with or without a caption, and Jarvis saves it to `var/state/inbox/`
-and reads it to answer; a file sent as a reply works too.
-Other people can write to Jarvis's own account too (`core/received.py`): every message is logged and its file
-saved (ticket 8d867330), and each one from a person (not bots or Telegram's login codes) goes to the chat brain,
-which must tell Sanjar who wrote and what (ticket 3e945138). It never answers them on its own.
+- **Telegram Bot & Account**:
+  - Voice notes transcribed immediately; replies streamed via text and spoken audio.
+  - Full-duplex voice calls powered by Gemini Live TTS with real-time interruption detection (talking over pauses playback in ~0.2 s).
+  - Outbound contact calling: calls third parties via Telegram to deliver urgent messages and returns transcribed summaries.
+  - Inbound file handling: photos, PDFs, and documents sent to the bot are saved to `var/state/inbox/` and analyzed by the brain.
+- **Companion Mobile App & Web Portal**:
+  - Lightweight Android APK (~200 KB) and responsive web interface (`web/`).
+  - Project-specific chat threads with isolated Claude sessions.
+  - Live audio calls over WebSockets and rich image/file previews.
+  - Remote connectivity via Tailscale userspace daemon (`jarvis-mac`).
+- **Contextual Answer Routing**:
+  - Results are automatically delivered back to the specific platform and chat where the task was initiated (Telegram DM or App project chat).
+  - Sensitive passwords and credentials are scrubbed from general logs and only displayed inside authenticated sessions.
 
-Mac control: "turn the volume down", "open Spotify and play my liked songs", "find the PDF I
-downloaded yesterday and send it to me". Quick one-step things Jarvis runs itself (`run_on_mac`);
-anything bigger goes to the Mac worker (`mac_task`): a Claude Code session that uses commands,
-AppleScript, and if needed looks at the screen and clicks and types (`scripts/mac.py`). One job at a
-time, it remembers earlier Mac jobs; a job longer than a minute reports back in Telegram. Logs:
-`var/logs/mac-<time>.jsonl`. Hard limits and "ask first" rules: `MAC_NEVER_DO` in `core/config.py`.
-Needs Accessibility + Screen Recording for Jarvis once (System Settings > Privacy & Security);
-Jarvis checks at start and messages you if they're missing.
+### 2. Autonomous Worker Pipeline
 
-Phone app: the Jarvis App (`~/dev/side_project/projects/jarvis_app`, a ~200 KB APK for Android 5+) talks to
-`core/appserver.py` (port 8790, home Wi-Fi, `APP_TOKEN` in .env): projects, chats per project (each its own
-Claude conversation that knows the project, kept in `var/state/app_chats/`), voice messages (transcribed like
-Telegram voice notes) and live calls over a WebSocket (same ears / brain / voice as Telegram calls).
-Away from home the app reaches it over Tailscale: LaunchAgent `com.sanjar.jarvis-tailscale` runs `tailscaled` in
-userspace mode (no root, no system network changes; state in `~/.local/share/jarvis-tailscale`), device name
-`jarvis-mac`. CLI: `scripts/ts.sh status`.
-Ticket news goes to its project's chat (ticket f4f11c38, `appserver.project_chat`): asked in General or in Updates, a
-ticket's result lands in that project's chat in the app (the chat he asked in if it's that project's, else its latest
-one, else a new "<project> updates" chat); asked on Telegram, it still goes to Telegram too. A General app chat in which
-he files tickets for one project moves under that project (`follow_ticket`); one about several projects stays.
-Answers go back where Sanjar asked (ticket 799dda33, `core/origin.py`): each app chat's brain sends
-`X-Jarvis-Origin: app:<chat id>` on its tool calls; add_task / queue_ticket / answer_task remember it per ticket
-(`var/state/ticket_origin.json`, note "added from the app"), and that ticket's result is written into the same
-app chat (plus the app's notification feed) instead of Telegram. That exact chat, not just any chat of the project
-(ticket 484828da): a call without an app chat (Jarvis answering or re-queueing the ticket itself, the self-check)
-never clears the recorded chat; only asking again from another app chat moves it there.
-His own passwords (ticket 5ad3f371): when Sanjar himself asks for the login of one of his own accounts, Jarvis may
-give it in his Telegram DM or an app/website chat opened with a login code (`[signed in]` on each message); never
-on calls, to the APK's built-in key (`[not signed in]`, and the reply is scrubbed in code too), or to anyone else.
-A message's `text` is always saved scrubbed (`memory.scrub`, .env values re-read every 10 min). A signed-in reply that
-held one also keeps its full text in `own`, which `GET /api/chats/<id>/messages` gives back only to his login sessions
-(the app and site reload the chat after each reply, so it would vanish otherwise, ticket 7896b7af); the APK key never sees it.
-Images in the app (ticket 546d965e): screenshots from mac_task / screenshot asked in an app chat are shown in that
-chat (not Telegram); ticket and Mac results carry their screenshots into the app too (the Updates chat gets them even
-when the answer went to Telegram). Images are kept shrunk to 1280 px JPEG in `var/state/app_images/` and served at
-`GET /api/images/{name}` with the app login. Needs app 0.7+.
+- **Autonomous Ticket Execution**:
+  - Tasks marked as `Queued` on project boards are picked up automatically by `core/runner.py`.
+  - Workers run in isolated project directories and git worktrees without requiring interactive human confirmation.
+  - Automatic resolution of blocking questions: `core/autoanswer.py` inspects project documentation, memories, and rules to answer worker questions without waking the user unless human judgment is truly required.
+- **Safe Git Workflow**:
+  - Workers always branch from `dev`, run tests, and merge back into `dev` autonomously.
+  - Pushes to `main`/`master` are strictly protected and require explicit temporary grants (`core/grants.py`).
 
-Website: `web/` (plain HTML/JS, no build step), served by the same `core/appserver.py`, so the phone app and the
-site share one backend, chats and login. It does what the app does: projects, chats, images, voice messages, live
-calls, workers, Updates. Open `https://jarvis.sanjarbek17.uz`, or `http://127.0.0.1:8790` on the Mac (the tunnel in
-`~/.cloudflared/jarvis-app.yml` passes the whole address; the server 404s anything but `/api/*` and `WEB_FILES`). Login is the Telegram
-code; the site never has `APP_TOKEN`. Microphone features need https or localhost, so not the plain home Wi-Fi address.
-Only the files in `WEB_FILES` are served; add a new one there. No login is needed for those files: they hold no data.
+### 3. Memory & Context Engine
 
-Moving a chat: the folder button in a chat (website, app 0.8+) moves it to another project, messages and Claude
-conversation included (`POST /api/chats/{id}/move`). Jarvis does the same with `move_chat` when asked in that chat.
-For a project that doesn't exist yet it files the setup ticket and uses `when_created=True`: the chat waits, and
-`finish_moves` moves it within a minute once a project with that name is in config/projects.json.
+- **Dual-Tier Memory**:
+  - **Semantic RAG Memory**: Past conversations, transcripts, and facts are indexed using Gemini embeddings (`core/memory.py`). Claude Haiku organizes messages into thematic threads for contextual recall.
+  - **Core Memory (`CORE.md`)**: A concise, curated markdown registry of lasting decisions, preferences, and operational rules injected into every prompt. A nightly consolidation pass refines and deduplicates entries.
+- **Automated Privacy Scrubbing**:
+  - All incoming and outgoing text passes through scrubbing filters before storage; API keys, tokens, and passwords are never persisted to long-term memory.
 
-Files: whatever `scripts/send_file.py` sends to Telegram also shows in the app chat it was asked from (workers and
-the Mac worker get `JARVIS_APP_CHAT`), else in Updates. Copies live in `var/state/app_files/` for 30 days, up to
-500 MB each, served at `GET /api/files/{name}` with the login. Images show inline. The website plays videos and
-downloads the rest. Files sent before this existed are only on Telegram. Other outbox files (like login QRs) stay
-out on purpose: only `send_file.py` marks a file for the app.
+### 4. macOS Control & Physical Security
 
-Memory: Jarvis keeps long-term memory in `var/state/memory/` (facts it was told to `remember`, plus
-every chat and call turn, and old call transcripts). Relevant bits are pulled in front of each
-message by meaning (Gemini embeddings, Uzbek/Russian/English), so it doesn't guess after a restart,
-`/clear` or a new call. Messages are linked into topic threads (a fast Claude model — Haiku via the claude CLI — files each exchange
-into a thread and links related ones), so recall brings back the whole conversation on a topic. Tools: `remember`, `recall`, `forget_memory`.
-At start Jarvis also imports our whole Telegram chat into memory through its own connection (the first time
-all of it, then only newer messages; already-stored ones are skipped). Passwords, keys and tokens are
-scrubbed out of everything memory stores (`memory.scrub`).
+- **System Actions**:
+  - Quick single-step actions (`run_on_mac`) execute shell commands or AppleScript directly.
+  - Complex UI tasks (`mac_task`) launch an autonomous agent that navigates the desktop, inspects the screen, clicks, and types.
+- **Mac Guard (`/guard`)**:
+  - When armed, any physical keyboard, mouse, or trackpad movement triggers an immediate silent alert to Telegram with desktop screenshots and webcam photos.
+  - Operates across system restarts and distinguishes human interaction from automated agent activity.
 
-Core memory (ticket 35ec396e, after OpenClaw; `core/coremem.py`): `var/state/memory/CORE.md` is a short
-curated list of Sanjar's lasting decisions, preferences, facts and open requests, one dated line per key.
-It is in every chat and call prompt (not found by search), and a new line with the same key replaces the
-old one, so two rules never contradict. It is filled by `remember(fact, kind, key)` / `forget_core(key)`
-and by a consolidation pass (Opus reads the chats since the last pass, adds, replaces and removes lines;
-open requests stay until done) that runs nightly at 03:00, at start, and before `/clear` throws a session
-away. When CORE.md changes, the chat brain restarts its session so it sees the new version.
-Reliability: messages sent while Jarvis is busy join the next turn together (no queueing one by one); a
-worker failure on a ticket Sanjar asked for, or any Needs-me, is always sent to him, with the report's
-own lines if the brain stays silent or fails (`relay(..., must=True)`).
+### 5. External & Workspace Integrations
 
-Google Drive (ticket e6199929, `core/drive.py`): the `google_drive` tool hands a Drive job to a short `claude -p` helper
-that loads Sanjar's user settings (so it gets the Google Drive connector of his Claude account, on
-sanjarsaidov173@gmail.com) but may use only the Drive tools: search, read Docs / Sheets / Slides, create, copy, rename,
-move, comment. Never trash; sharing only when he asked. It can't change the text inside an existing Doc or deck
-(the connector has no such tool). The helper may use ToolSearch, which waits for a connector that's still connecting,
-and is tried once more if the Drive tools still weren't there (ticket c270b9ef).
+- **Google Workspace**:
+  - Authenticated via PKCE OAuth (`core/google.py`).
+  - Search, read, create, and update Google Docs, Sheets, and Slides.
+  - Generates presentations from outlines by synthesizing minimal `.odp` bundles and importing them cleanly into Google Slides.
+- **Flatmates Expense Tracker**:
+  - Reads receipts, transfer screenshots, and expense messages from Telegram group chats (`core/expenses.py`).
+  - Calculates net debts across flatmates and posts consolidated balance summaries.
+- **Social Media Live Stats**:
+  - Headless browser automation tracks Instagram followers, engagement, and video metrics on demand without third-party API keys.
 
-New slide decks with content (ticket 917f6c5a, `core/slides.py`, tool `google_slides`): the connector can't fill a
-deck, but it uploads a file that Google turns into Google Slides. Jarvis draws the deck as a tiny .odp (a title slide
-with every step's emoji, one slide per step with a big emoji picture, heading and a few lines, and a recap with arrows;
-~3,400 base64 characters, scaled to Google's 27.94 cm page) and the Drive helper copies it into `create_file`, then
-reads the deck back to check every slide title arrived. A .pptx was 24,000 characters and got miscopied.
+---
 
-Jarvis's own Google sign-in (ticket c270b9ef, `core/google.py`), for editing inside Docs and Slides and for any of his
-Google accounts: `google_sign_in` gives a link (OAuth with PKCE, the OAuth client of `~/dev/server/gdrive_uploader`,
-`GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` in `.env`). Signed in on the Mac, a small server on 127.0.0.1:8791 finishes it by
-itself; on his phone the last page can't load, so he sends its address and `google_sign_in_finish` takes it.
-Refresh tokens per account in `var/state/google_tokens.json`. Tools: `google_files`, `google_file_text`,
-`google_replace_text` (Docs and Slides), `google_add_text` (Docs). New files with content (ticket 7ce4c9a5; the connector can
-only make an empty deck): `google_create_slides` (title slide plus one slide per heading / lines / optional
-picture), `google_add_slide`, `google_create_doc` (headings and text).
+## Project Boards
 
-Flatmates expenses (ticket d59ccf5e, `core/expenses.py`): the `flatmates_expenses` tool reads the group's expense topic
-with Jarvis's own Telegram and adds it up per person for Sanjar. A short number means
-thousands ("10 tok" is 10,000) and several numbers on a line all count ("14, 10"); a line with no number is listed to
-check. Check photos and PDFs are read by a small model once per message (`var/state/expense_checks.json`), and a check for
-money the same person wrote down within a day counts once (ticket 4eb67dbf). When he asks, `flatmates_post_expenses` posts it in that
-topic: a short summary split between the five, who pays and who gets, and a text file with every line (ticket 32abbb65).
+Jarvis supports multi-backend project tracking. Each project configured in `config/projects.json` can use any of the following backends:
 
-Talking over Jarvis on a call (ticket ea6c257f, `Interrupter` in `core/voice.py`): the sound level on the line pauses
-Jarvis in about 0.2 s, with no network. Words from the transcription confirm it and drop the rest of the reply; with no words
-it carries on and that sound won't pause it again. Its own echo is learned in its first 0.4 s of sound.
+| Backend | Storage | Best For | Configuration Key |
+|---|---|---|---|
+| **Local SQLite** | `var/state/boards.db` | High-speed, offline-capable, local tasks | `"local": true` |
+| **Notion** | Notion Database API | Visual planning, team sharing, rich cards | `"board": "<database_id>"` |
+| **GitHub Issues** | GitHub Projects / Labels | Open-source repos, public tracking (`jarvis:*`) | `"github": { "repo": "..." }` |
 
-Reading files: Jarvis can look things up itself (read-only: Read, Glob, Grep) anywhere under
-`~/dev`, e.g. "what port does the taxi backend use", and Sanjar's global skills in `~/.claude/skills`
-(e.g. taxi-server). `.env` files too (since 2026-11-04, to find ids/tokens before asking Sanjar; values are never repeated); nothing else outside `~/dev`
-(home, `~/.ssh`, `~/Documents` stay off limits); changing anything is still a ticket.
+### Ticket States
 
-Calling other people: "call Olimjon and tell him ..." (by message or on a call). Jarvis looks the
-name up in the Jarvis account's Telegram contacts and chats (or takes an @username), asks if it's
-not sure who, calls them with a brain that can only deliver the message and hang up, and sends
-you the transcript. Asked during a call with you, it calls them after you hang up.
+```mermaid
+stateDiagram-v2
+    [*] --> Queued: User / Chat / App
+    Queued --> Working: Runner picks up task
+    Working --> Needs_Me: Blocked by question
+    Needs_Me --> Working: Auto-answered / User replies
+    Working --> Done: Tests pass & merged to dev
+    Working --> Failed: Error or timeout
+    Working --> [*]: Stopped by user (/stop)
+```
 
-Mac guard (ticket 3b226456, `core/guard.py`): Sanjar arms it himself (`/guard`, or just tell Jarvis "guard"; there is
-no automatic away detection, so it can't photograph him by mistake). After 60 s, any keyboard, mouse or trackpad
-input sends him a Telegram alert at once, a screenshot, and camera photos, again at most every 2 min while it goes on.
-`/guard off` before touching the Mac. It stays on across restarts, and the Mac worker's own clicks don't count. The
-camera needs macOS's Camera permission for what runs Jarvis: `/guard test` at the Mac brings up the prompt.
+- **Queued**: Ready to be processed by an available worker.
+- **Working**: Worker is actively writing code and running tests.
+- **Needs me**: Worker requires clarification or manual action (Jarvis attempts to auto-answer first).
+- **Done**: Changes are verified, committed, merged to `dev`, and summarized.
+- **Failed**: Worker encountered an unrecoverable failure; re-queued up to 2 times automatically.
 
-## Boards
+---
 
-New project: add it to `config/projects.json` (folders + board id). Jarvis notices the change
-by itself, no restart; the brain restarts its own process with the new list and keeps the chat.
+## Resource Management & Concurrency
 
-Self-check (ticket e2d3398a): every 15 min Jarvis checks itself with nobody asking (`core/selfcheck.py`): the runner
-task (restarted on the spot if it died) and its heartbeat, workers vs queue with RAM, Needs me, Failed, Working with
-no live worker, and Due tickets that haven't started. Only new findings wake the chat brain with a [SELF-CHECK]
-message: it acts with its tools (answers Needs me itself unless it truly needs Sanjar, re-queues what failed for a
-passing reason or lost its worker) and sends a short 🔎 note of what changed, or nothing. Repeats wait 12 h.
+Jarvis is optimized to run smoothly on Apple Silicon Macs with 8 GB unified memory:
 
-Results are never lost (ticket 80987838): board writes are retried, and if a board stays unreachable (e.g. GitHub's
-rate limit) the result is kept in `var/state/pending_results.json` and written later, also after a restart. At start,
-tickets left Working go back in the queue (twice at most, then Failed) instead of being marked Failed; the
-self-check's in-place runner restart doesn't touch them. Every restart path (restart_when_idle.sh, the watchdog)
-waits until no worker runs.
+- **Dynamic RAM Guard (`core/ramguard.py`)**:
+  - Continuously measures free memory, inactive memory, purgeable pages, and swap utilization.
+  - Automatically restricts concurrent workers when system RAM pressure rises.
+  - Guarantees a minimum 1 GB system headroom reserve.
+- **Resource Locking (`scripts/heavy.py`)**:
+  - Mutex wrapper for memory-intensive operations (Docker builds, Gradle compilations, emulators, video rendering).
+  - Ensures only one heavy compilation job runs at any given moment.
 
-Boards on the Mac: a project with `"local": true` keeps its tickets in `var/state/boards.db` (`core/localboard.py`), not
-Notion. The website and app show every board (Board in a project's chat list; `/api/board`, `/api/tickets/{ref}`):
-search, queue, take off the queue, done, drop, and for boards on the Mac also edit and status. Workers and skills use
-`scripts/board.py` (show, list, add, edit, log). Move a board with `scripts/notion_to_local.py <project> --switch`
-(it refuses while a ticket is Working); Notion isn't changed and the "board" id stays in projects.json as the way back.
-Every night `scripts/backup_boards.py` copies those boards to the private repo `Sanjarbek17/jarvis-boards` as readable JSON (launchd: `com.sanjar.jarvis-board-backup`, log in `var/logs/board-backup.log`). Every password and key value from the `.env` files under `~/dev`, and anything shaped like one, is hidden first. `--restore <folder> <new.db>` rebuilds a board file from a clone.
-Images and files stay on the old Notion page, which each copied ticket links to.
+---
 
-Notion reads: each board is read in full at most once a minute (`CACHE_SECONDS` in core/board.py) and filtered
-locally, instead of every board on every 10 s check. Jarvis's own writes update that copy at once; if Notion fails,
-the last copy is served. So a ticket queued by hand on Notion can take up to a minute to start.
+## Operations & Maintenance
 
-Runner safety (ticket 7493382f): a board that can't be read (Notion/GitHub error, rate limit) is skipped instead of
-stopping the whole queue; the GitHub board is read at most every 2 min and its last copy is used when GitHub refuses.
-The runner touches `var/state/runner_heartbeat` every loop; LaunchAgent `com.sanjar.jarvis-watchdog` runs
-`scripts/watchdog.sh` every 5 min and queues a safe restart if the heartbeat is 20+ min old.
+### Service Lifecycle
 
-RAM (8 GB Mac): no fixed worker count. Another worker starts whenever the memory that's really available (the larger of
-free + inactive + purgeable from vm_stat and macOS's own free percentage) minus a 1 GB reserve fits one more worker
-of the measured size (~300-500 MB); the reserve doubles under real pressure (the kernel's "warning" while under 25%
-is free, or nearly full swap) and grows while a heavy job runs; "critical" holds
-new starts; one worker may always run; one new start per 30 s (`core/ramguard.py`). Why a ticket waits is logged,
-saved in `var/state/runner_status.json` and shown by `get_status`. Fair turns: one worker per project, tickets with a
-"Due" date first, then the project whose last worker started longest ago. Heavy commands go through `scripts/heavy.py`:
-one at a time, a second only with 3.5 GB+ available.
+Jarvis is managed via macOS `launchd`:
 
-Live status (ticket 0960b065): a status / views / followers question about Haydovchi darslari or Instagram Channels
-(app chat of that project, or Telegram / General naming it) makes Jarvis's code read the numbers right now first
-(`core/livestats.py` -> `scripts/ig_stats.mjs`, each account's own logged-in hidden Chrome, ~30 s) and put them, with
-their time, in front of the message as a [LIVE STATS] block. A reading is reused for 15 min (`var/state/live_stats.json`);
-older numbers (the autopilot's check-*.json with likes/saves) are shown only with their age. Tool: `live_stats`.
+```bash
+# Check status / tail daemon logs
+tail -f var/logs/jarvis.log
 
-Chrome tabs (ticket 3a61de45): ticket workers can't open pages in Sanjar's own Chrome with `open` / AppleScript
-(a PreToolUse hook, `scripts/hooks/no_raw_chrome.py`, passed with `--settings`, blocks it and says what to do). When a
-page needs his logins they use `scripts/real_chrome.py open <url> [--profile ...]`: a new window, remembered in
-`var/state/opened_chrome.json` with the ticket ref, closed when the worker ends. The Mac worker uses it for pages it
-opens for a step (closed after 30 min); leftovers are swept after 3 h. While a script's own Chrome runs (renders,
-Instagram), AppleScript may talk to that one, so nothing is closed until it's gone.
+# Graceful restart (waits for running workers and active calls to finish)
+scripts/restart_when_idle.sh
 
-Network drops and restarts (ticket 2475b845): Telegram retries forever (Telethon `connection_retries=-1`, failed tries
-logged once a minute) instead of ending Jarvis, so launchd no longer restarts it in a loop; no new worker starts while
-api.anthropic.com is unreachable. Workers run detached (own session) and write straight into `var/logs/<project>-<ref>.jsonl`;
-`var/state/workers.json` lists them, and a restarted Jarvis adopts a still-running (or finished) worker instead of
-re-queueing it. GitHub boards keep their last good copy in `var/state/ghboard_cache/` for restarts while GitHub is unreachable.
+# Stop daemon completely
+launchctl bootout gui/$(id -u)/com.sanjar.jarvis
 
-Claude usage limit (ticket d23f4461): a worker stopped by it (the stream's `rate_limit_event` "rejected", or a
-"hit your limit" result) isn't Failed. The ticket goes back to Queued ("paused by the Claude usage limit"), no new
-worker starts until the reset time it announced (+2 min; `var/state/usage_limit.json`, survives restarts), and
-then the paused tickets start again in the same session, told to continue where they stopped. Sanjar gets one
-note per limit, not one per ticket.
+# Start daemon
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.sanjar.jarvis.plist
 
-Branches: a worker merges its finished, tested work into the project's `dev` branch itself (no
-asking) and pushes `dev`. Sanjar's standing rules live in `config/rules.md` (workers and the brain
-read it live). You test `dev` as a whole, then tell Jarvis once to merge it to main.
-Workers never touch main unless you allow it for one ticket ("you may push ticket X to main").
-Jarvis stores that in `var/state/grants.json` (not in Notion, so a worker can't grant itself); it
-ends when the ticket is Done, or after 7 days.
+# Run manually in foreground (for debugging)
+uv run jarvis.py
+```
 
-A project can keep its tickets as **GitHub Issues** instead (AI English Teacher): `"github": {repo, owner,
-project, prefix}` in projects.json instead of `"board"`. Refs look like `aet-12` (issue #12). Queue an issue
-by adding the label `jarvis:queued` (or ask Jarvis); the Jarvis column is the `jarvis:*` labels, the
-board Status is the GitHub Project's Status field (Done also closes the issue, Dropped closes it as not
-planned), and results / answers are issue comments (`core/ghboard.py`, needs `gh` with the project scope).
+> [!CAUTION]
+> Never use `pkill -f jarvis.py`! Force-killing terminates active Claude Code workers mid-ticket and stops the background `caffeinate` process keeping the Mac awake. Use `scripts/restart_when_idle.sh` instead.
 
-Every project (unless `"auto_answer": false`; Sanjar 2026-11-04 "only send it to you, then you tell me if needed"):
-when a worker asks "Needs me", Jarvis answers it (memory of Sanjar's chats, the project's docs, the rules; `core/autoanswer.py`), posts the answer on
-the ticket and re-queues it without messaging Sanjar. Only if it truly needs him, Jarvis tells him in plain words
-what to do and why (not the worker's wording). Real-world steps only he can do become a checklist on the
-ticket; "merge dev into main?" still goes to him; after 4 answers on one ticket it goes to him too.
+### CLI Tools Cheatsheet
 
-Worker and runner messages (Done, Failed, Needs me, the stuck list, Mac task results) never go to Sanjar
-directly (2026-11-04): they go to Jarvis's chat brain as a [WORKER REPORT] (`relay` in jarvis.py). Jarvis acts
-where he can and sends Sanjar 1-2 plain lines only when it matters to him; reports aren't saved to memory.
+| Script | Purpose | Example Usage |
+|---|---|---|
+| `scripts/board.py` | Manage local SQLite boards | `uv run scripts/board.py list Jarvis` |
+| `scripts/board.py show` | View ticket details and logs | `uv run scripts/board.py show <ticket_id>` |
+| `scripts/heavy.py` | Run memory-intensive commands safely | `scripts/heavy.py ./gradlew assembleDebug` |
+| `scripts/send_file.py` | Deliver a file to Telegram DM | `uv run scripts/send_file.py report.pdf "Weekly report"` |
+| `scripts/real_chrome.py` | Open an authenticated Chrome window | `uv run scripts/real_chrome.py open "https://..."` |
+| `scripts/notion_to_local.py` | Migrate Notion board to SQLite | `uv run scripts/notion_to_local.py <project> --switch` |
+| `scripts/ts.sh` | Check Tailscale remote status | `scripts/ts.sh status` |
 
-Every project board under Notion "Projects" has two extra columns:
-- **Jarvis**: Queued → Working → Needs me / Done / Failed. Set a ticket to *Queued* (in the app,
-  by call or by message) and a worker picks it up. Empty = Jarvis leaves it alone.
-- **Jarvis note**: last step, the result, or the question when it needs you.
+### Telegram Command Reference
+
+| Command | Description |
+|---|---|
+| `/status [project]` | Shows running workers, RAM usage, and pending ticket counts |
+| `/stop <project\|mac>` | Immediately halts an active worker without failing the ticket |
+| `/call` | Requests Jarvis to initiate an audio call with you |
+| `/transcript` | Fetches the full transcript of the latest voice call |
+| `/guard [on\|off\|status]` | Arms or disarms the physical Mac intrusion guard |
+| `/clear` | Archives current conversation context into long-term memory and resets chat |
+| `/logoutall` | Terminates active Web, App, and remote sessions |
+
+---
+
+## Configuration
+
+Jarvis requires configuration via `.env` and `config/projects.json`.
+
+1. **Environment Variables (`.env`)**:
+   Copy `.env.example` to `.env` and configure required API credentials:
+   - `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE` (Telegram client)
+   - `ANTHROPIC_API_KEY` (Claude Brain and worker sessions)
+   - `GEMINI_API_KEY` (Voice transcription, Gemini Live TTS, and embeddings)
+   - `APP_TOKEN` (Shared secret for Android App / Web Portal)
+   - `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` (Optional: Google Workspace)
+
+2. **Project Registry (`config/projects.json`)**:
+   Copy `config/projects.json.example` to `config/projects.json` to configure managed repositories:
+   ```json
+   {
+     "MyProject": {
+       "path": "/Users/username/dev/my_project",
+       "local": true,
+       "auto_answer": true
+     }
+   }
+   ```
+   Changes to `config/projects.json` are hot-reloaded automatically by Jarvis without requiring a restart.
+
+---
+
+## License
+
+Private repository. All rights reserved.
