@@ -28,7 +28,9 @@ PROJECTS_URL = "https://app.notion.com/p/39bb8d1c364a814486faef3db95d72e5"   # N
 
 DEV = Path.home() / "dev"
 PROJECTS_FILE = HERE / "config" / "projects.json"
+PROJECTS_EXAMPLE = HERE / "config" / "projects.json.example"
 RULES_FILE = HERE / "config" / "rules.md"   # Sanjar's standing rules, read live by workers and the brain
+RULES_EXAMPLE = HERE / "config" / "rules.md.example"
 PROJECTS: dict[str, dict] = {}   # updated in place by reload_projects(), so imports of it stay live
 _projects = {"mtime": 0.0, "version": 0}
 
@@ -36,13 +38,14 @@ _projects = {"mtime": 0.0, "version": 0}
 def reload_projects() -> bool:
     """Re-read projects.json if it changed on disk (a cheap stat otherwise), so a new project,
     board or folder works without restarting Jarvis. True if the list changed."""
+    target_file = PROJECTS_FILE if PROJECTS_FILE.exists() else PROJECTS_EXAMPLE
     try:
-        mtime = PROJECTS_FILE.stat().st_mtime
+        mtime = target_file.stat().st_mtime
         if mtime == _projects["mtime"]:
             return False
-        data = json.loads(PROJECTS_FILE.read_text())
+        data = json.loads(target_file.read_text())
     except (OSError, json.JSONDecodeError) as e:   # half-saved edit: keep the old list, retry next time
-        logging.getLogger("jarvis.config").warning("can't read %s: %r", PROJECTS_FILE.name, e)
+        logging.getLogger("jarvis.config").warning("can't read %s: %r", target_file.name, e)
         return False
     _projects["mtime"] = mtime
     if data == PROJECTS:
@@ -129,8 +132,9 @@ money or payments, or change system settings.
 
 def rules_text() -> str:
     """Sanjar's standing rules (config/rules.md), read fresh each time so edits apply at once."""
+    target_file = RULES_FILE if RULES_FILE.exists() else RULES_EXAMPLE
     try:
-        return RULES_FILE.read_text().strip()
+        return target_file.read_text().strip()
     except OSError:
         return ""
 

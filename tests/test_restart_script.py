@@ -33,7 +33,12 @@ def copy(tmp_path):
 def run(cmd, root):
     subprocess.run(["/bin/zsh", "-c", cmd], cwd=root, env={**os.environ, "PATH": f"{root}/bin:{os.environ['PATH']}"},
                    timeout=20)
-    return (root / "var" / "logs" / "restart.log").read_text()
+    log_file = root / "var" / "logs" / "restart.log"
+    for _ in range(30):
+        if log_file.exists():
+            break
+        time.sleep(0.1)
+    return log_file.read_text()
 
 
 def test_starting_it_from_a_shell_command_is_not_a_waiting_restart(copy):

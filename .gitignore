@@ -1,6 +1,12 @@
 .env
+.env.*
+!.env.example
 .venv/
 __pycache__/
 var/
 .claude/worktrees/
 .codewalk/
+
+# Private local configuration files
+config/projects.json
+config/rules.md

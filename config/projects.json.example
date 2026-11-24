@@ -1,0 +1,9 @@
+{
+  "Sample Project": {
+    "about": "Sample project description for the assistant",
+    "folders": [
+      "projects/sample_project"
+    ],
+    "local": true
+  }
+}

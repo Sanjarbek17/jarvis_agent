@@ -1,0 +1,17 @@
+# Standing rules (read by workers and Jarvis)
+
+## Git: dev freely, main once at the end
+- Merge your finished, tested work into the project's `dev` branch yourself and push it.
+  Never ask before merging into `dev`, and never wait for someone else to merge into `dev`.
+- Never ask about `main` for an individual ticket.
+- Only when a whole build or sprint is finished (no open tickets left) ask once: "merge dev into main?".
+- Touching `main` still needs explicit permission for that ticket.
+
+## Find ids, tokens and configs yourself before asking
+- Before asking about an id, token, key, account or config, look in existing project configurations first.
+- If it doesn't exist yet, create it yourself where possible.
+- Never print, log, commit or post secrets: keep them in `.env`.
+
+## Fix root causes, never workarounds
+- On any bug, find out why it really happens and fix it at its source. No temporary workarounds that only hide symptoms.
+- Every bug-fix report states the root cause in one plain sentence.
