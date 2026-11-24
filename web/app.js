@@ -16,6 +16,7 @@ const ICONS = {
   phone: "M6.6 10.8a15 15 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25 11 11 0 0 0 3.6.6 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1 11 11 0 0 0 .6 3.6 1 1 0 0 1-.25 1z",
   move: "M3 6a2 2 0 0 1 2-2h4.6a2 2 0 0 1 1.4.6L12.4 6H19a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zm9.3 4.3a1 1 0 0 0 0 1.4l.3.3H8a1 1 0 1 0 0 2h4.6l-.3.3a1 1 0 0 0 1.4 1.4l2-2a1 1 0 0 0 0-1.4l-2-2a1 1 0 0 0-1.4 0z",
   close: "M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 0 0-1.4 1.4l4.9 4.9-4.9 4.9a1 1 0 1 0 1.4 1.4l4.9-4.9 4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z",
+  stop: "M6 6h12v12H6z",
 };
 
 const store = {
@@ -34,6 +35,9 @@ let workers = null;
 let ticks = 0;
 let timer = null;
 const waiting = new Map(); // chat id -> {since, text, voice, lost, at}: a message Jarvis is answering
+const thinking = new Map(); // chat id -> {step, steps, started, elapsed, expanded}: live thinking progress (ticket 60966222)
+let thinkingPollTimer = null;
+const stopping = new Set();
 const drafts = new Map();
 const images = new Map();  // image name -> a promise of its blob: URL
 const boards = new Map();  // project -> the last /api/board answer, so a board opens at once
@@ -151,6 +155,10 @@ function endSession() {
   for (const url of images.values()) url.then(URL.revokeObjectURL, () => {});
   images.clear();
   waiting.clear();
+  thinking.clear();
+  clearTimeout(thinkingPollTimer);
+  thinkingPollTimer = null;
+  stopping.clear();
   open = null;
   chatsOf = null;
   clearInterval(timer);
@@ -452,18 +460,40 @@ function clearUnread() {
 
 async function loadMessages(chat) {
   try {
-    const msgs = await api(`/api/chats/${encodeURIComponent(chat.id)}/messages`);
+    const res = await request(`/api/chats/${encodeURIComponent(chat.id)}/messages`);
+    const msgs = await res.json().catch(() => null);
+    if (!res.ok) throw new ApiError(msgs?.error || `Jarvis said ${res.status}.`, res.status);
     if (open !== chat) return;
     chat.msgs = msgs;
     chat.found = true;
     offline(false);
+
+    const isAnswering = res.headers.get("X-Jarvis-Answering") === "true";
+    const headerStep = res.headers.get("X-Jarvis-Step");
+    if (isAnswering) {
+      if (!thinking.has(chat.id)) {
+        thinking.set(chat.id, {
+          step: headerStep || "Jarvis is thinking…",
+          steps: headerStep ? [headerStep] : [],
+          started: Date.now() / 1000,
+          elapsed: 0,
+          expanded: false,
+        });
+      }
+      scheduleThinkingPoll();
+    } else if (!waiting.has(chat.id)) {
+      thinking.delete(chat.id);
+    }
+
     settle(chat);
     drawMessages(chat);
+    chat.refreshComposer?.();
   } catch (e) {
     if (open !== chat || e.status === 401) return;
     if (e.status === 404) {
       chat.found = false;
       drawMessages(chat);
+      chat.refreshComposer?.();
     } else if (e.unsure) {
       offline(true);
     }
@@ -477,9 +507,12 @@ function settle(chat) {
   const news = chat.msgs.filter(m => m.ts > wait.since);
   const mine = news.findIndex(m => m.role === "me");
   const gone = Date.now() - wait.at;
-  if (mine >= 0 && news.slice(mine).some(m => m.role === "jarvis" && !m.pushed)) waiting.delete(chat.id);
-  else if (gone > MAX_WAIT || (mine < 0 && gone > LOST_AFTER)) {
+  if (mine >= 0 && news.slice(mine).some(m => m.role === "jarvis" && !m.pushed)) {
     waiting.delete(chat.id);
+    thinking.delete(chat.id);
+  } else if (gone > MAX_WAIT || (mine < 0 && gone > LOST_AFTER)) {
+    waiting.delete(chat.id);
+    thinking.delete(chat.id);
     toast(mine < 0 ? "That message didn't reach Jarvis. Try again." : "Still no reply from Jarvis.");
   }
 }
@@ -488,8 +521,10 @@ function drawMessages(chat) {
   const box = document.getElementById("messages");
   if (!box) return;
   const wait = waiting.get(chat.id);
+  const th = thinking.get(chat.id);
   const last = chat.msgs[chat.msgs.length - 1];
-  const key = `${chat.found}|${chat.msgs.length}|${last?.ts}|${wait?.since}|${!!wait}`;
+  const thKey = th ? `${th.step}|${th.steps?.length || 0}|${th.expanded ? 1 : 0}` : "";
+  const key = `${chat.found}|${chat.msgs.length}|${last?.ts}|${wait?.since}|${!!wait}|${thKey}`;
   if (key === chat.key) return;
   const arrived = chat.newest !== null && last?.ts !== chat.newest;
   chat.newest = last?.ts ?? null;
@@ -507,8 +542,13 @@ function drawMessages(chat) {
   }
   if (wait) {
     const arrived = chat.msgs.some(m => m.role === "me" && m.ts > wait.since);
-    if (!arrived) out.push(bubble({ role: "me", text: wait.text, voice: wait.voice, reply: wait.reply }, before === "jarvis"));
-    out.push(h("div", { class: "bubble gap typing", text: "Jarvis is working on it…" }));
+    if (!arrived) {
+      out.push(bubble({ role: "me", text: wait.text, voice: wait.voice, reply: wait.reply }, before === "jarvis"));
+      before = "me";
+    }
+  }
+  if (th || wait) {
+    out.push(thinkingCard(chat, th));
   }
   if (!out.length) {
     out.push(h("div", { class: "notice", text: chat.found ? "No messages yet. Say something." : "This chat isn't there." }));
@@ -517,6 +557,124 @@ function drawMessages(chat) {
   box.replaceChildren(...out);
   if (chat.pinned) toBottom();
   else if (arrived) document.getElementById("jump")?.classList.remove("hide");
+}
+
+function thinkingCard(chat, th) {
+  const stepText = (th?.step || "").trim() || "Jarvis is thinking…";
+  const steps = Array.isArray(th?.steps) ? th.steps : [];
+  const expanded = !!th?.expanded;
+
+  const pulse = h("span", { class: "thinking-pulse", "aria-hidden": "true", text: "⚡" });
+  const title = h("span", { class: "thinking-title-text", text: "Jarvis is thinking" });
+  const stopBtn = h("button", {
+    class: "thinking-stop-btn",
+    type: "button",
+    title: "Stop thinking",
+    "aria-label": "Stop thinking",
+    onclick: () => stopJarvis(chat),
+  }, h("span", { "aria-hidden": "true", text: "⏹" }), h("span", { text: "Stop" }));
+
+  const header = h("div", { class: "thinking-header" }, pulse, title, stopBtn);
+  const currentStep = h("div", { class: "thinking-step", text: stepText });
+
+  const card = h("div", { class: "bubble gap thinking-card" }, header, currentStep);
+
+  if (steps.length > 0) {
+    const toggleBtn = h("button", {
+      class: "thinking-toggle",
+      type: "button",
+      "aria-expanded": String(expanded),
+      text: `Steps (${steps.length}) ${expanded ? "▴" : "▾"}`,
+      onclick: () => {
+        const item = thinking.get(chat.id);
+        if (item) item.expanded = !expanded;
+        else if (th) th.expanded = !expanded;
+        drawMessages(chat);
+      },
+    });
+    card.append(toggleBtn);
+
+    if (expanded) {
+      const items = steps.map(st => {
+        const isActive = st === (th?.step || "").trim();
+        return h("div", { class: `thinking-step-item ${isActive ? "active" : ""}` },
+          h("span", { class: `thinking-step-icon ${isActive ? "active" : "done"}`, text: isActive ? "▶" : "✓" }),
+          h("span", { class: "thinking-step-text", text: st }));
+      });
+      card.append(h("div", { class: "thinking-steps-list" }, ...items));
+    }
+  }
+
+  return card;
+}
+
+async function checkThinking(chat) {
+  if (!session || !chat) return;
+  try {
+    const data = await api(`/api/chats/${encodeURIComponent(chat.id)}/thinking`);
+    if (data.answering) {
+      const prev = thinking.get(chat.id);
+      thinking.set(chat.id, {
+        step: data.step || "Jarvis is thinking…",
+        steps: Array.isArray(data.steps) ? data.steps : [],
+        started: data.started || prev?.started || (Date.now() / 1000),
+        elapsed: data.elapsed || 0,
+        expanded: prev?.expanded ?? false,
+      });
+      if (open === chat) {
+        drawMessages(chat);
+        chat.refreshComposer?.();
+      }
+    } else {
+      if (thinking.has(chat.id)) {
+        thinking.delete(chat.id);
+        if (open === chat) {
+          await loadMessages(chat);
+          drawMessages(chat);
+          chat.refreshComposer?.();
+        }
+      }
+    }
+  } catch (e) {
+    if (e.status === 401) return;
+  }
+}
+
+function scheduleThinkingPoll() {
+  if (thinkingPollTimer) return;
+  thinkingPollTimer = setTimeout(async () => {
+    thinkingPollTimer = null;
+    if (open && (thinking.has(open.id) || waiting.has(open.id))) {
+      await checkThinking(open);
+      if (open && (thinking.has(open.id) || waiting.has(open.id))) {
+        scheduleThinkingPoll();
+      }
+    }
+  }, 1200);
+}
+
+async function stopJarvis(chat) {
+  if (!chat || stopping.has(chat.id)) return;
+  stopping.add(chat.id);
+  toast("Stopping Jarvis…");
+  thinking.delete(chat.id);
+  waiting.delete(chat.id);
+  if (open === chat) {
+    drawMessages(chat);
+    chat.refreshComposer?.();
+  }
+  try {
+    await api(`/api/chats/${encodeURIComponent(chat.id)}/stop`, { method: "POST" });
+  } catch (e) {
+    if (e.status !== 401) toast(e.message);
+  } finally {
+    stopping.delete(chat.id);
+  }
+  if (open === chat) {
+    await loadMessages(chat);
+    drawMessages(chat);
+    chat.refreshComposer?.();
+  }
 }
 
 function sizeText(bytes) {
@@ -667,11 +825,18 @@ function composer(chat) {
   });
   const sendBtn = h("button", { class: "round primary", title: "Send", "aria-label": "Send" }, icon("send"));
   const micBtn = h("button", { class: "round", title: "Voice message", "aria-label": "Voice message" }, icon("mic"));
+  const stopBtn = h("button", {
+    class: "round danger hide",
+    type: "button",
+    title: "Stop thinking",
+    "aria-label": "Stop thinking",
+    onclick: () => stopJarvis(chat),
+  }, icon("stop"));
   // photos (ticket 5d5a2c64): the clip button, pasting, or dropping them on the chat
   const picker = h("input", { type: "file", accept: "image/*", multiple: true, class: "hide" });
   const clipBtn = h("button", { class: "round", title: "Attach images", "aria-label": "Attach images", onclick: () => picker.click() }, icon("clip"));
   const tray = h("div", { class: "tray", "aria-label": "Images to send" });
-  const form = h("div", { class: "composer" }, clipBtn, picker, text, micBtn, sendBtn);
+  const form = h("div", { class: "composer" }, clipBtn, picker, text, micBtn, sendBtn, stopBtn);
   const pending = [];          // [{file, url}] waiting to be sent
 
   const attach = files => {
@@ -712,16 +877,25 @@ function composer(chat) {
   const refresh = () => {
     text.style.height = "auto";
     text.style.height = `${Math.min(text.scrollHeight + 2, 180)}px`;
-    const ready = !!text.value.trim() || pending.length > 0;
-    sendBtn.classList.toggle("hide", !ready);
-    micBtn.classList.toggle("hide", ready);
+    const isThinking = thinking.has(chat.id) || waiting.has(chat.id);
+    if (isThinking) {
+      stopBtn.classList.remove("hide");
+      sendBtn.classList.add("hide");
+      micBtn.classList.add("hide");
+    } else {
+      stopBtn.classList.add("hide");
+      const ready = !!text.value.trim() || pending.length > 0;
+      sendBtn.classList.toggle("hide", !ready);
+      micBtn.classList.toggle("hide", ready);
+    }
     if (text.value) drafts.set(chat.id, text.value);
     else drafts.delete(chat.id);
   };
+  chat.refreshComposer = refresh;
   const submit = async () => {
     const value = text.value.trim();
     if (!value && !pending.length) return;
-    if (waiting.has(chat.id)) return toast("Jarvis is still answering the last one.");
+    if (waiting.has(chat.id) || thinking.has(chat.id)) return toast("Jarvis is still answering the last one.");
     if (sendBtn.disabled) return;
     let images = [];
     if (pending.length) {
@@ -778,7 +952,16 @@ async function send(chat, text, audio, images = [], reply = null) {
   const shown = text || (images.length > 1 ? `${images.length} images` : "Image");
   const wait = { since, text: audio ? "Voice message" : shown, voice: !!audio, lost: false, at: Date.now(), reply };
   waiting.set(chat.id, wait);
+  thinking.set(chat.id, {
+    step: "Jarvis is thinking…",
+    steps: [],
+    started: Date.now() / 1000,
+    elapsed: 0,
+    expanded: false,
+  });
+  scheduleThinkingPoll();
   drawMessages(chat);
+  chat.refreshComposer?.();
   const path = `/api/chats/${encodeURIComponent(chat.id)}`;
   try {
     const res = audio
@@ -786,9 +969,11 @@ async function send(chat, text, audio, images = [], reply = null) {
       : await api(`${path}/messages`, { method: "POST", json: {
           text, ...(images.length ? { images } : {}), ...(reply ? { reply_to: reply.ts } : {}) } });
     waiting.delete(chat.id);
+    thinking.delete(chat.id);
     if (audio && !res.heard) toast("Jarvis couldn't make out that voice message.");
     followChat(chat, res.chat_project || res.reply?.chat_project);
   } catch (e) {
+    thinking.delete(chat.id);
     if (e.status === 401) return;
     if (e.unsure) wait.lost = true;    // Jarvis may well be answering: the regular check picks it up
     else {
@@ -804,7 +989,7 @@ async function send(chat, text, audio, images = [], reply = null) {
 
 async function record(chat, form, text) {
   if (!VOICE_OK) return toast(VOICE_HELP);
-  if (waiting.has(chat.id)) return toast("Jarvis is still answering the last one.");
+  if (waiting.has(chat.id) || thinking.has(chat.id)) return toast("Jarvis is still answering the last one.");
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
@@ -1486,7 +1671,7 @@ function tick() {
   if (ticks % 10 === 0) { pollNews(); pollProjects(); }
   if (ticks % 5 === 0 && boardOn && document.getElementById("board")) loadBoard(boardOn.project);
   if (document.hidden) return;
-  if (open && (waiting.has(open.id) || ticks % (open.id === UPDATES ? 2 : 4) === 0)) loadMessages(open);
+  if (open && (waiting.has(open.id) || thinking.has(open.id) || ticks % (open.id === UPDATES ? 2 : 4) === 0)) loadMessages(open);
   if (document.getElementById("workers") ? ticks % 2 === 0 : ticks % 5 === 0) pollWorkers();
 }
 
