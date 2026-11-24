@@ -151,3 +151,93 @@ def test_relay_answers_where_he_asked(tmp_path, monkeypatch):
     telegram.clear()
     asyncio.run(relay("Ticket j-3 is done.", app_chat="deleted-chat"))     # chat gone: Telegram
     assert telegram == ["Done: the runner fix is merged."]
+
+
+def test_antigravity_brain_tracks_origin(tmp_path, monkeypatch):
+    monkeypatch.setattr(appserver, "CHATS", tmp_path)
+    appserver._brains.clear()
+    chat = appserver.new_chat("Jarvis")
+    b = appserver._brain(chat)
+    assert b.origin == f"app:{chat['id']}"
+
+    # Verify origin.from_ctx without header when no brain is active returns empty
+    assert origin.from_ctx(None) == {}
+    assert origin.get_active() == ""
+
+    # Test active context
+    with origin.active(b.origin):
+        assert origin.get_active() == f"app:{chat['id']}"
+        assert origin.from_ctx(None) == {"channel": "app", "chat": chat["id"]}
+    assert origin.get_active() == ""
+    assert origin.from_ctx(None) == {}
+
+
+def test_antigravity_brain_exec_and_tools_attribution(tmp_path, monkeypatch):
+    monkeypatch.setattr(appserver, "CHATS", tmp_path)
+    monkeypatch.setattr(origin, "FILE", tmp_path / "ticket_origin.json")
+    appserver._brains.clear()
+    chat = appserver.new_chat("Jarvis")
+    b = appserver._brain(chat)
+
+    class FakeStdin:
+        def write(self, d): pass
+        async def drain(self): pass
+        def close(self): pass
+
+    class FakeStdout:
+        def __init__(self, lines):
+            self.lines = list(lines)
+        async def readline(self):
+            return (self.lines.pop(0) + "\n").encode() if self.lines else b""
+
+    # Mock agy exec
+    lines = [
+        json.dumps({"event": "init", "conversation_id": "conv-1"}),
+        json.dumps({"event": "step_update", "step_update": {"text_delta": "Thinking..."}}),
+        json.dumps({"event": "result", "result": {"status": "OK"}}),
+    ]
+    fake_proc = NS(pid=12345, returncode=None, stdin=FakeStdin(), stdout=FakeStdout(lines), terminate=lambda: None)
+
+    async def fake_exec(*cmd, **kw):
+        return fake_proc
+
+    monkeypatch.setattr(brain, "JARVIS_ENGINE", "antigravity")
+    monkeypatch.setattr(brain.asyncio, "create_subprocess_exec", fake_exec)
+
+    async def run_turn():
+        await b.start()
+        assert origin._proc_origins.get(12345) == f"app:{chat['id']}"
+
+        # During b.ask(), origin should be active
+        observed = []
+        async for _ in b.ask("Please add a ticket"):
+            observed.append(origin.from_ctx(None))
+        return observed
+
+    results = asyncio.run(run_turn())
+    assert results and all(r == {"channel": "app", "chat": chat["id"]} for r in results)
+    assert origin.get_active() == ""
+
+    # Test tool call attribution during active origin
+    added = []
+
+    async def fake_add_ticket(project, title, words, source):
+        added.append(source)
+        return NS(ref="ag-1")
+
+    monkeypatch.setattr(board, "boards", lambda: {"Jarvis": "b"})
+    monkeypatch.setattr(board, "add_ticket", fake_add_ticket)
+
+    async def call_tools():
+        with origin.active(b.origin):
+            server = tools.make_server("Telegram")
+            await server.call_tool("add_task", {"project": "Jarvis", "task": "Task from app", "my_words": "words"})
+
+    asyncio.run(call_tools())
+    assert added == ["the app"]
+    assert origin.get("ag-1")["chat"] == chat["id"]
+
+    asyncio.run(b.stop())
+    assert 12345 not in origin._proc_origins
+    appserver._brains.clear()
+

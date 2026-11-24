@@ -5,7 +5,11 @@ App chats tell the tools server who they are with an HTTP header on every tool c
 X-Jarvis-Origin: "app:<chat id>"). add_task / queue_ticket / answer_task remember it per ticket ref;
 jarvis.notify then sends that ticket's result into the same app chat (and the app's notifications)
 instead of Telegram. Tickets with no record (Telegram, calls, the board itself) go to Telegram as before.
+For Antigravity brain where agy connects over HTTP without custom headers, Brain tracks active origin
+during ask/reply turns so tools automatically attribute requests to the originating app chat.
 """
+import contextlib
+import contextvars
 import json
 import time
 
@@ -14,6 +18,48 @@ from .config import STATE
 FILE = STATE / "ticket_origin.json"      # ref -> {"channel": "app", "chat": id, "at": ts}
 HEADER = "x-jarvis-origin"
 KEEP = 30 * 86400
+
+_current_origin: contextvars.ContextVar[str] = contextvars.ContextVar("current_origin", default="")
+_active_origins: list[str] = []
+_proc_origins: dict[int, str] = {}
+
+
+def register_proc(pid: int, val: str) -> None:
+    if pid and val:
+        _proc_origins[pid] = val
+
+
+def unregister_proc(pid: int) -> None:
+    _proc_origins.pop(pid, None)
+
+
+@contextlib.contextmanager
+def active(val: str):
+    """Context manager to mark the current active origin (e.g. for Antigravity brain turns)."""
+    token = _current_origin.set(val or "")
+    entry = val or ""
+    _active_origins.append(entry)
+    try:
+        yield
+    finally:
+        _current_origin.reset(token)
+        if entry in _active_origins:
+            _active_origins.remove(entry)
+
+
+def get_active() -> str:
+    """Returns the currently active origin string (from ContextVar or process stack)."""
+    ctx_val = _current_origin.get()
+    if ctx_val:
+        return ctx_val
+    return _active_origins[-1] if _active_origins else ""
+
+
+def set_active(val: str) -> None:
+    """Set active origin (mostly for tests)."""
+    global _active_origins
+    _current_origin.set(val or "")
+    _active_origins = [val] if val else []
 
 
 def _load() -> dict:
@@ -32,9 +78,15 @@ def parse(value: str) -> dict:
 def from_ctx(ctx) -> dict:
     """The origin of the tool call being served (empty = Telegram / call)."""
     try:
-        return parse(ctx.request_context.request.headers.get(HEADER, ""))
+        if ctx and hasattr(ctx, "request_context") and ctx.request_context:
+            h = ctx.request_context.request.headers.get(HEADER, "")
+            if h:
+                return parse(h)
     except Exception:
-        return {}
+        pass
+    if act := get_active():
+        return parse(act)
+    return {}
 
 
 def set(ref: str, o: dict) -> None:

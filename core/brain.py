@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from typing import AsyncIterator, Callable
 
-from . import coremem, memory, usagewatch
+from . import coremem, memory, origin, usagewatch
 from .config import (
     AGY_BRAIN_MODEL,
     AGY_CLI,
@@ -381,6 +381,8 @@ class Brain:
                 *cmd,
                 cwd=HERE, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL, limit=20_000_000)
+            if self.origin and self.proc:
+                origin.register_proc(self.proc.pid, self.origin)
             log.info("%s brain started on Antigravity (%s)%s", self.mode, AGY_BRAIN_MODEL, " (resumed)" if resume else "")
             return
 
@@ -439,78 +441,79 @@ class Brain:
                 self.proc = None
             if self.proc is None or self.proc.returncode is not None:
                 await self.start()
-            if JARVIS_ENGINE == "antigravity":
-                orchestrator_guard = (
-                    "[ORCHESTRATOR RULE: You are Jarvis, an orchestrator and butler, NOT a developer agent. "
-                    "You must NEVER analyze code to solve bugs, suggest implementation plans, ask to confirm edits, "
-                    "or edit files yourself. For ANY bug, fix, feature, remake, or code task, call add_task immediately "
-                    "to put it on the project's board for a runner worker.]\n\n"
-                )
-                if not self.session_id:
-                    payload_text = f"[SYSTEM INSTRUCTIONS]\n{self._system()}\n\n{orchestrator_guard}[USER MESSAGE]\n{text}"
+            with origin.active(self.origin):
+                if JARVIS_ENGINE == "antigravity":
+                    orchestrator_guard = (
+                        "[ORCHESTRATOR RULE: You are Jarvis, an orchestrator and butler, NOT a developer agent. "
+                        "You must NEVER analyze code to solve bugs, suggest implementation plans, ask to confirm edits, "
+                        "or edit files yourself. For ANY bug, fix, feature, remake, or code task, call add_task immediately "
+                        "to put it on the project's board for a runner worker.]\n\n"
+                    )
+                    if not self.session_id:
+                        payload_text = f"[SYSTEM INSTRUCTIONS]\n{self._system()}\n\n{orchestrator_guard}[USER MESSAGE]\n{text}"
+                    else:
+                        payload_text = f"{orchestrator_guard}[USER MESSAGE]\n{text}"
+                    msg = {"event": "user", "message": {"role": "user", "content": payload_text}}
                 else:
-                    payload_text = f"{orchestrator_guard}[USER MESSAGE]\n{text}"
-                msg = {"event": "user", "message": {"role": "user", "content": payload_text}}
-            else:
-                msg = {"type": "user", "message": {"role": "user", "content": text}}
-            self.proc.stdin.write((json.dumps(msg) + "\n").encode())
-            await self.proc.stdin.drain()
-            while line := await self.proc.stdout.readline():
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if "event" in event:
-                    event_type = event.get("event")
-                    if event_type == "init":
-                        self.session_id = event.get("conversation_id") or self.session_id
-                    elif event_type == "step_update":
-                        step = event.get("step_update", {})
-                        self.session_id = step.get("conversation_id") or self.session_id
-                        delta = step.get("text_delta")
-                        if delta:
-                            yield delta
-                        elif step.get("step_type") in ("tool", "tool_call"):
+                    msg = {"type": "user", "message": {"role": "user", "content": text}}
+                self.proc.stdin.write((json.dumps(msg) + "\n").encode())
+                await self.proc.stdin.drain()
+                while line := await self.proc.stdout.readline():
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if "event" in event:
+                        event_type = event.get("event")
+                        if event_type == "init":
+                            self.session_id = event.get("conversation_id") or self.session_id
+                        elif event_type == "step_update":
+                            step = event.get("step_update", {})
+                            self.session_id = step.get("conversation_id") or self.session_id
+                            delta = step.get("text_delta")
+                            if delta:
+                                yield delta
+                            elif step.get("step_type") in ("tool", "tool_call"):
+                                yield "\n"
+                                if on_step:
+                                    txt = _step_text(step)
+                                    if txt:
+                                        on_step(txt)
+                        elif event_type == "result":
+                            res = event.get("result", {})
+                            self.session_id = res.get("conversation_id") or self.session_id
+                            if res.get("status") == "ERROR":
+                                log.error("brain error: %s", res.get("error") or res.get("response"))
+                            return
+                        continue
+
+                    self.session_id = event.get("session_id") or self.session_id
+                    kind = event.get("type")
+                    if kind == "stream_event":
+                        delta = event["event"].get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            yield delta["text"]
+                    elif kind == "assistant":
+                        # a tool call ends a text block; make sure sentences get cut there
+                        tools = [b for b in event["message"].get("content", []) if b.get("type") == "tool_use"]
+                        if tools:
                             yield "\n"
                             if on_step:
-                                txt = _step_text(step)
-                                if txt:
-                                    on_step(txt)
-                    elif event_type == "result":
-                        res = event.get("result", {})
-                        self.session_id = res.get("conversation_id") or self.session_id
-                        if res.get("status") == "ERROR":
-                            log.error("brain error: %s", res.get("error") or res.get("response"))
+                                for b in tools:
+                                    txt = _step_text(b)
+                                    if txt:
+                                        on_step(txt)
+                    elif kind == "rate_limit_event":
+                        asyncio.create_task(usagewatch.report(event.get("rate_limit_info") or {}))
+                    elif kind == "result":
+                        if event.get("is_error"):
+                            log.error("brain error: %s", event.get("result"))
                         return
-                    continue
-
-                self.session_id = event.get("session_id") or self.session_id
-                kind = event.get("type")
-                if kind == "stream_event":
-                    delta = event["event"].get("delta", {})
-                    if delta.get("type") == "text_delta":
-                        yield delta["text"]
-                elif kind == "assistant":
-                    # a tool call ends a text block; make sure sentences get cut there
-                    tools = [b for b in event["message"].get("content", []) if b.get("type") == "tool_use"]
-                    if tools:
-                        yield "\n"
-                        if on_step:
-                            for b in tools:
-                                txt = _step_text(b)
-                                if txt:
-                                    on_step(txt)
-                elif kind == "rate_limit_event":
-                    asyncio.create_task(usagewatch.report(event.get("rate_limit_info") or {}))
-                elif kind == "result":
-                    if event.get("is_error"):
-                        log.error("brain error: %s", event.get("result"))
+                if self.was_stopped:
+                    self.proc = None
                     return
-            if self.was_stopped:
                 self.proc = None
-                return
-            self.proc = None
-            yield "Sorry, I lost my train of thought. Say that again?"
+                yield "Sorry, I lost my train of thought. Say that again?"
 
     async def reply(self, text: str, on_step: Callable[[str], None] | None = None) -> str:
         return "".join([chunk async for chunk in self.ask(text, on_step=on_step)]).strip()
@@ -529,8 +532,11 @@ class Brain:
 
     async def stop(self):
         self.was_stopped = True
-        if self.proc and self.proc.returncode is None:
-            with contextlib.suppress(Exception):
-                self.proc.stdin.close()
-            with contextlib.suppress(Exception):
-                self.proc.terminate()
+        if self.proc:
+            if self.origin:
+                origin.unregister_proc(self.proc.pid)
+            if self.proc.returncode is None:
+                with contextlib.suppress(Exception):
+                    self.proc.stdin.close()
+                with contextlib.suppress(Exception):
+                    self.proc.terminate()
