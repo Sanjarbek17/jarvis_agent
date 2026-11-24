@@ -45,8 +45,9 @@ def jarvis_running() -> bool:
 def send(text: str = "", file: str | Path = "", caption: str = "", key: str = "",
          delete_key: str = "", document: bool = False, whoami: bool = False, accept_login: bytes = b"",
          wait: float = 120, app: bool = False, chat: str = "", announce: dict | None = None,
-         spambot: bool = False) -> dict:
-    """Queue a message for Jarvis to send to Sanjar and wait for the result.
+         spambot: bool = False, to: int | str = 0) -> dict:
+    """Queue a message for Jarvis to send to Sanjar (or another recipient) and wait for the result.
+    to: recipient (user ID, chat ID, or username); defaults to 0 (sends to Sanjar/owner_id).
     key: name this message; a later message with the same key replaces it (old one deleted).
     delete_key: just delete the message saved under that key.
     whoami: also return the Jarvis account as "me": {"id", "username"}.
@@ -59,7 +60,7 @@ def send(text: str = "", file: str | Path = "", caption: str = "", key: str = ""
     note = {"text": text, "file": str(Path(file).resolve()) if file else "", "caption": caption,
             "key": key, "delete_key": delete_key, "document": document, "whoami": whoami,
             "accept_login": base64.b64encode(accept_login).decode(), "app": app, "chat": chat,
-            "announce": announce, "spambot": spambot}
+            "announce": announce, "spambot": spambot, "to": to}
     tmp = OUTBOX / f"{name}.tmp"
     tmp.write_text(json.dumps(note, ensure_ascii=False))
     tmp.rename(OUTBOX / f"{name}.json")            # appears complete, never half-written
@@ -75,7 +76,7 @@ def send(text: str = "", file: str | Path = "", caption: str = "", key: str = ""
 
 
 async def run(tg, owner_id: int, on_file=None) -> None:
-    """Inside Jarvis: send whatever scripts queued, to Sanjar only. on_file(path, caption, chat): also
+    """Inside Jarvis: send whatever scripts queued, to Sanjar or the given recipient. on_file(path, caption, chat): also
     called for files marked `app`; its failure doesn't fail the send."""
     OUTBOX.mkdir(parents=True, exist_ok=True)
     keyed: dict[str, object] = {}                    # key -> sent message
@@ -108,8 +109,13 @@ async def run(tg, owner_id: int, on_file=None) -> None:
                             await old.delete()
                         except Exception:
                             pass
+                raw_to = note.get("to")
+                if raw_to:
+                    dest = int(raw_to) if str(raw_to).lstrip("-").isdigit() else raw_to
+                else:
+                    dest = owner_id
                 if note.get("file"):
-                    msg = await tg.send_file(owner_id, note["file"], caption=(note.get("caption") or "")[:1000],
+                    msg = await tg.send_file(dest, note["file"], caption=(note.get("caption") or "")[:1000],
                                              force_document=bool(note.get("document")))
                     if note.get("app") and on_file:
                         try:
@@ -117,7 +123,7 @@ async def run(tg, owner_id: int, on_file=None) -> None:
                         except Exception:
                             log.exception("showing %s in the app failed", note["file"])
                 elif note.get("text"):
-                    msg = await tg.send_message(owner_id, note["text"][:4000], link_preview=False)
+                    msg = await tg.send_message(dest, note["text"][:4000], link_preview=False)
                 else:
                     msg = None
                 if msg is not None and note.get("key"):
