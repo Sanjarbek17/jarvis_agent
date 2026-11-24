@@ -373,6 +373,28 @@ PROOF_PAT = re.compile(
     r"\b(proof|skrinshot|screenshot|chat(ini)?|yozishm(ani)?|скриншот|переписк)\b",
     re.I,
 )
+EXPENSE_QUERY_PAT = re.compile(
+    r"\b(recalculate|calculate|qayta\s*hisob\w*|hisob\s*kitob|hisob-kitob|xarajat\w*|harajat\w*|rasxod\w*|"
+    r"suv\s*qancha|tok\s*qancha|gaz\s*qancha|qancha\s*bo.?gandi|qancha\s*bo.?ldi|"
+    r"kim\s*qancha|qancha\s*(?:berishim|beradi|oladi|to.?laydi)|how\s*much\s*(?:do\s*i\s*owe|each|for)|"
+    r"who\s*pays|who\s*owes|split|water\s*cost)\b",
+    re.I,
+)
+
+
+def is_expense_query(text: str, replied: str = "") -> bool:
+    t = (text or "").strip()
+    r = (replied or "").strip()
+    if not t:
+        return False
+    if EXPENSE_QUERY_PAT.search(t):
+        return True
+    if r and re.search(r"(?:💰\s*Expenses|so'?m each|spent|Who pays whom|xarajat)", r, re.I):
+        if re.search(r"\b(recalculate|with\s*this|qayta|hisobla|buni\s*ham|qo.?sh|qancha)\b|\?", t, re.I):
+            return True
+    if re.search(r"@Jarvis_Sanjar\b", t, re.I) and re.search(r"\b(recalculate|calculate|hisob|hisobla|qancha)\b", t, re.I):
+        return True
+    return False
 
 
 def is_question_text(text: str) -> bool:
@@ -1091,6 +1113,15 @@ async def tell_sanjar_request(client, name: str, ask: str) -> None:
 async def answer_full(name: str, text: str, replied: str = "", to_me: bool = False) -> tuple[str, int, bool]:
     """answer(), and whether they asked for proof. The member's ask (if any) is kept in _asked for on_message."""
     from . import memory
+    if is_expense_query(text, replied):
+        from . import expenses
+        try:
+            exp_ans = expenses.answer_expense_query(text, asker=name, replied=replied)
+            if exp_ans:
+                return exp_ans, 0, False
+        except Exception as e:
+            log.warning("Flatmates: expense query answer error: %r", e)
+
     lines, line = history(), f"{name}: {text[:500]}"
     chat = "\n".join(lines if lines and lines[-1] == line else [*lines, line])
     about = f"The latest message replies to {'YOUR OWN earlier message, this claim of yours' if to_me else 'this message'}:\n{replied[:600]}\n" if replied else ""
@@ -1103,6 +1134,16 @@ async def answer_full(name: str, text: str, replied: str = "", to_me: bool = Fal
                                                 model=MODEL, timeout=ANSWER_TIMEOUT)
         except Exception as e:
             log.warning("no answer for Flatmates: %r", e)
+            if meant_for_me:
+                flat_rows = _rows()
+                if flat_rows:
+                    for r in flat_rows:
+                        f_ans, f_proof = answer_flat_question(text, r)
+                        if f_ans:
+                            return f_ans, 0, f_proof
+                is_en = bool(re.search(r"\b(where|how|what|is|are|can|tell)\b", text, re.I))
+                fb = "I'm checking this and will let you know shortly." if is_en else "Ma'lumotni tekshirib, tez orada xabar beraman."
+                return fb, 0, False
             return "", 0, False
     _asked["text"] = request_of(ans)
     reply = str(ans.get("reply") or "").strip()
@@ -1144,11 +1185,12 @@ async def on_message(event, name: str) -> None:
     if turn != _latest or not _burst:                # more came, and that handler carries on from here
         return
     burst, _burst = _burst, []
-    event, name, text, replied, to_me = next((b for b in reversed(burst) if b[4] or NAMED.search(b[2])), burst[-1])
-    if not (to_me or NAMED.search(text)) and time.time() - _last_reply["at"] < SPACING:
+    event, name, text, replied, to_me = next((b for b in reversed(burst) if b[4] or NAMED.search(b[2]) or is_expense_query(b[2], b[3])), burst[-1])
+    is_exp = is_expense_query(text, replied)
+    if not (to_me or NAMED.search(text) or is_exp) and time.time() - _last_reply["at"] < SPACING:
         return                                       # it just spoke: two unasked answers in a minute looked like a bot
     _asked["text"] = _asked["owner"] = _asked["tell"] = ""
-    reply, flat, proof = await answer_full(name, text, replied, to_me)
+    reply, flat, proof = await answer_full(name, text, replied, to_me or is_exp)
     if getattr(event, "client", None) and not (_asked["owner"] or _asked.get("tell")):     # an owner question or order goes to the owner instead
         await tell_sanjar_request(event.client, name, _asked["text"])
     log.info("Flatmates: %s wrote %r, replying to %r: %r", name, text[:120], replied[:80], reply[:300] or "stayed out of it")

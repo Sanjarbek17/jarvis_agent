@@ -1217,3 +1217,40 @@ def test_group_instruction_without_naming_jarvis(monkeypatch):
     assert req["key"] == "tel1"
     assert req["say"] == "Narxini 250 ga tushirib bering."
     assert req["asker"] == "Rustam"
+
+
+def test_flatmates_expense_query_handling(monkeypatch):
+    """Ticket 16b23e08: Flatmates group handles expense recalculation queries without timeout or silence."""
+    from core import expenses
+    monkeypatch.setattr(f, "QUIET", 0.01)
+    rows = [
+        {"name": "Abdumannon", "text": "235", "ts": 1794100000},
+        {"name": "Javohir", "text": "205", "ts": 1794100000},
+        {"name": "Bahodir", "text": "624", "ts": 1794100000},
+        {"name": "Ikrom", "text": "246", "ts": 1794100000},
+        {"name": "Sanjar", "text": "90", "ts": 1794100000},
+    ]
+    monkeypatch.setattr(expenses, "load_current_rows", lambda: rows)
+
+    replies = []
+    ev = burst_event("@Jarvis_Sanjar can you recalculate with this?", 719, replies)
+    asyncio.run(f.on_message(ev, "Ikrom C"))
+    assert len(replies) == 1
+    assert "1 400 000" in replies[0]
+    assert "280 000" in replies[0]
+
+
+def test_flatmates_water_query_handling(monkeypatch):
+    """Ticket 16b23e08: Javohir asking 'Suv qancha bogandi' gets a factual water cost answer."""
+    from core import expenses
+    monkeypatch.setattr(f, "QUIET", 0.01)
+    rows = [
+        {"name": "Bahodir", "text": "Men 492 ming pulimni suvga berovdi shundan 22 mingni ayirsin", "ts": 1794100000},
+    ]
+    monkeypatch.setattr(expenses, "load_current_rows", lambda: rows)
+
+    replies = []
+    ev = burst_event("Suv qancha bogandi", 699, replies)
+    asyncio.run(f.on_message(ev, "Javohir Aka"))
+    assert len(replies) == 1
+    assert "470 000" in replies[0]

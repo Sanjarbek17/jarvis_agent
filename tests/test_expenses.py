@@ -348,3 +348,93 @@ def test_the_post_tool_is_only_for_him(monkeypatch):
         return {t.name for t in asyncio.run(tools.make_server(source).list_tools())}
     assert "flatmates_post_expenses" in names("Telegram")
     assert "flatmates_post_expenses" not in names("Guest") | names("Group")
+
+
+def test_expense_parser_false_positives():
+    assert expenses.amounts("Rosa siqildinge 500 minga") == []
+    assert expenses.amounts("5614682115506083") == []
+    assert expenses.amounts("5614 6821 1550 6083") == []
+    formula_text = "9 oy turganlar \n9*11.43=102,87 \n\n5 oy\n5*11.43=57,15 \n\n3 oy \n3*11.43=34,29 \n\n2oy\n2*11.43=22,86"
+    assert expenses.amounts(formula_text) == []
+    split_dist = "Javohir\nAbdumannon \nSanjar\nMen\nBunyod\n\n20dan"
+    assert expenses.amounts(split_dist) == []
+    assert expenses.amounts("Suv qancha bogandi") == []
+    assert expenses.amounts("Tepadagi hisob kitobniyam tashlasin hamma") == []
+    assert expenses.amounts("10,17,18,20,22,25 hammasidan rasmini so’ra") == []
+
+
+def test_expense_parser_subtraction_and_delivery():
+    # Bahodir's water payment: 492k - 22k = 470k
+    assert expenses.amounts("Men 492 ming pulimni suvga berovdi shundan 22 mingni ayirsin") == [470_000]
+    # Ikrom's desk delivery: 100k
+    assert expenses.amounts("men partalarga 100ming ishlatgandimda dostavka uchun") == [100_000]
+    # Generic subtraction
+    assert expenses.amounts("suv 500 ming, shundan 20 ming ayirilsin") == [480_000]
+
+
+def test_unclear_excludes_chatter_and_banter():
+    rows = [
+        {"name": "Bahodir", "text": "non oldim", "ts": T},
+        {"name": "Javohir Aka", "text": "Rosa siqildinge 500 minga", "ts": T + 1},
+        {"name": "Abdumannon C", "text": "5614682115506083", "ts": T + 2},
+        {"name": "Javohir Aka", "text": "Suv qancha bogandi", "ts": T + 3},
+    ]
+    s = expenses.summarize(rows)
+    # Only "non oldim" should be unclear; chatter/cards/questions must not pollute unclear
+    assert s["unclear"] == ["Bahodir: non oldim"]
+
+
+def test_answer_expense_query_recalculate():
+    # 5 flatmates total 1 400 000
+    rows = [
+        {"name": "Abdumannon C", "text": "kv 63", "ts": T},
+        {"name": "Abdumannon C", "text": "104", "ts": T},
+        {"name": "Abdumannon C", "text": "68", "ts": T},
+        {"name": "Javohir Aka", "text": "205", "ts": T},
+        {"name": "Bahodir", "text": "154", "ts": T},
+        {"name": "Bahodir", "text": "Men 492 ming pulimni suvga berovdi shundan 22 mingni ayirsin", "ts": T + 10},
+        {"name": "Ikrom C", "text": "146", "ts": T},
+        {"name": "Ikrom C", "text": "men partalarga 100ming ishlatgandimda dostavka uchun", "ts": T + 20},
+        {"name": "Sanjar", "text": "90", "ts": T},
+    ]
+    # English query
+    ans_en = expenses.answer_expense_query("@Jarvis_Sanjar can you recalculate with this?", asker="Ikrom C", rows=rows)
+    assert "Updated expenses" in ans_en
+    assert "1 400 000" in ans_en
+    assert "280 000" in ans_en
+    assert "Bahodir: spent 624 000, gets 344 000" in ans_en
+
+    # Uzbek query
+    ans_uz = expenses.answer_expense_query("qayta hisob kitob qilib ber", asker="Bahodir", rows=rows)
+    assert "Yangilangan xarajatlar" in ans_uz
+    assert "1 400 000" in ans_uz
+    assert "Bahodir" in ans_uz and "344 000" in ans_uz
+
+
+def test_answer_expense_query_water_item():
+    rows = [
+        {"name": "Bahodir", "text": "Men 492 ming pulimni suvga berovdi shundan 22 mingni ayirsin", "ts": T},
+        {"name": "Ikrom C", "text": "10 water", "ts": T + 1},
+    ]
+    ans = expenses.answer_expense_query("Suv qancha bogandi", asker="Javohir", rows=rows)
+    assert "480 000" in ans
+    assert "Bahodir" in ans
+
+
+def test_answer_expense_query_individual_balance():
+    rows = [
+        {"name": "Abdumannon C", "text": "235", "ts": T},
+        {"name": "Javohir Aka", "text": "205", "ts": T},
+        {"name": "Bahodir", "text": "624", "ts": T},
+        {"name": "Ikrom C", "text": "246", "ts": T},
+        {"name": "Sanjar", "text": "90", "ts": T},
+    ]
+    # Ikrom owes 34k (280k - 246k)
+    ans = expenses.answer_expense_query("men qancha berishim kerak", asker="Ikrom C", rows=rows)
+    assert "34 000" in ans
+    assert "to'lashi kerak" in ans
+
+    # Bahodir gets 344k
+    ans_baho = expenses.answer_expense_query("Bahodir qancha oladi", asker="Sanjar", rows=rows)
+    assert "344 000" in ans_baho
+    assert "olishi kerak" in ans_baho
