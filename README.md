@@ -131,7 +131,7 @@ flowchart TD
 │   ├── login.py / relogin.py # Telegram authentication handlers
 │   ├── mac.py                # Mouse, keyboard, and screenshot automation helper
 │   ├── real_chrome.py        # Authenticated Chrome session automation
-│   ├── restart_when_idle.sh  # Safe restart script waiting for active workers
+│   ├── restart_when_idle.sh  # Safe restart script (running workers continue detached)
 │   └── send_file.py          # Outbox utility to send media/files to Telegram
 ├── tests/                    # Comprehensive automated test suite
 ├── docs/                     # Architecture, specifications, and design plans
@@ -254,7 +254,7 @@ Jarvis is managed via macOS `launchd`:
 # Check status / tail daemon logs
 tail -f var/logs/jarvis.log
 
-# Graceful restart (waits for running workers and active calls to finish)
+# Graceful restart (running workers continue detached; waits only for active calls/answers)
 scripts/restart_when_idle.sh
 
 # Stop daemon completely

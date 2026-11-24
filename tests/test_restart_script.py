@@ -56,3 +56,72 @@ def test_a_really_waiting_restart_still_blocks_a_second(copy, tmp_path_factory):
         assert "already waiting" in run("scripts/restart_when_idle.sh", copy)
     finally:
         waiter.kill()
+
+
+def test_busy_ignores_ticket_workers_and_workers_json():
+    """Ticket d0bc8d2d: restart_when_idle.sh must not wait for running ticket workers."""
+    src = SCRIPT.read_text()
+    assert "-p Ticket" not in src
+    assert "workers.json" not in src
+    assert "answering" in src
+    assert "live phone call" in src
+    assert "Mac" in src and "task" in src
+
+
+def test_busy_behavior_with_mocked_ps(tmp_path):
+    """Test that busy() returns false for ticket workers, but true for calls/mac tasks."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_ps = bin_dir / "ps"
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+    ans_dir = tmp_path / "var" / "state" / "answering"
+    ans_dir.mkdir(parents=True)
+
+    # Shell script testing busy() extracted from restart_when_idle.sh
+    test_sh = scripts_dir / "test_busy.sh"
+    test_sh.write_text(f"""#!/bin/sh
+JPID=100
+CALLS=yes
+# extract busy function from actual script
+eval "$(sed -n '/^busy() {{/,/^}}/p' "{SCRIPT}")"
+
+# 1. Ticket worker: should NOT be busy
+echo '100 /usr/local/bin/claude -p Ticket 16b23e08' > "{tmp_path}/ps_out"
+busy && exit 1
+
+# 2. Antigravity Ticket worker: should NOT be busy
+echo '100 /usr/local/bin/agy -p Ticket 16b23e08' > "{tmp_path}/ps_out"
+busy && exit 2
+
+# 3. Interactive Mac task: SHOULD be busy
+echo '100 /usr/local/bin/claude -p Mac task volume down' > "{tmp_path}/ps_out"
+busy || exit 3
+
+# 4. Live phone call: SHOULD be busy
+echo '100 /usr/bin/python jarvis.py -- live phone call' > "{tmp_path}/ps_out"
+busy || exit 4
+
+# 5. Live phone call with CALLS=no (--now-ish): should NOT be busy
+CALLS=no
+busy && exit 5
+CALLS=yes
+
+# 6. Idle processes, but answering file exists: SHOULD be busy
+echo '100 python jarvis.py' > "{tmp_path}/ps_out"
+busy && exit 6
+touch "{ans_dir}/ans-1"
+busy || exit 7
+
+exit 0
+""")
+    test_sh.chmod(0o755)
+
+    fake_ps.write_text(f"""#!/bin/sh
+cat "{tmp_path}/ps_out"
+""")
+    fake_ps.chmod(0o755)
+
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    res = subprocess.run([str(test_sh)], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert res.returncode == 0, f"Failed with exit code {res.returncode}: {res.stderr}"
