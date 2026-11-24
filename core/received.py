@@ -16,6 +16,7 @@ import re
 import time
 from pathlib import Path
 
+from . import blocked
 from .config import INBOX
 
 log = logging.getLogger("jarvis.received")
@@ -65,9 +66,9 @@ async def save(message, sender_id: int) -> Path | None:
 
 async def on_arrival(event) -> str:
     """Someone other than Sanjar wrote to Jarvis's account: log it, keep the file, and return a short note for Sanjar
-    ("" for bots and Telegram's service messages, which he isn't told about)."""
+    ("" for bots, Telegram's service messages, and blocked users, which he isn't told about)."""
     sender = await event.get_sender()
-    if getattr(sender, "bot", False) or event.sender_id in SERVICE_IDS:
+    if getattr(sender, "bot", False) or event.sender_id in SERVICE_IDS or blocked.is_blocked(event.sender_id):
         return ""
     text = (event.raw_text or "").strip()
     path = None
@@ -98,6 +99,8 @@ async def listing(tg, owner_id: int, who: str = "", days: int = 7) -> str:
             break                                   # dialogs come newest first
         user = d.entity
         if not d.is_user or getattr(user, "bot", False) or user.id == owner_id or getattr(user, "is_self", False):
+            continue
+        if blocked.is_blocked(user.id):
             continue
         name = _name(user)
         if want and want not in name.lower():

@@ -39,6 +39,8 @@ class Hooks:
     expenses: Callable[[], Awaitable[str]] = None   # the Flatmates expense topic, read with Jarvis's own Telegram
     post_expenses: Callable[[], Awaitable[str]] = None   # ...and posted there
     received: Callable[[str, int], Awaitable[str]] = None   # other people's chats with Jarvis's account
+    block_contact: Callable[[str], Awaitable[str]] = None   # block spam / users on Telegram (ticket fb74bc39)
+    unblock_contact: Callable[[str], Awaitable[str]] = None # unblock users on Telegram
     runner: "Runner"                                                    # core.runner.Runner
 
 
@@ -388,6 +390,22 @@ def make_server(source: str) -> MCPServer:
         call's transcript afterwards. contact: their name as saved in contacts, or @username.
         message: what to tell them, in Sanjar's words. Returns the matches if it's not clear who."""
         return await hooks.call_contact(contact, message)
+
+    @server.tool()
+    async def block_contact(contact: str) -> str:
+        """Block a spam sender or user on Telegram so they cannot message or call Jarvis's account anymore.
+        contact: name, @username, or numeric user ID (from an unfamiliar sender notification)."""
+        if hooks.block_contact is None:
+            return "Blocking is not available right now."
+        return await hooks.block_contact(contact)
+
+    @server.tool()
+    async def unblock_contact(contact: str) -> str:
+        """Unblock a previously blocked user on Telegram.
+        contact: name, @username, or numeric user ID."""
+        if hooks.unblock_contact is None:
+            return "Unblocking is not available right now."
+        return await hooks.unblock_contact(contact)
 
     @server.tool()
     async def lock_mac() -> str:

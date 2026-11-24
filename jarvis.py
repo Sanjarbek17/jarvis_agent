@@ -45,7 +45,7 @@ from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.types import InputPeerChannel, MessageActionGroupCall
 
 from core.paths import VAR
-from core import answering, appserver, board, received, usagewatch, contacts, coremem, expenses, flatmates, google, guard, livestats, macremote, memory, origin, outbox, selfcheck, tgfmt, tools
+from core import answering, appserver, blocked, board, received, usagewatch, contacts, coremem, expenses, flatmates, google, guard, livestats, macremote, memory, origin, outbox, selfcheck, tgfmt, tools
 from core.board import Ticket
 from core.brain import SUMMARY_PROMPT, Brain, group_prompt, guest_prompt, is_silent
 from core.config import (HERE, CALLS, CALL_COOLDOWN, CALL_ON, CALL_SANJAR, watched_group, WATCHED_GROUP_IDS, CALL_RATE, DAILY_CALL_AT, INBOX, LOGS, OWNER_ID,
@@ -394,15 +394,93 @@ waiting_calls: list[tuple[int, str, str]] = []   # (user id, name, message) to c
 
 async def find_people(query: str) -> tuple[list, list]:
     """(sure, maybe) matches for a name among the Jarvis account's contacts and recent chats."""
-    if query.strip().startswith("@"):
+    q = query.strip()
+    if q.isdigit() or (q.startswith("-") and q[1:].isdigit()):
+        with contextlib.suppress(Exception):
+            return [await tg.get_entity(int(q))], []
+    if q.startswith("@"):
         with contextlib.suppress(ValueError):
-            return [await tg.get_entity(query.strip())], []
+            return [await tg.get_entity(q)], []
     users = list((await tg(GetContactsRequest(hash=0))).users)
     seen = {u.id for u in users}
     async for d in tg.iter_dialogs(limit=200):
         if d.is_user and not d.entity.bot and d.entity.id not in seen and d.entity.id != OWNER_ID:
             users.append(d.entity)
-    return contacts.match(users, query)
+    sure, maybe = contacts.match(users, query)
+    if not sure and not maybe:
+        for bid, binfo in blocked.load().items():
+            if query.lower() in binfo.get("name", "").lower() or query.lower() == str(bid):
+                with contextlib.suppress(Exception):
+                    return [await tg.get_entity(bid)], []
+    return sure, maybe
+
+
+async def block_contact(query: str) -> str:
+    """The block_contact tool: find who Sanjar means and block them on Telegram."""
+    q = query.strip()
+    if q.isdigit() or (q.startswith("-") and q[1:].isdigit()):
+        uid = int(q)
+        if uid == OWNER_ID:
+            return "Cannot block Sanjar."
+        if uid in received.SERVICE_IDS:
+            return "Cannot block Telegram service accounts."
+        try:
+            entity = await tg.get_entity(uid)
+            ok, msg = await blocked.block(tg, entity)
+            return msg
+        except Exception:
+            ok, msg = await blocked.block(tg, uid)
+            return msg
+
+    sure, maybe = await find_people(query)
+    if len(sure) != 1:
+        found = sure or maybe
+        if not found:
+            return (f"No contact or chat matches {query!r}. Ask Sanjar for the name as saved, an "
+                    "@username, or their Telegram user ID.")
+        names = "".join(f"\n- {contacts.name_of(u)}" + (f" (@{u.username})" if getattr(u, 'username', '') else "") for u in found[:10])
+        return f"Not sure who {query!r} is ({len(found)} {'matches' if sure else 'maybe'}); ask Sanjar:{names}"
+    person = sure[0]
+    if person.id == OWNER_ID:
+        return "Cannot block Sanjar."
+    if person.id in received.SERVICE_IDS:
+        return "Cannot block Telegram service accounts."
+    ok, msg = await blocked.block(tg, person)
+    return msg
+
+
+async def unblock_contact(query: str) -> str:
+    """The unblock_contact tool: unblock someone on Telegram."""
+    q = query.strip()
+    if q.isdigit() or (q.startswith("-") and q[1:].isdigit()):
+        uid = int(q)
+        try:
+            entity = await tg.get_entity(uid)
+            ok, msg = await blocked.unblock(tg, entity)
+            return msg
+        except Exception:
+            ok, msg = await blocked.unblock(tg, uid)
+            return msg
+
+    sure, maybe = await find_people(query)
+    if len(sure) != 1:
+        b_records = blocked.load()
+        matches = [b for b in b_records.values() if query.lower() in b.get("name", "").lower()]
+        if len(matches) == 1:
+            m = matches[0]
+            try:
+                entity = await tg.get_entity(m["id"])
+                ok, msg = await blocked.unblock(tg, entity)
+            except Exception:
+                ok, msg = await blocked.unblock(tg, m["id"], name=m.get("name", ""))
+            return msg
+        found = sure or maybe or matches
+        if not found:
+            return f"No contact, chat, or blocked user matches {query!r}."
+        return f"Not sure who {query!r} is; ask Sanjar."
+    person = sure[0]
+    ok, msg = await blocked.unblock(tg, person)
+    return msg
 
 
 async def call_contact(query: str, message: str) -> str:
@@ -1047,6 +1125,9 @@ async def on_member_private(event):
     logged and its file kept (core/received.py, ticket 8d867330). A Flatmates member's reply to Jarvis's question about
     the flats goes to the group (ticket 521b9e14); any other message from a person goes to the chat brain, which must
     tell Sanjar who wrote and what (ticket 3e945138: until then nobody knew Zilola had sent her timer code)."""
+    if blocked.is_blocked(event.sender_id):
+        log.info("ignoring private message from blocked user %s", event.sender_id)
+        return
     note = ""
     try:
         note = await received.on_arrival(event)
@@ -1070,6 +1151,8 @@ async def on_group_message(event):
     title = getattr(await event.get_chat(), "title", "") or ""
     in_flatmates = flatmates.is_flatmates(event.chat_id)
     if not (in_flatmates or watched_group(event.chat_id, title)):
+        return
+    if blocked.is_blocked(event.sender_id):
         return
     text = (event.raw_text or "").strip()
     sender = await event.get_sender()
@@ -1212,6 +1295,8 @@ async def main():
     tools.hooks.send_photos = send_photos
     tools.hooks.hang_up = hang_up
     tools.hooks.call_contact = call_contact
+    tools.hooks.block_contact = block_contact
+    tools.hooks.unblock_contact = unblock_contact
     tools.hooks.worker_progress = runner.progress
     runner.message = lambda text: relay(tgfmt.plain(text))   # e.g. the stuck list: Jarvis decides, not me
     tools.hooks.mac = mac
@@ -1243,6 +1328,7 @@ async def main():
     await tg.send_message(OWNER_ID, "🟢 Jarvis is online. Call me, message me, or /status.", silent=True)
     asyncio.create_task(check_mac_permissions())
     asyncio.create_task(remember_history())
+    asyncio.create_task(blocked.sync_startup(tg))
     asyncio.create_task(watch_group_calls())
     appserver.start_call = app_call
     appserver.worker_status = runner.snapshot
