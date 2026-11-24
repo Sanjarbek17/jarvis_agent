@@ -268,3 +268,90 @@ def test_telegram_and_the_website_are_one_conversation(tmp_path, monkeypatch):
     assert sent == ["From the website: hello from the site", "Answer"]
     assert appserver._brains == {}                          # so the idle check never stops it
     assert [m["text"] for m in appserver.load_chat(appserver.UPDATES)["messages"]][-2:] == ["hello from the site", "Answer"]
+
+
+def test_website_chat_thinking_and_stop_with_session(tmp_path, monkeypatch):
+    import time
+    from core.brain import Brain
+    from core import answering
+    client = _client(tmp_path, monkeypatch)
+    sent = []
+
+    async def send(text):
+        sent.append(text)
+
+    monkeypatch.setattr(appserver, "send_code", send)
+    monkeypatch.setattr(answering, "DIR", tmp_path / "answering")
+    answering.clear()
+
+    # Log in as a website session
+    device = "Website: Chrome on Mac"
+    assert client.post("/api/login/start", json={"device": device}).status_code == 200
+    code = sent[0].split("code: ")[1][:6]
+    session = client.post("/api/login", json={"code": code, "device": device}).json()["token"]
+    auth = {"Authorization": f"Bearer {session}", "Cf-Connecting-IP": "1.2.3.4"}
+
+    chat = appserver.new_chat("General", "Thinking test")
+    cid = chat["id"]
+
+    # Initially not answering
+    res = client.get(f"/api/chats/{cid}/thinking", headers=auth)
+    assert res.status_code == 200
+    assert res.json()["answering"] is False
+
+    # Simulate live thinking
+    appserver._thinking[cid] = {
+        "started": time.time() - 1.5,
+        "step": "reading Api.kt",
+        "steps": ["searching the code", "reading Api.kt"],
+    }
+    with answering.mark(cid):
+        res = client.get(f"/api/chats/{cid}/thinking", headers=auth)
+        assert res.status_code == 200
+        data = res.json()
+        assert data["answering"] is True
+        assert data["step"] == "reading Api.kt"
+        assert data["steps"] == ["searching the code", "reading Api.kt"]
+
+        # Check messages headers
+        msg_res = client.get(f"/api/chats/{cid}/messages", headers=auth)
+        assert msg_res.status_code == 200
+        assert msg_res.headers.get("X-Jarvis-Answering") == "true"
+        assert msg_res.headers.get("X-Jarvis-Step") == "reading Api.kt"
+
+        # Mock brain to test stop
+        mock_brain = Brain("chat")
+        mock_brain.was_stopped = False
+        appserver._brains[cid] = (mock_brain, time.monotonic())
+
+        # Stop thinking from website
+        stop_res = client.post(f"/api/chats/{cid}/stop", headers=auth)
+        assert stop_res.status_code == 200
+        assert stop_res.json()["ok"] is True
+        assert stop_res.json()["stopped"] is True
+        assert mock_brain.was_stopped is True
+        assert cid not in appserver._thinking
+        assert not answering.is_answering(cid)
+
+    appserver._brains.pop(cid, None)
+    appserver._thinking.pop(cid, None)
+    answering.clear()
+
+
+def test_website_files_contain_thinking_and_stop_button(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    js = client.get("/app.js").text
+    assert "thinking" in js
+    assert "thinkingCard" in js
+    assert "stopJarvis" in js
+    assert "Stop thinking" in js
+    assert "/api/chats/" in js
+    assert "/thinking" in js
+    assert "/stop" in js
+
+    css = client.get("/style.css").text
+    assert ".bubble.thinking-card" in css
+    assert ".thinking-stop-btn" in css
+    assert ".thinking-step" in css
+    assert ".thinking-toggle" in css
+

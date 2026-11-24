@@ -106,6 +106,105 @@ h1, h2, p { margin: 0; }
 .bubble .meta a { color: inherit; }
 .bubble .pic { display: block; margin: 4px 0; max-width: 100%; max-height: 360px; border-radius: 8px; cursor: zoom-in; }
 .bubble.typing { color: var(--muted); }
+/* thinking card & live steps (ticket 60966222) */
+.bubble.thinking-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 220px;
+}
+.thinking-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.thinking-pulse {
+  display: inline-block;
+  font-size: 13px;
+  animation: pulse-dot 1.5s infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+.thinking-title-text {
+  font-weight: 600;
+  font-size: 13px;
+  flex: 1;
+  min-width: 0;
+}
+.thinking-stop-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: rgba(229, 72, 77, 0.15);
+  color: #ff8589;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 0;
+  transition: background 0.15s ease;
+}
+.thinking-stop-btn:hover:not(:disabled) {
+  background: rgba(229, 72, 77, 0.28);
+}
+.thinking-step {
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.thinking-toggle {
+  align-self: flex-start;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+}
+.thinking-toggle:hover {
+  text-decoration: underline;
+}
+.thinking-steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  margin-top: 2px;
+}
+.thinking-step-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.thinking-step-item.active {
+  color: var(--text);
+  font-weight: 500;
+}
+.thinking-step-icon {
+  flex: none;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.thinking-step-icon.done {
+  color: var(--ok);
+}
+.thinking-step-icon.active {
+  color: var(--accent);
+}
+.thinking-step-text {
+  flex: 1;
+  min-width: 0;
+}
 /* a report that is old data (ticket 0a97efa8) */
 .bubble.stale { background: #23262d; color: var(--muted); filter: grayscale(1); opacity: .7; }
 .bubble.stale .meta { opacity: 1; color: var(--muted); }
