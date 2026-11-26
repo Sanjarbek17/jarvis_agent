@@ -20,7 +20,7 @@ def test_which_project_a_message_is_about():
 
 def test_labels_say_live_or_how_old(monkeypatch):
     monkeypatch.setattr(livestats, "last_check", lambda: None)
-    acc = [{"account": "haydovchi.darslari", "followers": 272, "reels": [{"url": "u1", "views": 57}]}]
+    acc = [{"account": "haydovchi_darslari", "followers": 272, "reels": [{"url": "u1", "views": 57}]}]
     fresh = livestats.text({"project": "Haydovchi darslari", "at": time.time() - 60, "accounts": acc})
     old = livestats.text({"project": "Haydovchi darslari", "at": time.time() - 3600 * 10, "accounts": acc})
     assert "LIVE from Instagram" in fresh and "272 followers" in fresh and "57" in fresh
@@ -60,7 +60,7 @@ def test_app_status_question_reaches_the_brain_with_live_numbers(tmp_path, monke
 
     async def fetch(project, max_age=livestats.MAX_AGE):
         fetched.append(project)
-        return {"project": project, "at": time.time(), "accounts": [{"account": "haydovchi.darslari", "followers": 300, "reels": []}]}
+        return {"project": project, "at": time.time(), "accounts": [{"account": "haydovchi_darslari", "followers": 300, "reels": []}]}
 
     monkeypatch.setattr(appserver, "_brain", lambda c: Brain())
     monkeypatch.setattr(livestats, "fetch", fetch)
