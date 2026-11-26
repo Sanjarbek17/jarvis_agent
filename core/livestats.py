@@ -42,7 +42,7 @@ BOTH = re.compile(r"instagram|insta\b|reels?\b|kanal", re.I)
 def accounts(project: str) -> list[dict]:
     """[{account, profile, own}] for a project with live stats, [] otherwise."""
     if project == "Haydovchi darslari":
-        return [{"account": "haydovchi.darslari", "profile": str(HAYDOVCHI / "posting" / "chrome-profile"), "own": False}]
+        return [{"account": "haydovchi_darslari", "profile": str(HAYDOVCHI / "posting" / "chrome-profile"), "own": False}]
     if project == "Instagram Channels":
         try:
             chans = json.loads((CHANNELS / "channels.json").read_text())
