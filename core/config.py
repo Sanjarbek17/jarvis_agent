@@ -113,8 +113,8 @@ TOOLS_PORT = 8775
 # engine selection: "antigravity" (agy / Gemini) or "claude"
 JARVIS_ENGINE = os.environ.get("JARVIS_ENGINE", "antigravity").lower()
 AGY_CLI = os.environ.get("AGY_CLI", shutil.which("agy") or str(Path.home() / ".local/bin/agy"))
-AGY_BRAIN_MODEL = os.environ.get("AGY_BRAIN_MODEL", "gemini-3.8-flash-high")
-AGY_WORKER_MODEL = os.environ.get("AGY_WORKER_MODEL", "gemini-3.8-flash-high")
+AGY_BRAIN_MODEL = os.environ.get("AGY_BRAIN_MODEL", "gemini-4-hydrogen-high")
+AGY_WORKER_MODEL = os.environ.get("AGY_WORKER_MODEL", "gemini-4-hydrogen-high")
 
 # runner
 POLL_SECONDS = 10

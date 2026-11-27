@@ -178,7 +178,7 @@ def test_status_line_and_current_status():
 
 
 def test_runner_detects_gemini_quota_exhaustion():
-    assert runner.hit_limit("Error: individual quota reached for gemini-3.8-flash-high", True, 0) > time.time()
+    assert runner.hit_limit("Error: individual quota reached for gemini-4-hydrogen-high", True, 0) > time.time()
     assert runner.hit_limit("Exception: MODEL_CAPACITY_EXHAUSTED", True, 0) > time.time()
     assert runner.hit_limit("ResourceExhausted: 429 quota exhausted", True, 0) > time.time()
 
