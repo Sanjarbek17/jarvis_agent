@@ -304,9 +304,9 @@ def sanitize_photo(path: str) -> str:
     return str(path)
 
 
-def drop_dm(flats: list[str], photos: list[str] = ()) -> None:
+def drop_dm(flats: list[str], photos: list[str] = (), reprompt: bool = False) -> None:
     """For the apartment search: write to each member privately with an apartment description
-    and photos (tickets 1f5a835e, 2e7cdd52, 2b5af991, 13fbc3cf, ee355229), asking if they like it."""
+    and photos (tickets 1f5a835e, 2e7cdd52, 2b5af991, 13fbc3cf, ee355229, 8cf0bb59), asking if they like it."""
     unique_flats = list(dict.fromkeys(flats))[:MAX_DM_BATCH]
     if not unique_flats:
         return
@@ -317,12 +317,18 @@ def drop_dm(flats: list[str], photos: list[str] = ()) -> None:
     tmp.write_text(json.dumps({
         "dm": [str(x)[:200] for x in unique_flats],
         "photos": valid_photos,
+        "reprompt": reprompt,
     }, ensure_ascii=False))
     tmp.rename(QUEUE / f"{name}.json")
 
 
-def dm_text(first_name: str, flats: list[str]) -> str:
+def dm_text(first_name: str, flats: list[str], reprompt: bool = False) -> str:
     if len(flats) == 1:
+        if reprompt:
+            return (f"Hi {first_name}! Still no answer about this flat 🙂 What do you think, is it worth seeing?\n{flats[0]}\n\n"
+                    "Tell me if you like it (or \"none\"), and I'll pass it to the group. "
+                    "You can also tell me what to ask or say to the owner.\n"
+                    "(O'zbekcha javob bersangiz ham bo'ladi: yoqdimi yo'qmi?)")
         return (f"Hi {first_name}! Jarvis from the Flatmates group here 🙂 Do you like this flat or not?\n{flats[0]}\n\n"
                 "Tell me if you like it (or \"none\"), and I'll pass it to the group. "
                 "You can also tell me what to ask or say to the owner.\n"
@@ -601,8 +607,8 @@ def _dms() -> dict:
         return {}
 
 
-async def dm_members(tg, flats: list[str], photos: list[str] = ()) -> int:
-    """Each member (not Sanjar, not Jarvis, not bots) gets the flats privately, with photos if available (ticket 1f5a835e).
+async def dm_members(tg, flats: list[str], photos: list[str] = (), reprompt: bool = False) -> int:
+    """Each member (not Sanjar, not Jarvis, not bots) gets the flats privately, with photos if available (tickets 1f5a835e, 8cf0bb59).
     Returns how many were written to."""
     me, sent, dms = await tg.get_me(), 0, _dms()
     valid_photos = [p for p in photos if Path(p).is_file()]
@@ -613,10 +619,10 @@ async def dm_members(tg, flats: list[str], photos: list[str] = ()) -> int:
         if getattr(u, "bot", False) or getattr(u, "deleted", False) or u.id in (me.id, OWNER_ID):
             continue
         prev = dms.get(str(u.id), {})
-        if prev and set(unique_flats).issubset(set(prev.get("flats", []))) and time.time() - prev.get("at", 0) < 86400:
+        if not reprompt and prev and set(unique_flats).issubset(set(prev.get("flats", []))) and time.time() - prev.get("at", 0) < 86400:
             log.info("Flatmates: skipping duplicate DM to %s for %d flat(s) already sent", getattr(u, "first_name", "member"), len(unique_flats))
             continue
-        text = dm_text(u.first_name or "there", unique_flats)
+        text = dm_text(u.first_name or "there", unique_flats, reprompt=reprompt)
         sent_ids = []
         try:
             if valid_photos:
@@ -997,7 +1003,7 @@ async def post(tg, note: dict) -> None:
         return
     if note.get("dm"):                               # not a group post: write to each member privately
         photos = [sanitize_photo(str(p)) for p in note.get("photos", []) if Path(p).is_file()]
-        await dm_members(tg, note["dm"], photos=photos)
+        await dm_members(tg, note["dm"], photos=photos, reprompt=note.get("reprompt", False))
         return
     photos = [p for p in note.get("photos", []) if Path(p).is_file()]
     key = note.get("key", "")

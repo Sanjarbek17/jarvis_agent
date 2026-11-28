@@ -921,6 +921,18 @@ def test_dm_members_skips_duplicates_within_24h():
     assert sent2 == 0
 
 
+def test_dm_members_reprompt_bypasses_duplicate_skip():
+    """Ticket 8cf0bb59: re-prompting unreviewed flats bypasses duplicate skip and uses re-prompt wording."""
+    flats = ["Chilonzor, 2 rooms, $300"]
+    tg = Private(fail={3})
+    sent1 = asyncio.run(f.dm_members(tg, flats))
+    assert sent1 == 1
+    # Second send with reprompt=True sends the re-prompt
+    sent2 = asyncio.run(f.dm_members(tg, flats, reprompt=True))
+    assert sent2 == 1
+    assert any("Still no answer about this flat" in text for _, text in tg.sent)
+
+
 def test_delete_dms_deletes_messages_and_cleans_state():
     """Ticket 2b5af991: delete_dms removes messages from private chats and clears state."""
     f.DMS.parent.mkdir(parents=True, exist_ok=True)
